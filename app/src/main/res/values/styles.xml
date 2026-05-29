@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.LocalMovieLibrary" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">#2F6B5F</item>
+    </style>
+</resources>
