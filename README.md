@@ -1,4 +1,4 @@
-# Local Movie Library
+# HomeMovie
 
 一个 Kotlin + Jetpack Compose + Room + Media3 的本地影片管理 App MVP。
 
@@ -24,4 +24,4 @@
 
 ## 构建
 
-用 Android Studio 打开本目录后同步 Gradle，然后运行 `:app`。当前环境没有可用的 `gradle`/`gradlew.bat`，所以本仓库未在当前机器完成命令行编译验证。
+用 Android Studio 打开本目录后同步 Gradle，然后运行 `:app`。
