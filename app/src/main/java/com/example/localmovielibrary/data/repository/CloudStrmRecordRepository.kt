@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.data.repository
+﻿package com.example.localmovielibrary.data.repository
 
 import android.content.Context
 import android.net.Uri
@@ -21,32 +21,23 @@ class CloudStrmRecordRepository(
     private val movieDao: MovieDao,
     private val settingsRepository: AppSettingsRepository
 ) {
-    @Volatile
-    private var hasIndexedKnownMovies = false
-
     suspend fun get(pickcode: String): CloudStrmRecordEntity? = withContext(Dispatchers.IO) {
-        dao.get(pickcode) ?: run {
-            ensureKnownMoviesIndexed()
-            dao.get(pickcode)
-        }
+        dao.get(pickcode)
     }
 
     suspend fun getCached(pickcode: String): CloudStrmRecordEntity? = withContext(Dispatchers.IO) {
         dao.get(pickcode)
     }
 
-    suspend fun existingPickcodes(): Set<String> = withContext(Dispatchers.IO) {
-        dao.getAllPickcodes().toSet()
-    }
 
     suspend fun existingPickcodesForVisibleItems(pickcodes: Set<String>): Set<String> = withContext(Dispatchers.IO) {
         if (pickcodes.isEmpty()) return@withContext emptySet()
-        dao.getByPickcodes(pickcodes.toList()).map { it.pickcode }.toSet()
+        dao.getExistingPickcodes(pickcodes.toList()).toSet()
     }
 
-    suspend fun indexKnownMoviesIfNeeded(): Set<String> = withContext(Dispatchers.IO) {
-        ensureKnownMoviesIndexed()
-        dao.getAllPickcodes().toSet()
+    suspend fun existingRecordsForVisibleItems(pickcodes: Set<String>): List<CloudStrmRecordEntity> = withContext(Dispatchers.IO) {
+        if (pickcodes.isEmpty()) return@withContext emptyList()
+        dao.getExistingRecords(pickcodes.toList())
     }
 
     suspend fun upsertGenerated(
@@ -121,12 +112,7 @@ class CloudStrmRecordRepository(
         val info = extractMovieNumberInfo(fileName) ?: return@withContext null
         if (info.partLabel != null) return@withContext null
         if (detectMovieVariant(fileName) != MovieVariant.Standard) return@withContext null
-        dao.getByMovieNumber(info.number)
-            .firstOrNull { record ->
-                record.pickcode != newPickcode &&
-                    record.partLabel == null &&
-                    record.variant.isNullOrBlank()
-            }
+        dao.getStandardSameNumberCandidate(info.number, newPickcode)
     }
 
     suspend fun replacePickcode(
@@ -201,24 +187,7 @@ class CloudStrmRecordRepository(
         }
         records += indexKnownMovieRecords()
         dao.upsertAll(records)
-        hasIndexedKnownMovies = true
         CloudStrmIndexResult(indexed = records.size, renamed = renamed)
-    }
-
-    private suspend fun ensureKnownMoviesIndexed() {
-        if (hasIndexedKnownMovies) return
-        val records = indexKnownMovieRecords()
-        if (records.isNotEmpty()) {
-            dao.upsertAll(records)
-        }
-        hasIndexedKnownMovies = true
-    }
-
-    private fun CloudStrmRecordEntity.strmExists(): Boolean {
-        val uri = runCatching { Uri.parse(strmUri) }.getOrNull() ?: return false
-        return runCatching {
-            context.contentResolver.openInputStream(uri)?.use { true } ?: false
-        }.getOrDefault(false)
     }
 
     private suspend fun indexKnownMovieRecords(): List<CloudStrmRecordEntity> {
@@ -229,26 +198,6 @@ class CloudStrmRecordRepository(
             .filter { it.videoName.endsWith(".strm", ignoreCase = true) || it.videoUri.endsWith(".strm", ignoreCase = true) }
             .mapNotNull { movie -> movie.toCloudStrmRecord(now, existing) }
             .toList()
-    }
-
-    private suspend fun indexKnownMovieRecordsForPickcodes(targetPickcodes: Set<String>): List<CloudStrmRecordEntity> {
-        if (targetPickcodes.isEmpty()) return emptyList()
-        val existing = dao.getAllPickcodes().toSet()
-        val found = mutableListOf<CloudStrmRecordEntity>()
-        val remaining = targetPickcodes.toMutableSet()
-        val now = System.currentTimeMillis()
-        movieDao.getMoviesSnapshotLite()
-            .asSequence()
-            .filter { it.videoName.endsWith(".strm", ignoreCase = true) || it.videoUri.endsWith(".strm", ignoreCase = true) }
-            .forEach { movie ->
-                if (remaining.isEmpty()) return@forEach
-                val record = movie.toCloudStrmRecord(now, existing) ?: return@forEach
-                if (record.pickcode in remaining) {
-                    found += record
-                    remaining -= record.pickcode
-                }
-            }
-        return found
     }
 
     private fun MovieEntity.toCloudStrmRecord(now: Long, existingPickcodes: Set<String>): CloudStrmRecordEntity? {

@@ -8,8 +8,8 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PlaybackProgressDao {
-    @Query("SELECT * FROM playback_progress ORDER BY updatedAt DESC")
-    fun observeAll(): Flow<List<PlaybackProgressEntity>>
+    @Query("SELECT mediaKey, updatedAt FROM playback_progress ORDER BY updatedAt DESC LIMIT :limit")
+    fun observeRecentListItems(limit: Int): Flow<List<PlaybackProgressListItem>>
 
     @Query("SELECT * FROM playback_progress WHERE mediaKey = :mediaKey LIMIT 1")
     suspend fun get(mediaKey: String): PlaybackProgressEntity?

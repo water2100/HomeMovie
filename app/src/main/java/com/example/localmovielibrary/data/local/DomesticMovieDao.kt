@@ -14,8 +14,8 @@ interface DomesticMovieDao {
     @Query("SELECT * FROM domestic_movies WHERE folderCid = :folderCid LIMIT 1")
     suspend fun getByFolderCid(folderCid: Long): DomesticMovieEntity?
 
-    @Query("SELECT folderCid FROM domestic_movies")
-    suspend fun getAddedFolderCids(): List<Long>
+    @Query("SELECT folderCid FROM domestic_movies WHERE folderCid IN (:folderCids)")
+    suspend fun getAddedFolderCids(folderCids: List<Long>): List<Long>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: DomesticMovieEntity)

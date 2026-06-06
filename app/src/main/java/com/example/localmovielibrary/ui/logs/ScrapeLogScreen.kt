@@ -111,30 +111,80 @@ fun ScrapeLogScreen(
                 onClear = viewModel::clearSelected
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(18.dp))
-                    .padding(14.dp)
+            LogContent(
+                uiState = uiState,
+                onLoadMore = viewModel::loadMore
+            )
+        }
+    }
+}
+
+@Composable
+private fun LogContent(
+    uiState: ScrapeLogUiState,
+    onLoadMore: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(18.dp))
+            .padding(14.dp)
+    ) {
+        when {
+            uiState.isLoading -> LogText("正在读取日志...")
+            uiState.visibleLines.isEmpty() -> LogText("当天暂无日志")
+            else -> LogTextContent(
+                text = uiState.visibleLines.joinToString("\n"),
+                hasMoreLines = uiState.hasMoreLines,
+                visibleLineCount = uiState.visibleLineCount,
+                totalLineCount = uiState.totalLineCount,
+                onLoadMore = onLoadMore
+            )
+        }
+    }
+}
+
+@Composable
+private fun LogTextContent(
+    text: String,
+    hasMoreLines: Boolean,
+    visibleLineCount: Int,
+    totalLineCount: Int,
+    onLoadMore: () -> Unit
+) {
+    val scrollState = rememberScrollState()
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        SelectionContainer(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+        ) {
+            LogText(text)
+        }
+        if (hasMoreLines) {
+            OutlinedButton(
+                onClick = onLoadMore,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                SelectionContainer(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        text = when {
-                            uiState.isLoading -> "正在读取日志..."
-                            else -> uiState.log.ifBlank { "当天暂无日志" }
-                        },
-                        color = Color.White.copy(alpha = 0.78f),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Text("加载更多 $visibleLineCount / $totalLineCount")
             }
         }
     }
+}
+
+@Composable
+private fun LogText(text: String) {
+    Text(
+        text = text,
+        color = Color.White.copy(alpha = 0.78f),
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = FontFamily.Monospace
+    )
 }
 
 @Composable

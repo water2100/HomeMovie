@@ -1,11 +1,10 @@
-package com.example.localmovielibrary.data.repository
+﻿package com.example.localmovielibrary.data.repository
 
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.cloud115.Cloud115Client
 import com.example.localmovielibrary.cloud115.Cloud115FileItem
-import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.util.MovieVariant
 import com.example.localmovielibrary.util.detectMovieVariant
 import com.example.localmovielibrary.util.extractMovieNumberInfo
@@ -21,17 +20,25 @@ class Cloud115StrmRepository(
 ) {
     suspend fun listFiles(cid: Long): List<Cloud115FileItem> = cloud115Client.listFiles(cid)
 
-    suspend fun existingPickcodes(): Set<String> = withContext(Dispatchers.IO) {
-        recordRepository.existingPickcodes()
-    }
-
     suspend fun existingPickcodesForVisibleItems(items: List<Cloud115FileItem>): Set<String> = withContext(Dispatchers.IO) {
-        val pickcodes = items
-            .asSequence()
-            .filter { !it.isDirectory }
-            .mapNotNull { it.pickcode?.takeIf { pickcode -> pickcode.isNotBlank() } }
+        val videoItemsByPickcode = items
+            .filter { !it.isDirectory && it.isVideoFile() }
+            .mapNotNull { item ->
+                item.pickcode
+                    ?.takeIf { pickcode -> pickcode.isNotBlank() }
+                    ?.let { pickcode -> pickcode to item }
+            }
+            .toMap()
+        val records = recordRepository.existingRecordsForVisibleItems(videoItemsByPickcode.keys)
+        records
+            .filter { record ->
+                val itemNumber = videoItemsByPickcode[record.pickcode]
+                    ?.name
+                    ?.let { extractMovieNumberInfo(it)?.number }
+                itemNumber == null || record.movieNumber == itemNumber
+            }
+            .map { it.pickcode }
             .toSet()
-        recordRepository.existingPickcodesForVisibleItems(pickcodes)
     }
 
     suspend fun generateStrmForVideo(item: Cloud115FileItem, forceDistinct: Boolean = false): GeneratedStrmFile = withContext(Dispatchers.IO) {
@@ -40,8 +47,15 @@ class Cloud115StrmRepository(
         val pickcode = item.pickcode?.takeIf { it.isNotBlank() } ?: error("这个文件没有 pickcode，无法生成 STRM")
         val targetRoot = requireWritableStrmRoot()
 
+        val segmentInfo = extractMovieNumberInfo(item.name)
+        val variant = detectMovieVariant(item.name)
+
         if (!forceDistinct) {
-            recordRepository.getCached(pickcode)?.let { existing ->
+            recordRepository.getCached(pickcode)
+                ?.takeIf { existing ->
+                    segmentInfo == null || existing.movieNumber == segmentInfo.number
+                }
+                ?.let { existing ->
                 return@withContext GeneratedStrmFile(
                     fileName = existing.fileName,
                     pickcode = pickcode,
@@ -53,8 +67,6 @@ class Cloud115StrmRepository(
             }
         }
 
-        val segmentInfo = extractMovieNumberInfo(item.name)
-        val variant = detectMovieVariant(item.name)
         if (
             segmentInfo != null &&
             !forceDistinct &&
@@ -138,34 +150,6 @@ class Cloud115StrmRepository(
         )
     }
 
-    suspend fun generateStrmForFolder(cid: Long): StrmGenerationResult = withContext(Dispatchers.IO) {
-        val targetRoot = requireWritableStrmRoot()
-        val existingPickcodes = mutableSetOf<String>()
-        collectExistingPickcodes(targetRoot, existingPickcodes)
-
-        var created = 0
-        var skipped = 0
-        suspend fun walk(folderCid: Long) {
-            cloud115Client.listFiles(folderCid).forEach { item ->
-                if (item.isDirectory) {
-                    item.cid?.let { walk(it) }
-                } else if (item.isVideoFile()) {
-                    val pickcode = item.pickcode
-                    if (pickcode.isNullOrBlank() || pickcode in existingPickcodes) {
-                        skipped += 1
-                        return@forEach
-                    }
-                    writeStrmFile(targetRoot, item.name, pickcode)
-                    existingPickcodes += pickcode
-                    created += 1
-                }
-            }
-        }
-
-        walk(cid)
-        StrmGenerationResult(created = created, skipped = skipped)
-    }
-
     private fun requireWritableStrmRoot(): DocumentFile {
         val treeUri = settingsRepository.getStrmTreeUri()
             ?: error("请先到设置页选择 STRM 文件保存位置")
@@ -208,7 +192,7 @@ class Cloud115StrmRepository(
         val rootDocId = Uri.parse(treeUri).treeDocumentId() ?: return null
         val fileDocId = Uri.parse(fileUriString).documentId() ?: return null
         val parentDocId = fileDocId.substringBeforeLast('/', missingDelimiterValue = "")
-        if (parentDocId.isBlank() || parentDocId == rootDocId) return root
+        if (parentDocId.isBlank() || parentDocId == rootDocId) return null
         if (!parentDocId.startsWith("$rootDocId/")) return null
         val relativePath = parentDocId.removePrefix("$rootDocId/")
         return relativePath.split('/')
@@ -233,18 +217,6 @@ class Cloud115StrmRepository(
         val index = pathSegments.indexOf("document")
         return index.takeIf { it >= 0 && it + 1 < pathSegments.size }
             ?.let { Uri.decode(pathSegments[it + 1]) }
-    }
-
-    private fun collectExistingPickcodes(file: DocumentFile, out: MutableSet<String>) {
-        if (file.isDirectory) {
-            file.listFiles().forEach { collectExistingPickcodes(it, out) }
-            return
-        }
-        if (!file.name.orEmpty().endsWith(".strm", ignoreCase = true)) return
-        val content = runCatching {
-            context.contentResolver.openInputStream(file.uri)?.bufferedReader()?.use { it.readText() }
-        }.getOrNull().orEmpty()
-        PickcodeExtractor.extract(content)?.let { out += it }
     }
 
     private fun Cloud115FileItem.isVideoFile(): Boolean =
@@ -272,9 +244,4 @@ data class GeneratedStrmFile(
 private data class WrittenStrmFile(
     val name: String,
     val uri: String
-)
-
-data class StrmGenerationResult(
-    val created: Int,
-    val skipped: Int
 )

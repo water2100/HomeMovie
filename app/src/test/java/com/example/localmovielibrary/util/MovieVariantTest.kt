@@ -7,7 +7,7 @@ class MovieVariantTest {
     @Test
     fun detectsCommonFourKMarkers() {
         assertEquals(MovieVariant.FourK, detectMovieVariant("FNS-118_4K.mp4"))
-        assertEquals(MovieVariant.FourK, detectMovieVariant("FNS-118 4K60FPS.mp4"))
+        assertEquals(MovieVariant.FourK60Fps, detectMovieVariant("FNS-118 4K60FPS.mp4"))
         assertEquals(MovieVariant.FourK, detectMovieVariant("FNS-118-2160p.mkv"))
         assertEquals(MovieVariant.FourK, detectMovieVariant("FNS-118 UHD.mp4"))
         assertEquals(MovieVariant.FourK, detectMovieVariant("START-155_4Ks.mp4"))
@@ -23,7 +23,7 @@ class MovieVariantTest {
     @Test
     fun detectsCommonEightKMarkers() {
         assertEquals(MovieVariant.EightK, detectMovieVariant("EBVR-00104.part4_8K.mp4"))
-        assertEquals(MovieVariant.EightK, detectMovieVariant("EBVR-00104 8K60FPS.mp4"))
+        assertEquals(MovieVariant.EightK60Fps, detectMovieVariant("EBVR-00104 8K60FPS.mp4"))
         assertEquals(MovieVariant.EightK, detectMovieVariant("EBVR-00104-4320p.mkv"))
     }
 

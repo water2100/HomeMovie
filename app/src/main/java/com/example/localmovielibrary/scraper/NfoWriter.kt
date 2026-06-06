@@ -72,7 +72,7 @@ object NfoWriter {
 
     private fun String.withoutNumberPrefix(number: String): String {
         if (isBlank()) return this
-        val numberVariants = listOf(number, number.replace("-", ""))
+        val numberVariants = numberPrefixVariants(number)
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
@@ -80,15 +80,35 @@ object NfoWriter {
         if (numberVariants.isBlank()) return trim()
 
         val prefixPattern = Regex(
-            pattern = """^\s*[\[【(（]?\s*(?:$numberVariants)\s*[\]】)）]?\s*[-_：:－—\s]*""",
+            pattern = "^\\s*[\\[\\u3010(\\uFF08]?\\s*(?:$numberVariants)\\s*[\\]\\u3011)\\uFF09]?\\s*[-_:\\uFF1A\\uFF0D\\u2014\\s]*",
             option = RegexOption.IGNORE_CASE
         )
         return replace(prefixPattern, "").trim()
     }
 
+    private fun numberPrefixVariants(number: String): List<String> {
+        val normalized = number.trim().uppercase()
+        val compact = normalized.replace("-", "")
+        val withoutLeadingZeros = Regex("""^([A-Z]{2,10})-(0*)(\d{1,6})$""")
+            .find(normalized)
+            ?.let { match ->
+                val prefix = match.groupValues[1]
+                val digits = match.groupValues[3].toIntOrNull()?.toString() ?: match.groupValues[3]
+                "$prefix-$digits"
+            }
+        return buildList {
+            add(normalized)
+            add(compact)
+            withoutLeadingZeros?.let {
+                add(it)
+                add(it.replace("-", ""))
+            }
+        }
+    }
+
     private fun List<String>.normalizedValues(): List<String> =
         flatMap { value ->
-            value.split(Regex("""[,，、|;\r\n\t]+"""))
+            value.split(Regex("[,\\uFF0C\\u3001|;\\r\\n\\t]+"))
         }
             .map { it.trim() }
             .filter { it.isNotBlank() }

@@ -2,6 +2,7 @@ package com.example.localmovielibrary.scraper
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -16,7 +17,8 @@ import java.util.TimeZone
 
 class Dmm2Scraper(
     private val client: OkHttpClient = OkHttpClient(),
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val logger: ((String) -> Unit)? = null
 ) : MovieScraper {
     override val source: ScrapeSource = ScrapeSource.Dmm2
 
@@ -30,10 +32,13 @@ class Dmm2Scraper(
             ?.optJSONObject("result")
             ?.optJSONArray("contents")
             ?: JSONArray()
+        logger?.invoke("DMM2 搜索返回：$keyword，结果 ${contents.length()} 条")
         if (contents.length() == 0) error("DMM2 没有搜索到结果：$normalized / $keyword")
+        logSearchContents(keyword, contents)
 
         val selected = selectBestSearchResult(contents, keyword)
         val contentId = selected.optString("id").trim()
+        logger?.invoke("DMM2 选中结果：keyword=$keyword, contentId=$contentId, title=${selected.optString("title").cleanText()}")
         if (contentId.isBlank()) error("DMM2 搜索结果没有 content id")
 
         val detailJson = fetchDetail(contentId)
@@ -42,7 +47,7 @@ class Dmm2Scraper(
         info
     }
 
-    private fun fetchSearch(keyword: String): JSONObject {
+    private suspend fun fetchSearch(keyword: String): JSONObject {
         val variables = JSONObject()
             .put("limit", 20)
             .put("offset", 0)
@@ -51,7 +56,7 @@ class Dmm2Scraper(
             .put("queryWord", keyword)
             .put("filter", JSONObject())
             .put("facetLimit", 100)
-            .put("excludeUndelivered", true)
+            .put("excludeUndelivered", false)
         val payload = JSONObject()
             .put("operationName", "AvSearch")
             .put("query", SEARCH_QUERY)
@@ -59,7 +64,7 @@ class Dmm2Scraper(
         return postGraphql(payload, "https://video.dmm.co.jp/av/list/?key=$keyword")
     }
 
-    private fun fetchDetail(contentId: String): JSONObject {
+    private suspend fun fetchDetail(contentId: String): JSONObject {
         val payload = JSONObject()
             .put("operationName", "Test")
             .put("query", DETAIL_QUERY)
@@ -67,9 +72,20 @@ class Dmm2Scraper(
         return postGraphql(payload, "https://video.dmm.co.jp/av/content/?id=$contentId")
     }
 
-    private fun postGraphql(payload: JSONObject, referer: String): JSONObject {
+    private fun logSearchContents(keyword: String, contents: JSONArray) {
+        val count = minOf(contents.length(), SEARCH_LOG_LIMIT)
+        logger?.invoke("DMM2 搜索结果预览：$keyword，显示 $count / ${contents.length()} 条")
+        repeat(count) { index ->
+            val item = contents.optJSONObject(index) ?: return@repeat
+            val id = item.optString("id").trim()
+            val title = item.optString("title").cleanText()
+            logger?.invoke("DMM2 搜索结果 #${index + 1}: id=$id, title=$title")
+        }
+    }
+
+    private suspend fun postGraphql(payload: JSONObject, referer: String): JSONObject {
         var lastError: Throwable? = null
-        repeat(3) { attempt ->
+        repeat(GRAPHQL_RETRY_COUNT) { attempt ->
             runCatching {
                 val request = Request.Builder()
                     .url(GRAPHQL_URL)
@@ -90,7 +106,7 @@ class Dmm2Scraper(
                 }
             }.onFailure { error ->
                 lastError = error
-                if (attempt < 2) Thread.sleep(1500)
+                if (attempt < GRAPHQL_RETRY_COUNT - 1) delay(1500)
             }
         }
         throw RuntimeException("DMM2 GraphQL 请求连续失败：${lastError?.message ?: lastError?.javaClass?.simpleName}")
@@ -250,6 +266,8 @@ class Dmm2Scraper(
         const val GRAPHQL_URL = "https://api.video.dmm.co.jp/graphql"
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        const val GRAPHQL_RETRY_COUNT = 3
+        const val SEARCH_LOG_LIMIT = 10
 
         const val SEARCH_QUERY = """
 query AvSearch(${'$'}limit: Int!, ${'$'}offset: Int, ${'$'}floor: PPVFloor, ${'$'}sort: ContentSearchPPVSort!, ${'$'}queryWord: String, ${'$'}filter: ContentSearchPPVFilterInput, ${'$'}facetLimit: Int!, ${'$'}excludeUndelivered: Boolean!) {
@@ -277,7 +295,7 @@ query AvSearch(${'$'}limit: Int!, ${'$'}offset: Int, ${'$'}floor: PPVFloor, ${'$
 
         const val DETAIL_QUERY = """
 query Test(${'$'}id: ID!) {
-    ppvContent(id: ${'$'}id) {
+  ppvContent(id: ${'$'}id) {
     id
     title
     description

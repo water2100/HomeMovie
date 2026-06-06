@@ -4,42 +4,105 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MovieDao {
+    @Query("SELECT COUNT(*) FROM movies")
+    fun observeMovieListInvalidation(): Flow<Int>
+
     @Query(
         """
         SELECT 
-            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            id, videoUri, videoName, sortTitle, title, originalTitle,
             year, premiered, runtimeMinutes, mpaa, rating,
             posterUri, fanartUri, thumbUri,
             scannedAtMillis, isFavorite, isWatched, updatedAt
         FROM movies
         ORDER BY sortTitle COLLATE NOCASE
+        LIMIT :limit OFFSET :offset
         """
     )
-    fun observeMovieListItems(): Flow<List<MovieListItem>>
+    suspend fun getMovieListItemsPage(limit: Int, offset: Int): List<MovieListItem>
+
+    @Query("SELECT COUNT(*) FROM movies WHERE isFavorite = 1")
+    fun observeFavoriteMovieListInvalidation(): Flow<Int>
 
     @Query(
         """
-        SELECT id, studios, series, directors, actors, genres, tags
+        SELECT 
+            id, videoUri, videoName, sortTitle, title, originalTitle,
+            year, premiered, runtimeMinutes, mpaa, rating,
+            posterUri, fanartUri, thumbUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
         FROM movies
+        WHERE isFavorite = 1
+        ORDER BY updatedAt DESC, scannedAtMillis DESC
+        LIMIT :limit OFFSET :offset
         """
     )
-    fun observeMovieLibraryMetadata(): Flow<List<MovieLibraryMetadata>>
+    suspend fun getFavoriteMovieListItemsPage(limit: Int, offset: Int): List<MovieListItem>
+
+    @Query("SELECT COUNT(*) FROM movies")
+    fun observeMoviePlaybackKeyInvalidation(): Flow<Int>
+
+    @Query(
+        """
+        SELECT id, videoUri
+        FROM movies
+        ORDER BY id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun getMoviePlaybackKeyItemsPage(limit: Int, offset: Int): List<MoviePlaybackKeyItem>
+
+    @Query("SELECT actors AS items FROM movies WHERE actors != ''")
+    suspend fun getActorMetadataLists(): List<MovieMetadataList>
+
+    @Query("SELECT tags AS items FROM movies WHERE tags != ''")
+    suspend fun getTagMetadataLists(): List<MovieMetadataList>
+
+    @Query("SELECT genres AS items FROM movies WHERE genres != ''")
+    suspend fun getGenreMetadataLists(): List<MovieMetadataList>
+
+    @Query("SELECT studios AS items FROM movies WHERE studios != ''")
+    suspend fun getStudioMetadataLists(): List<MovieMetadataList>
+
+    @Query("SELECT series AS value FROM movies WHERE series IS NOT NULL AND series != ''")
+    suspend fun getSeriesMetadataTexts(): List<MovieMetadataText>
 
     @Query("SELECT * FROM movies WHERE id = :id")
     fun observeMovie(id: Long): Flow<MovieEntity?>
 
-    @Query("SELECT * FROM movies WHERE id = :id")
-    suspend fun getMovie(id: Long): MovieEntity?
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE id = :id
+        """
+    )
+    suspend fun getMovieLite(id: Long): MovieEntity?
 
-    @Query("SELECT * FROM movies WHERE videoUri = :videoUri LIMIT 1")
-    suspend fun getMovieByVideoUri(videoUri: String): MovieEntity?
-
-    @Query("SELECT * FROM movies WHERE libraryRootUri = :rootUri")
-    suspend fun getMoviesByLibraryRoot(rootUri: String): List<MovieEntity>
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE videoUri = :videoUri
+        LIMIT 1
+        """
+    )
+    suspend fun getMovieByVideoUriLite(videoUri: String): MovieEntity?
 
     @Query(
         """
@@ -55,8 +118,135 @@ interface MovieDao {
     )
     suspend fun getMoviesByLibraryRootLite(rootUri: String): List<MovieEntity>
 
-    @Query("SELECT * FROM movies")
-    suspend fun getMoviesSnapshot(): List<MovieEntity>
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE libraryRootUri = :rootUri
+            AND (
+                videoName LIKE :pattern OR
+                title LIKE :pattern OR
+                originalTitle LIKE :pattern
+            )
+        """
+    )
+    suspend fun getMovieNumberCandidatesByLibraryRootLite(rootUri: String, pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            studios, series, directors, actors, genres, tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        """
+    )
+    suspend fun getMoviesForMetadataLookupLite(): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE actors LIKE :pattern
+        """
+    )
+    suspend fun getMoviesForActorLookupLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE tags LIKE :pattern
+        """
+    )
+    suspend fun getMoviesForTagLookupLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE genres LIKE :pattern
+        """
+    )
+    suspend fun getMoviesForGenreLookupLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE studios LIKE :pattern
+        """
+    )
+    suspend fun getMoviesForStudioLookupLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE series LIKE :pattern
+        """
+    )
+    suspend fun getMoviesForCollectionLookupLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE actors LIKE :pattern
+        """
+    )
+    suspend fun getSimilarCandidatesByActorLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
+        WHERE videoName LIKE :pattern OR title LIKE :pattern OR originalTitle LIKE :pattern
+        """
+    )
+    suspend fun getSimilarCandidatesByCodeLite(pattern: String): List<MovieEntity>
 
     @Query(
         """
@@ -202,6 +392,16 @@ interface MovieDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(movie: MovieEntity)
 
+    @Transaction
+    suspend fun synchronizeLibraryMovies(removedIds: List<Long>, movies: List<MovieEntity>) {
+        if (removedIds.isNotEmpty()) {
+            deleteByIds(removedIds)
+        }
+        if (movies.isNotEmpty()) {
+            upsertAll(movies)
+        }
+    }
+
     @Query("UPDATE movies SET isFavorite = :isFavorite, updatedAt = :updatedAt WHERE id = :id")
     suspend fun setFavorite(id: Long, isFavorite: Boolean, updatedAt: Long)
 
@@ -210,6 +410,9 @@ interface MovieDao {
 
     @Query("DELETE FROM movies WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM movies WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
 
     @Query("DELETE FROM movies WHERE libraryRootUri = :rootUri")
     suspend fun deleteByLibraryRoot(rootUri: String)

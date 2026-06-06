@@ -88,6 +88,7 @@ import com.example.localmovielibrary.scraper.ActorAvatarStore
 import com.example.localmovielibrary.scraper.MissavScraper
 import com.example.localmovielibrary.ui.shared.UriImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -130,7 +131,12 @@ fun DetailScreen(
     LaunchedEffect(viewModel) {
         viewModel.eventFlow.collect { event ->
             when (event) {
-                is DetailEvent.Message -> snackbarHostState.showSnackbar(event.text)
+                is DetailEvent.Message -> {
+                    val snackbarJob = launch { snackbarHostState.showSnackbar(event.text) }
+                    delay(1_600)
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarJob.cancel()
+                }
                 is DetailEvent.OpenMovie -> onOpenMovie(event.movieId)
                 is DetailEvent.OpenMissavCookie -> onOpenMissavCookie(event.number)
                 DetailEvent.Deleted -> onBack()
@@ -299,7 +305,7 @@ fun MovieDetailScreen(
                 .background(Color.Black.copy(alpha = 0.42f)),
             onClick = onBack
         ) {
-            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = Color.White)
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = Color.White)
         }
 
         Column(
@@ -1131,31 +1137,32 @@ private fun String.isMissavUsableHtml(number: String): Boolean {
 
 @Composable
 private fun FilePathsDialog(movie: MovieEntity, onDismiss: () -> Unit) {
-    DetailInfoDialog(title = "File paths", onDismiss = onDismiss) {
-        DialogLine("Video", movie.videoUri)
-        DialogLine("NFO", movie.nfoUri ?: "Not found")
-        DialogLine("Poster", movie.posterUri ?: "Not found")
-        DialogLine("Fanart", movie.fanartUri ?: "Not found")
-        DialogLine("Thumb", movie.thumbUri ?: "Not found")
+    DetailInfoDialog(title = "文件路径", onDismiss = onDismiss) {
+        DialogLine("视频", movie.videoUri)
+        DialogLine("NFO", movie.nfoUri ?: "未找到")
+        DialogLine("海报", movie.posterUri ?: "未找到")
+        DialogLine("背景图", movie.fanartUri ?: "未找到")
+        DialogLine("缩略图", movie.thumbUri ?: "未找到")
     }
 }
 
 @Composable
 private fun ParsedNfoDialog(movie: MovieEntity, onDismiss: () -> Unit) {
-    DetailInfoDialog(title = "Parsed NFO info", onDismiss = onDismiss) {
-        DialogLine("Title", movie.title)
-        DialogLine("Original title", movie.originalTitle ?: "Not provided")
-        DialogLine("Year", movie.year?.toString() ?: "Not provided")
-        DialogLine("Runtime", movie.runtimeMinutes?.let { "$it min" } ?: "Not provided")
-        DialogLine("Rating", movie.rating?.let { "%.1f".format(it) } ?: "Not provided")
-        DialogLine("MPAA", movie.mpaa ?: "Not provided")
-        DialogLine("Premiered", movie.premiered ?: "Not provided")
-        DialogLine("Plot", movie.plot ?: movie.outline ?: "Not provided")
-        DialogLine("Director", movie.directors.joinToString(", ").ifBlank { "Not provided" })
-        DialogLine("Actors", movie.actors.joinToString(", ").ifBlank { "Not provided" })
-        DialogLine("Genres", movie.genres.joinToString(", ").ifBlank { "Not provided" })
-        DialogLine("Tags", movie.tags.joinToString(", ").ifBlank { "Not provided" })
-        DialogLine("Unique ID", movie.uniqueIds.joinToString(", ").ifBlank { "Not provided" })
+    val emptyText = "未提供"
+    DetailInfoDialog(title = "NFO 解析信息", onDismiss = onDismiss) {
+        DialogLine("标题", movie.title)
+        DialogLine("原标题", movie.originalTitle ?: emptyText)
+        DialogLine("年份", movie.year?.toString() ?: emptyText)
+        DialogLine("片长", movie.runtimeMinutes?.let { "$it 分钟" } ?: emptyText)
+        DialogLine("评分", movie.rating?.let { "%.1f".format(it) } ?: emptyText)
+        DialogLine("分级", movie.mpaa ?: emptyText)
+        DialogLine("发行日期", movie.premiered ?: emptyText)
+        DialogLine("简介", movie.plot ?: movie.outline ?: emptyText)
+        DialogLine("导演", movie.directors.joinToString(", ").ifBlank { emptyText })
+        DialogLine("演员", movie.actors.joinToString(", ").ifBlank { emptyText })
+        DialogLine("类型", movie.genres.joinToString(", ").ifBlank { emptyText })
+        DialogLine("标签", movie.tags.joinToString(", ").ifBlank { emptyText })
+        DialogLine("唯一标识", movie.uniqueIds.joinToString(", ").ifBlank { emptyText })
     }
 }
 
@@ -1167,7 +1174,7 @@ private fun ConfirmDeleteDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Delete local record?") },
+        title = { Text("删除本地记录？") },
         text = {
             Text(
                 "会删除 \"$movieTitle\" 的本地 STRM 影片目录、NFO 和图片，并同步清除网盘已添加状态。不会删除 115 网盘里的真实视频文件。"
@@ -1175,12 +1182,12 @@ private fun ConfirmDeleteDialog(
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text("Delete")
+                Text("删除")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("取消")
             }
         }
     )

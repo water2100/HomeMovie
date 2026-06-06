@@ -9,7 +9,8 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["movieNumber"]),
         Index(value = ["libraryRootUri"]),
-        Index(value = ["movieId"])
+        Index(value = ["movieId"]),
+        Index(value = ["movieNumber", "partLabel", "variant", "fileName"])
     ]
 )
 data class CloudStrmRecordEntity(

@@ -5,53 +5,70 @@ import org.junit.Test
 
 class MovieNumberUtilsTest {
     @Test
+    fun parsesStandardAndAvoidsSitePrefixAsVariant() {
+        val identity = extractMovieSourceIdentity("4k2.me@fns-128.mp4")
+
+        assertEquals("FNS-128", identity?.number)
+        assertEquals(null, identity?.partLabel)
+        assertEquals(MovieVariant.Standard, identity?.variant)
+        assertEquals("FNS-128", identity?.sourceKey)
+    }
+
+    @Test
     fun extractsLastMovieNumberAfterSitePrefix() {
-        assertEquals("FNS-150", extractMovieNumberInfo("hhd800.com@FNS-150.MP4")?.number)
-        assertEquals("FNS-172", extractMovieNumberInfo("hhd800.com@FNS-172.MP4")?.number)
-        assertEquals("FNS-128", extractMovieNumberInfo("4k2.me@fns-128.mp4")?.number)
-        assertEquals("FNS-128", extractMovieNumberInfo("4k2.me@fns-128-4k.mp4")?.number)
+        assertEquals("FNS-150", extractMovieSourceIdentity("hhd800.com@FNS-150.MP4")?.number)
+        assertEquals("FNS-172", extractMovieSourceIdentity("hhd800.com@FNS-172.MP4")?.number)
     }
 
     @Test
-    fun keepsSegmentPartLabelFromLastMovieNumber() {
-        val info = extractMovieNumberInfo("hhd800.com@MDVR-312-B.mp4")
-        assertEquals("MDVR-312", info?.number)
-        assertEquals("B", info?.partLabel)
+    fun parsesFourKVersion() {
+        val identity = extractMovieSourceIdentity("4k2.me@fns-128-4k.mp4")
+
+        assertEquals("FNS-128", identity?.number)
+        assertEquals(null, identity?.partLabel)
+        assertEquals(MovieVariant.FourK, identity?.variant)
+        assertEquals("FNS-128-4K", identity?.sourceKey)
     }
 
     @Test
-    fun extractsNumberedPartLabels() {
-        val part4 = extractMovieNumberInfo("ebvr00104.part4_8K.mp4")
-        assertEquals("EBVR-00104", part4?.number)
-        assertEquals("P4", part4?.partLabel)
+    fun parsesLetterSegments() {
+        val identity = extractMovieSourceIdentity("MDVR-312-B.mp4")
 
-        val part3 = extractMovieNumberInfo("ebvr00104.part3_8K.mp4")
-        assertEquals("EBVR-00104", part3?.number)
-        assertEquals("P3", part3?.partLabel)
+        assertEquals("MDVR-312", identity?.number)
+        assertEquals("B", identity?.partLabel)
+        assertEquals(MovieVariant.Standard, identity?.variant)
+        assertEquals("MDVR-312-B", identity?.sourceKey)
     }
 
     @Test
-    fun extractsNormalizedNumberedPartLabels() {
-        val info = extractMovieNumberInfo("EBVR-00104-P4-8K.strm")
-        assertEquals("EBVR-00104", info?.number)
-        assertEquals("P4", info?.partLabel)
+    fun parsesPartAndEightKVersion() {
+        val identity = extractMovieSourceIdentity("ebvr00104.part3_8K.mp4")
+
+        assertEquals("EBVR-00104", identity?.number)
+        assertEquals("P3", identity?.partLabel)
+        assertEquals(MovieVariant.EightK, identity?.variant)
+        assertEquals("EBVR-00104-P3-8K", identity?.sourceKey)
     }
 
     @Test
-    fun extractsDirectNumericPartBeforeQualityMarker() {
-        val part1 = extractMovieNumberInfo("www.98T.la@vrprd00156_1_8k.mp4")
-        assertEquals("VRPRD-00156", part1?.number)
-        assertEquals("P1", part1?.partLabel)
+    fun parsesUnderscoreNumberSegments() {
+        val first = extractMovieSourceIdentity("www.98T.la@vrprd00156_1_8k.mp4")
+        val second = extractMovieSourceIdentity("www.98T.la@vrprd00156_2_8k.mp4")
+        val noPart = extractMovieSourceIdentity("www.98T.la@vrprd00156_8k.mp4")
 
-        val part2 = extractMovieNumberInfo("www.98T.la@vrprd00156_2_8k.mp4")
-        assertEquals("VRPRD-00156", part2?.number)
-        assertEquals("P2", part2?.partLabel)
+        assertEquals("VRPRD-00156", first?.number)
+        assertEquals("P1", first?.partLabel)
+        assertEquals(MovieVariant.EightK, first?.variant)
+        assertEquals("P2", second?.partLabel)
+        assertEquals(MovieVariant.EightK, second?.variant)
+        assertEquals(null, noPart?.partLabel)
+        assertEquals(MovieVariant.EightK, noPart?.variant)
     }
 
     @Test
-    fun doesNotTreatQualityOnlySuffixAsPart() {
-        val info = extractMovieNumberInfo("www.98T.la@vrprd00156_8k.mp4")
-        assertEquals("VRPRD-00156", info?.number)
-        assertEquals(null, info?.partLabel)
+    fun parsesSixtyFpsAndCombinedVersion() {
+        assertEquals(MovieVariant.SixtyFps, extractMovieSourceIdentity("HMN-645_60FPS.mp4")?.variant)
+        assertEquals(MovieVariant.FourK60Fps, extractMovieSourceIdentity("HMN-645_4K60FPS.mp4")?.variant)
+        assertEquals(MovieVariant.FourK, extractMovieSourceIdentity("START-155_4Ks.mp4")?.variant)
     }
 }

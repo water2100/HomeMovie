@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.ui.home
+﻿package com.example.localmovielibrary.ui.home
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -26,7 +26,6 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,6 +55,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,15 +74,22 @@ import coil.request.ImageRequest
 import com.example.localmovielibrary.data.local.DomesticVideoSourceEntity
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.data.repository.DomesticMovieWithSources
+import com.example.localmovielibrary.data.repository.MovieMetadataSummary
 import com.example.localmovielibrary.playback.USER_AGENT
 import com.example.localmovielibrary.scraper.ActorAvatarStore
+import com.example.localmovielibrary.ui.shared.MovieArtwork
 import com.example.localmovielibrary.ui.shared.UriImage
+import com.example.localmovielibrary.util.metadataKey
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.collectLatest
 
 private val MoviesBackground = Color(0xFF070A0E)
 private val MoviesSurface = Color(0xFF111720)
 private val MoviesPanel = Color.White.copy(alpha = 0.075f)
 private val MoviesAccent = Color(0xFF36C5F0)
+private const val ALL_MOVIES_INITIAL_COUNT = 90
+private const val ALL_MOVIES_PAGE_SIZE = 60
+private const val ALL_MOVIES_PREFETCH_THRESHOLD = 18
 
 @Composable
 fun HomeScreen(
@@ -102,10 +109,17 @@ fun MoviesScreen(
     onOpenLibrary: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val gridState = rememberLazyGridState()
+    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+    var lastScrollResetKey by rememberSaveable {
+        mutableStateOf("${uiState.sortState.option.name}:${uiState.sortState.direction.name}:${uiState.imageMode.name}")
+    }
 
     LaunchedEffect(uiState.sortState, uiState.imageMode) {
-        gridState.scrollToItem(0)
+        val nextKey = "${uiState.sortState.option.name}:${uiState.sortState.direction.name}:${uiState.imageMode.name}"
+        if (lastScrollResetKey != nextKey) {
+            lastScrollResetKey = nextKey
+            gridState.scrollToItem(0)
+        }
     }
 
     LazyVerticalGrid(
@@ -118,7 +132,11 @@ fun MoviesScreen(
         verticalArrangement = Arrangement.spacedBy(18.dp),
         horizontalArrangement = Arrangement.spacedBy(13.dp)
     ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
+        item(
+            key = "movies-top-bar",
+            contentType = "movies-top-bar",
+            span = { GridItemSpan(maxLineSpan) }
+        ) {
             MoviesTopBar(
                 stats = uiState.stats,
                 scanState = uiState.scanState
@@ -126,24 +144,40 @@ fun MoviesScreen(
         }
 
         if (uiState.movies.isEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
+            item(
+                key = "empty-library",
+                contentType = "empty-library",
+                span = { GridItemSpan(maxLineSpan) }
+            ) {
                 EmptyLibraryState(
                     isScanning = uiState.scanState is ScanState.Scanning
                 )
             }
         } else {
-            item(span = { GridItemSpan(maxLineSpan) }) {
+            item(
+                key = "movies-top-spacer",
+                contentType = "section-spacer",
+                span = { GridItemSpan(maxLineSpan) }
+            ) {
                 Spacer(Modifier.height(8.dp))
             }
             if (uiState.hasPendingMovieUpdates) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
+                item(
+                    key = "pending-movies-banner",
+                    contentType = "pending-movies-banner",
+                    span = { GridItemSpan(maxLineSpan) }
+                ) {
                     PendingMoviesBanner(
                         count = uiState.pendingNewCount,
                         onClick = viewModel::applyPendingMovieUpdates
                     )
                 }
             }
-            item(span = { GridItemSpan(maxLineSpan) }) {
+            item(
+                key = "recently-added-section",
+                contentType = "movie-rail-section",
+                span = { GridItemSpan(maxLineSpan) }
+            ) {
                 HomeMovieSection(title = "\u6700\u8FD1\u6DFB\u52A0") {
                 HorizontalMovieRail(
                     movies = uiState.recentlyAdded,
@@ -157,7 +191,11 @@ fun MoviesScreen(
             }
 
             if (uiState.recentlyPlayed.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
+                item(
+                    key = "recently-played-section",
+                    contentType = "movie-rail-section",
+                    span = { GridItemSpan(maxLineSpan) }
+                ) {
                     HomeMovieSection(title = "最近播放") {
                         HorizontalMovieRail(
                             movies = uiState.recentlyPlayed,
@@ -186,9 +224,9 @@ fun MoviesLibraryScreen(
     var selectedTabName by rememberSaveable { mutableStateOf(LibraryTab.All.name) }
     val selectedTab = LibraryTab.entries.firstOrNull { it.name == selectedTabName } ?: LibraryTab.All
 
-    LaunchedEffect(uiState.hasPendingMovieUpdates) {
-        if (uiState.hasPendingMovieUpdates) {
-            viewModel.applyPendingMovieUpdates()
+    LaunchedEffect(selectedTab, uiState.movies.size) {
+        if (selectedTab != LibraryTab.All && selectedTab != LibraryTab.Domestic && selectedTab != LibraryTab.Years) {
+            viewModel.refreshLibrarySummaries()
         }
     }
 
@@ -207,6 +245,12 @@ fun MoviesLibraryScreen(
             onToggleSortDirection = viewModel::toggleSortDirection,
             onImageModeSelected = viewModel::setImageMode
         )
+        if (uiState.hasPendingMovieUpdates) {
+            PendingMoviesBanner(
+                count = uiState.pendingNewCount,
+                onClick = viewModel::applyPendingMovieUpdates
+            )
+        }
         when (selectedTab) {
             LibraryTab.All -> LibraryAllMoviesGrid(
                 movies = uiState.movies,
@@ -223,12 +267,12 @@ fun MoviesLibraryScreen(
             )
             LibraryTab.Collections -> LibrarySummaryGrid(
                 title = "合集",
-                summaries = uiState.movies.collectionSummaries(),
+                summaries = uiState.librarySummaries.collections,
                 emptyText = "还没有可归类的合集",
                 onClick = { onFilterClick("collection", it.value) }
             )
             LibraryTab.Actors -> ActorSummaryGrid(
-                summaries = uiState.movies.actorSummaries(),
+                summaries = uiState.librarySummaries.actors,
                 isUpdating = uiState.isUpdatingActorAvatars,
                 updateMessage = uiState.actorAvatarUpdateMessage,
                 refreshVersion = uiState.actorAvatarRefreshVersion,
@@ -237,13 +281,13 @@ fun MoviesLibraryScreen(
             )
             LibraryTab.Tags -> LibrarySummaryGrid(
                 title = "标签",
-                summaries = uiState.movies.valueSummaries { it.tags },
+                summaries = uiState.librarySummaries.tags,
                 emptyText = "还没有标签",
                 onClick = { onFilterClick("tag", it.value) }
             )
             LibraryTab.Genres -> LibrarySummaryGrid(
                 title = "类型",
-                summaries = uiState.movies.valueSummaries { it.genres },
+                summaries = uiState.librarySummaries.genres,
                 emptyText = "还没有类型",
                 onClick = { onFilterClick("genre", it.value) }
             )
@@ -255,7 +299,7 @@ fun MoviesLibraryScreen(
             )
             LibraryTab.Studios -> LibrarySummaryGrid(
                 title = "工作室",
-                summaries = uiState.movies.valueSummaries { it.studios },
+                summaries = uiState.librarySummaries.studios,
                 emptyText = "还没有工作室信息",
                 onClick = { onFilterClick("studio", it.value) }
             )
@@ -330,7 +374,7 @@ fun MoviesTopBar(
 
             Box {
                 IconButton(onClick = { sortExpanded = true }) {
-                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Sort", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序", tint = Color.White)
                 }
                 if (sortExpanded) {
                     SortDialog(
@@ -389,7 +433,10 @@ private fun SortDialog(
                 )
                 Spacer(Modifier.height(10.dp))
                 LazyColumn {
-                    items(HomeSortOption.values().size) { index ->
+                    items(
+                        count = HomeSortOption.values().size,
+                        contentType = { "sort-option" }
+                    ) { index ->
                         val option = HomeSortOption.values()[index]
                         SortDialogRow(
                             option = option,
@@ -635,7 +682,7 @@ private fun LibraryTopBar(
             }
             Box {
                 IconButton(onClick = { sortExpanded = true }) {
-                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Sort", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序", tint = Color.White)
                 }
                 if (sortExpanded) {
                     SortDialog(
@@ -651,7 +698,11 @@ private fun LibraryTopBar(
             contentPadding = PaddingValues(horizontal = 18.dp),
             horizontalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            items(LibraryTab.entries) { tab ->
+            items(
+                items = LibraryTab.entries,
+                key = { it.name },
+                contentType = { "library-tab" }
+            ) { tab ->
                 val selected = selectedTab == tab
                 Text(
                     text = tab.label,
@@ -680,9 +731,36 @@ private fun LibraryAllMoviesGrid(
     onToggleWatched: (MovieEntity) -> Unit
 ) {
     val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+    var visibleCount by rememberSaveable { mutableStateOf(ALL_MOVIES_INITIAL_COUNT) }
+    var lastScrollResetKey by rememberSaveable {
+        mutableStateOf("${sortState.option.name}:${sortState.direction.name}:${imageMode.name}")
+    }
+    val visibleMovies = remember(movies, visibleCount) {
+        movies.take(visibleCount.coerceIn(0, movies.size))
+    }
 
     LaunchedEffect(sortState, imageMode) {
-        gridState.scrollToItem(0)
+        val nextKey = "${sortState.option.name}:${sortState.direction.name}:${imageMode.name}"
+        if (lastScrollResetKey != nextKey) {
+            lastScrollResetKey = nextKey
+            visibleCount = ALL_MOVIES_INITIAL_COUNT.coerceAtMost(movies.size)
+            gridState.scrollToItem(0)
+        }
+    }
+
+    LaunchedEffect(gridState, movies.size) {
+        if (visibleCount == 0 && movies.isNotEmpty()) {
+            visibleCount = ALL_MOVIES_INITIAL_COUNT.coerceAtMost(movies.size)
+        }
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .collectLatest { lastVisibleIndex ->
+                if (
+                    movies.size > visibleCount &&
+                    lastVisibleIndex >= visibleCount - ALL_MOVIES_PREFETCH_THRESHOLD
+                ) {
+                    visibleCount = (visibleCount + ALL_MOVIES_PAGE_SIZE).coerceAtMost(movies.size)
+                }
+            }
     }
 
     LazyVerticalGrid(
@@ -693,7 +771,11 @@ private fun LibraryAllMoviesGrid(
         verticalArrangement = Arrangement.spacedBy(18.dp),
         horizontalArrangement = Arrangement.spacedBy(13.dp)
     ) {
-        items(movies, key = { it.id }) { movie ->
+        items(
+            items = visibleMovies,
+            key = { it.id },
+            contentType = { if (imageMode == HomeImageMode.Thumb) "movie-thumb-card" else "movie-poster-card" }
+        ) { movie ->
             MoviePosterCard(
                 movie = movie,
                 width = Dp.Unspecified,
@@ -703,6 +785,18 @@ private fun LibraryAllMoviesGrid(
                 onToggleFavorite = { onToggleFavorite(movie) },
                 onToggleWatched = { onToggleWatched(movie) }
             )
+        }
+        if (visibleMovies.size < movies.size) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    text = "已显示 ${visibleMovies.size} / ${movies.size}",
+                    color = Color.White.copy(alpha = 0.42f),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp),
+                )
+            }
         }
     }
 }
@@ -724,7 +818,11 @@ private fun DomesticMoviesGrid(
         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 26.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        items(movies, key = { it.movie.id }) { movie ->
+        items(
+            items = movies,
+            key = { it.movie.id },
+            contentType = { "domestic-movie-row" }
+        ) { movie ->
             DomesticMovieCard(
                 item = movie,
                 onClick = {
@@ -785,7 +883,7 @@ private fun DomesticMoviesGrid(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "视频 ${index + 1}",
+                                text = "瑙嗛 ${index + 1}",
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold
@@ -865,9 +963,9 @@ private fun DomesticMovieCard(
 @Composable
 private fun LibrarySummaryGrid(
     title: String,
-    summaries: List<LibrarySummary>,
+    summaries: List<MovieMetadataSummary>,
     emptyText: String,
-    onClick: (LibrarySummary) -> Unit
+    onClick: (MovieMetadataSummary) -> Unit
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 150.dp),
@@ -889,7 +987,11 @@ private fun LibrarySummaryGrid(
                 Text(emptyText, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium)
             }
         } else {
-            items(summaries, key = { it.value }) { summary ->
+            items(
+                items = summaries,
+                key = { it.value },
+                contentType = { "metadata-summary-card" }
+            ) { summary ->
                 SummaryCard(summary = summary, onClick = { onClick(summary) })
             }
         }
@@ -898,12 +1000,12 @@ private fun LibrarySummaryGrid(
 
 @Composable
 private fun ActorSummaryGrid(
-    summaries: List<LibrarySummary>,
+    summaries: List<MovieMetadataSummary>,
     isUpdating: Boolean,
     updateMessage: String?,
     refreshVersion: Int,
     onUpdateAvatars: () -> Unit,
-    onClick: (LibrarySummary) -> Unit
+    onClick: (MovieMetadataSummary) -> Unit
 ) {
     val context = LocalContext.current
     val avatarStore = remember(context, refreshVersion) { ActorAvatarStore(context) }
@@ -944,7 +1046,11 @@ private fun ActorSummaryGrid(
                 Text("还没有演员信息", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium)
             }
         } else {
-            items(summaries, key = { it.value }) { summary ->
+            items(
+                items = summaries,
+                key = { it.value },
+                contentType = { "actor-summary-card" }
+            ) { summary ->
                 ActorSummaryCard(
                     summary = summary,
                     avatarUri = avatarStore.avatarUri(summary.value),
@@ -956,7 +1062,7 @@ private fun ActorSummaryGrid(
 }
 
 @Composable
-private fun SummaryCard(summary: LibrarySummary, onClick: () -> Unit) {
+private fun SummaryCard(summary: MovieMetadataSummary, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -983,7 +1089,7 @@ private fun SummaryCard(summary: LibrarySummary, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ActorSummaryCard(summary: LibrarySummary, avatarUri: String?, onClick: () -> Unit) {
+private fun ActorSummaryCard(summary: MovieMetadataSummary, avatarUri: String?, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1059,7 +1165,11 @@ fun HorizontalMovieRail(
         contentPadding = PaddingValues(horizontal = 18.dp),
         horizontalArrangement = Arrangement.spacedBy(13.dp)
     ) {
-        items(movies, key = { it.id }) { movie ->
+        items(
+            items = movies,
+            key = { it.id },
+            contentType = { if (imageMode == HomeImageMode.Thumb) "rail-thumb-card" else "rail-poster-card" }
+        ) { movie ->
             MoviePosterCard(
                 movie = movie,
                 width = if (imageMode == HomeImageMode.Thumb) 190.dp else 118.dp,
@@ -1084,7 +1194,7 @@ fun MoviePosterCard(
     onToggleFavorite: () -> Unit,
     onToggleWatched: () -> Unit
 ) {
-    var menuExpanded by remember { mutableStateOf(false) }
+    var menuExpanded by remember(movie.id) { mutableStateOf(false) }
     val cardModifier = if (width == Dp.Unspecified) Modifier else Modifier.width(width)
 
     Column(modifier = cardModifier) {
@@ -1102,19 +1212,12 @@ fun MoviePosterCard(
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    val displayImageUri = when (imageMode) {
-                        HomeImageMode.Poster -> movie.posterUri ?: movie.thumbUri ?: movie.fanartUri
-                        HomeImageMode.Thumb -> movie.thumbUri ?: movie.fanartUri ?: movie.posterUri
-                    }
-                    UriImage(
-                        uri = displayImageUri,
+                    MovieArtwork(
+                        movie = movie,
+                        preferThumb = imageMode == HomeImageMode.Thumb,
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
                         maxDecodeSize = if (imageMode == HomeImageMode.Thumb) 960 else 720
                     )
-                    if (movie.posterUri == null && movie.thumbUri == null && movie.fanartUri == null) {
-                        PosterPlaceholder(movie.title)
-                    }
                     if (movie.isFavorite) {
                         Icon(
                             imageVector = Icons.Rounded.Favorite,
@@ -1268,36 +1371,12 @@ private enum class LibraryTab(val label: String) {
     Studios("工作室")
 }
 
-private data class LibrarySummary(
-    val value: String,
-    val count: Int
-)
-
-private fun List<MovieEntity>.actorSummaries(): List<LibrarySummary> =
-    valueSummaries { it.actors }
-
-private fun List<MovieEntity>.valueSummaries(values: (MovieEntity) -> List<String>): List<LibrarySummary> =
-    flatMap(values).summaryValues()
-
-private fun List<String>.summaryValues(): List<LibrarySummary> =
+private fun List<String>.summaryValues(): List<MovieMetadataSummary> =
     map { it.trim() }
         .filter { it.isNotBlank() }
-        .groupingBy { it }
-        .eachCount()
-        .map { (value, count) -> LibrarySummary(value, count) }
-        .sortedWith(compareByDescending<LibrarySummary> { it.count }.thenBy { it.value.lowercase() })
-
-private fun List<String>.normalizedDistinct(): List<String> =
-    map { it.trim() }
-        .filter { it.isNotBlank() }
-        .distinctBy { it.lowercase() }
-
-private fun List<MovieEntity>.collectionSummaries(): List<LibrarySummary> =
-    mapNotNull { it.series?.trim()?.takeIf { value -> value.isNotBlank() } }
-        .groupingBy { it }
-        .eachCount()
-        .map { (value, count) -> LibrarySummary(value, count) }
-        .sortedWith(compareByDescending<LibrarySummary> { it.count }.thenBy { it.value })
+        .groupBy { it.metadataKey() }
+        .map { (_, values) -> MovieMetadataSummary(values.first(), values.size) }
+        .sortedWith(compareByDescending<MovieMetadataSummary> { it.count }.thenBy { it.value.lowercase() })
 
 private fun sortLabel(option: HomeSortOption): String = when (option) {
     HomeSortOption.ImdbRating -> "IMDb \u8BC4\u5206"

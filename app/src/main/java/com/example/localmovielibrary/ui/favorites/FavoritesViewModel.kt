@@ -11,13 +11,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 class FavoritesViewModel(repository: MovieRepository) : ViewModel() {
-    val uiState: StateFlow<FavoritesUiState> = repository.observeMovies()
-        .map { movies ->
-            FavoritesUiState(
-                movies = movies.filter { it.isFavorite }
-                    .sortedByDescending { it.updatedAt.takeIf { updatedAt -> updatedAt > 0 } ?: it.scannedAtMillis }
-            )
-        }
+    val uiState: StateFlow<FavoritesUiState> = repository.observeFavoriteMovies()
+        .map { movies -> FavoritesUiState(movies = movies) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FavoritesUiState())
 
     companion object {

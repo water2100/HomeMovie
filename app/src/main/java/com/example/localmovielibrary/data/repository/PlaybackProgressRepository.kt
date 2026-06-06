@@ -2,12 +2,15 @@ package com.example.localmovielibrary.data.repository
 
 import com.example.localmovielibrary.data.local.PlaybackProgressDao
 import com.example.localmovielibrary.data.local.PlaybackProgressEntity
+import com.example.localmovielibrary.data.local.PlaybackProgressListItem
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 class PlaybackProgressRepository(
     private val playbackProgressDao: PlaybackProgressDao
 ) {
-    fun observeAll(): Flow<List<PlaybackProgressEntity>> = playbackProgressDao.observeAll()
+    fun observeRecent(limit: Int): Flow<List<PlaybackProgressListItem>> =
+        playbackProgressDao.observeRecentListItems(limit).distinctUntilChanged()
 
     suspend fun getResumePosition(mediaKey: String): Long {
         val progress = playbackProgressDao.get(mediaKey) ?: return 0L

@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.ui.cloud
+﻿package com.example.localmovielibrary.ui.cloud
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -16,6 +16,9 @@ import com.example.localmovielibrary.scraper.MovieNumberExtractor
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.ui.shared.HiddenMissavWebRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -33,14 +36,26 @@ class CloudBrowserViewModel(
     private val domesticMovieRepository: DomesticMovieRepository
 ) : ViewModel() {
     private val backStack = mutableListOf(CloudPathItem(0L, "根目录"))
-    private val addQueueMutex = Mutex()
     private val _uiState = MutableStateFlow(CloudBrowserUiState(path = backStack.toList(), isLoading = true))
     val uiState: StateFlow<CloudBrowserUiState> = _uiState
+    private var loadJob: Job? = null
+    private val scrollPositions = mutableMapOf<Long, CloudScrollPosition>()
+    private val addLocks = mutableMapOf<String, Mutex>()
+    private val missavWebViewQueue = ArrayDeque<PendingMissavScrape>()
+    private val missavCloudAddQueue = ArrayDeque<PendingCloudAdd>()
+    private var isMissavCloudAddRunning = false
 
     init {
         loadCurrent()
-        warmUpAddedPickcodeIndex()
     }
+
+    fun domesticRootCid(): Long? = settingsRepository.getDomesticRootCid()
+
+    fun isCloudAddButtonMessageEnabled(): Boolean =
+        settingsRepository.isCloudAddButtonMessageEnabled()
+
+    private fun progressMessage(text: String?): String? =
+        if (settingsRepository.isCloudAddButtonMessageEnabled()) text else null
 
     fun openFolder(item: Cloud115FileItem) {
         val cid = item.cid ?: return
@@ -61,6 +76,16 @@ class CloudBrowserViewModel(
         loadCurrent()
     }
 
+    fun scrollPositionFor(cid: Long): CloudScrollPosition =
+        scrollPositions[cid] ?: CloudScrollPosition()
+
+    fun saveScrollPosition(cid: Long, firstVisibleItemIndex: Int, firstVisibleItemScrollOffset: Int) {
+        scrollPositions[cid] = CloudScrollPosition(
+            firstVisibleItemIndex = firstVisibleItemIndex,
+            firstVisibleItemScrollOffset = firstVisibleItemScrollOffset
+        )
+    }
+
     fun addDomesticFolder(item: Cloud115FileItem) {
         val cid = item.cid ?: return
         if (cid in _uiState.value.addingDomesticFolderCids || cid in _uiState.value.addedDomesticFolderCids) return
@@ -68,7 +93,7 @@ class CloudBrowserViewModel(
             _uiState.update {
                 it.copy(
                     addingDomesticFolderCids = it.addingDomesticFolderCids + cid,
-                    message = "正在添加国产目录：${item.name}"
+                    message = progressMessage("正在添加国产目录：${item.name}")
                 )
             }
             runCatching { domesticMovieRepository.addFolder(item) }
@@ -77,7 +102,7 @@ class CloudBrowserViewModel(
                         state.copy(
                             addingDomesticFolderCids = state.addingDomesticFolderCids - cid,
                             addedDomesticFolderCids = state.addedDomesticFolderCids + cid,
-                            message = "已添加到国产：${item.name}"
+                            message = progressMessage("已添加到国产：${item.name}")
                         )
                     }
                 }
@@ -93,12 +118,27 @@ class CloudBrowserViewModel(
     }
 
     fun toggleSortDirection() {
+        val current = _uiState.value
+        val nextAscending = !current.sortAscending
+        val currentFolderCid = current.path.lastOrNull()?.cid ?: 0L
+        scrollPositions[currentFolderCid] = CloudScrollPosition()
         _uiState.update {
-            val nextAscending = !it.sortAscending
-            it.copy(
-                sortAscending = nextAscending,
-                items = it.items.sortedByModifiedTime(nextAscending)
-            )
+            it.copy(sortAscending = nextAscending)
+        }
+        viewModelScope.launch {
+            val sortedItems = withContext(Dispatchers.Default) {
+                current.items.sortedByModifiedTime(nextAscending)
+            }
+            _uiState.update {
+                if (it.sortAscending == nextAscending) {
+                    it.copy(
+                        items = sortedItems,
+                        scrollResetVersion = it.scrollResetVersion + 1
+                    )
+                } else {
+                    it
+                }
+            }
         }
     }
 
@@ -125,8 +165,27 @@ class CloudBrowserViewModel(
                 settingsRepository.saveMissavCookies(cookie)
                 val movie = movieRepository.findMovieByNumberAndVariant(pending.libraryRootUri, pending.number, pending.sourceName)
                     ?: error("没有找到刚添加的影片：${pending.number}")
-                scrapeRepository.scrapeMovieWithMissavHtml(movie, html, cookie)
-                movieRepository.scanLibrary(Uri.parse(pending.libraryRootUri))
+                val scrapeResult = scrapeRepository.scrapeMovieWithMissavHtmlOutput(movie, html, cookie)
+                scrapeRepository.appendLog("MissAV WebView 刮削完成，开始刷新单个影片：${pending.number}")
+                val refreshedMovie = movieRepository.scanSingleMovie(
+                    rootUri = Uri.parse(pending.libraryRootUri),
+                    videoUri = Uri.parse(scrapeResult.strmUri),
+                    mergeByMovieNumber = true
+                )
+                if (refreshedMovie != null) {
+                    if (movie.id != refreshedMovie.id && movie.videoUri != refreshedMovie.videoUri) {
+                        movieRepository.deleteMovie(movie.id)
+                        scrapeRepository.appendLog("已删除 MissAV 刮削前临时入库记录：${movie.videoName}")
+                    }
+                    recordRepository.updateStrmLocation(
+                        pickcode = pending.pickcode,
+                        strmUri = refreshedMovie.videoUri,
+                        libraryRootUri = refreshedMovie.libraryRootUri,
+                        movieId = refreshedMovie.id
+                    )
+                } else {
+                    scrapeRepository.appendLog("MissAV WebView 刮削后未定位到整理后的 STRM：${pending.number}")
+                }
                 CloudAddResult(
                     pickcode = pending.pickcode,
                     message = "已添加并刮削：${pending.number}"
@@ -137,9 +196,10 @@ class CloudBrowserViewModel(
                         addingPickcodes = it.addingPickcodes - result.pickcode,
                         pendingMissavScrape = null,
                         addedPickcodes = it.addedPickcodes + result.pickcode,
-                        message = result.message
+                        message = progressMessage(result.message)
                     )
                 }
+                finishMissavWebViewTaskAndContinue()
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(
@@ -148,6 +208,7 @@ class CloudBrowserViewModel(
                         message = error.message ?: "MissAV WebView 刮削失败"
                     )
                 }
+                finishMissavWebViewTaskAndContinue()
             }
         }
     }
@@ -165,31 +226,7 @@ class CloudBrowserViewModel(
                 message = message
             )
         }
-    }
-
-    fun generateStrm(item: Cloud115FileItem) {
-        val cid = item.cid ?: return
-        viewModelScope.launch {
-            _uiState.update { it.copy(generatingCid = cid, message = null) }
-            runCatching { strmRepository.generateStrmForFolder(cid) }
-                .onSuccess { result ->
-                    _uiState.update {
-                        it.copy(
-                            generatingCid = null,
-                            message = "已生成 ${result.created} 个 STRM，跳过 ${result.skipped} 个"
-                        )
-                    }
-                    loadCurrent()
-                }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            generatingCid = null,
-                            message = error.message ?: "生成 STRM 失败"
-                        )
-                    }
-                }
-        }
+        finishMissavWebViewTaskAndContinue()
     }
 
     fun addVideoToLibrary(item: Cloud115FileItem) {
@@ -209,7 +246,7 @@ class CloudBrowserViewModel(
         _uiState.update {
             it.copy(
                 addingPickcodes = it.addingPickcodes + pickcode,
-                message = "\u6b63\u5728\u68c0\u67e5 ${item.name}"
+                message = progressMessage("\u6b63\u5728\u68c0\u67e5 ${item.name}")
             )
         }
         viewModelScope.launch {
@@ -253,7 +290,7 @@ class CloudBrowserViewModel(
                 _uiState.update {
                     it.copy(
                         addedPickcodes = (it.addedPickcodes - conflict.oldPickcode) + result.pickcode,
-                        message = result.message
+                        message = progressMessage(result.message)
                     )
                 }
             }.onFailure { error ->
@@ -278,112 +315,256 @@ class CloudBrowserViewModel(
             _uiState.update { it.copy(message = "这个视频已经在添加队列中") }
             return
         }
+        if (settingsRepository.getDefaultScrapeSource() == ScrapeSource.Missav) {
+            enqueueMissavCloudAdd(
+                PendingCloudAdd(
+                    item = item,
+                    pickcode = pickcode,
+                    forceDistinct = forceDistinct,
+                    alreadyMarkedAdding = alreadyMarkedAdding
+                )
+            )
+            return
+        }
         viewModelScope.launch {
             _uiState.update {
+                val nextAddingPickcodes = if (alreadyMarkedAdding) {
+                    it.addingPickcodes
+                } else {
+                    it.addingPickcodes + pickcode
+                }
                 it.copy(
-                    addingPickcodes = it.addingPickcodes + pickcode,
-                    message = "正在添加 ${item.name}"
+                    addingPickcodes = nextAddingPickcodes,
+                    message = progressMessage("正在添加 ${item.name}")
                 )
             }
             scrapeRepository.appendLog("网盘添加已加入队列：${item.name} / $pickcode")
             runCatching {
                 withContext(Dispatchers.IO) {
-                    addQueueMutex.withLock {
-                    scrapeRepository.appendLog("开始处理网盘添加队列：${item.name} / $pickcode")
-                    val generated = strmRepository.generateStrmForVideo(item, forceDistinct = forceDistinct)
-                    val libraryRoot = settingsRepository.getLibraryRootUri()
-                        ?: error("请先到设置页选择影片库目录")
-                    val rootUri = Uri.parse(libraryRoot)
-
-                    if (!generated.shouldScrape) {
-                        scrapeRepository.appendLog("附加播放源 STRM 写入完成，不单独入库：${generated.fileName}")
-                        return@withLock CloudAddResult(
-                            pickcode = pickcode,
-                            message = "已加入播放源：${generated.movieNumberHint ?: item.name}"
-                        )
-                    }
-
-                    scrapeRepository.appendLog("STRM 写入完成，开始扫描单个 STRM：${generated.fileName}")
-                    val addedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(generated.strmUri), mergeByMovieNumber = !generated.forceDistinct)
-
-                    val number = MovieNumberExtractor.extract(generated.fileName)
-                        ?: MovieNumberExtractor.extract(item.name)
-                        ?: error("STRM 已添加，但无法从文件名提取番号，无法自动刮削")
-                    val movieForScrape = addedMovie
-                        ?: movieRepository.findMovieByNumberAndVariant(libraryRoot, number, generated.fileName)
-                        ?: error("STRM 已添加，但扫描后没有在影片库中找到 $number")
-                    recordRepository.attachMovie(pickcode, movieForScrape.id)
-
-                    val source = settingsRepository.getDefaultScrapeSource()
-                    scrapeRepository.appendLog("开始刮削队列影片：$number，来源：$source")
-                    val scrapeResult = scrapeRepository.scrapeMovieWithOutput(movieForScrape, source, forceDistinct = generated.forceDistinct)
-                    scrapeRepository.appendLog("刮削完成，开始刷新单个影片：$number")
-                    val refreshedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(scrapeResult.strmUri), mergeByMovieNumber = !generated.forceDistinct)
-                    if (refreshedMovie != null) {
-                        if (
-                            addedMovie != null &&
-                            addedMovie.id != refreshedMovie.id &&
-                            addedMovie.videoUri != refreshedMovie.videoUri
-                        ) {
-                            movieRepository.deleteMovie(addedMovie.id)
-                            scrapeRepository.appendLog("已删除刮削前临时入库记录，避免重复显示：${addedMovie.videoName}")
-                        }
-                        recordRepository.updateStrmLocation(
-                            pickcode = pickcode,
-                            strmUri = refreshedMovie.videoUri,
-                            libraryRootUri = refreshedMovie.libraryRootUri,
-                            movieId = refreshedMovie.id
-                        )
-                    } else {
-                        scrapeRepository.appendLog("未定位到整理后的 STRM，跳过单片刷新：$number")
-                    }
-                    CloudAddResult(
-                        pickcode = pickcode,
-                        message = if (generated.created) {
-                            "已添加并刮削：$number"
-                        } else {
-                            "STRM 已存在，已刷新并刮削：$number"
-                        }
-                    )
+                    withAddLock(item.name) {
+                        processCloudVideoAdd(item, pickcode, forceDistinct)
                     }
                 }
             }.onSuccess { result ->
-                val addedPickcodes = runCatching { strmRepository.existingPickcodes() }.getOrDefault(_uiState.value.addedPickcodes + result.pickcode)
                 _uiState.update {
                     it.copy(
                         addingPickcodes = it.addingPickcodes - result.pickcode,
-                        addedPickcodes = addedPickcodes,
-                        message = result.message
+                        addedPickcodes = it.addedPickcodes + result.pickcode,
+                        message = progressMessage(result.message)
                     )
                 }
             }.onFailure { error ->
+                val message = error.message ?: error::class.java.simpleName
+                scrapeRepository.appendLog("网盘添加失败：${item.name} / $pickcode，原因：$message")
                 val pending = buildPendingMissavContext(item, pickcode)
                 if (
                     settingsRepository.getDefaultScrapeSource() == ScrapeSource.Missav &&
                     error is MissavCookieRequiredException &&
                     pending != null
                 ) {
-                    scrapeRepository.appendLog("网盘添加影片时 MissAV 返回 Cloudflare/403，切换到隐藏 WebView：${pending.number}")
-                    _uiState.update {
-                        it.copy(
-                            hiddenMissavRequest = HiddenMissavWebRequest(
-                                id = System.currentTimeMillis(),
-                                number = pending.number,
-                                url = "https://missav.ai/cn/${pending.number.lowercase()}"
-                            ),
-                            pendingMissavScrape = pending,
-                            message = "MissAV 返回验证页，正在使用隐藏 WebView 获取页面"
-                        )
-                    }
+                    enqueueOrStartMissavWebView(pending)
                     return@onFailure
                 }
                 _uiState.update {
                     it.copy(
                         addingPickcodes = it.addingPickcodes - pickcode,
-                        message = error.message ?: "添加影片失败"
+                        message = message
                     )
                 }
             }
+        }
+    }
+
+    private fun enqueueMissavCloudAdd(pending: PendingCloudAdd) {
+        if (pending.pickcode in _uiState.value.addedPickcodes ||
+            (!pending.alreadyMarkedAdding && pending.pickcode in _uiState.value.addingPickcodes)
+        ) {
+            _uiState.update { it.copy(message = "这个视频已经在添加队列中") }
+            return
+        }
+        _uiState.update {
+            val nextAddingPickcodes = if (pending.alreadyMarkedAdding) {
+                it.addingPickcodes
+            } else {
+                it.addingPickcodes + pending.pickcode
+            }
+            it.copy(
+                addingPickcodes = nextAddingPickcodes,
+                message = progressMessage("已加入 MissAV 单线程添加队列：${pending.item.name}")
+            )
+        }
+        scrapeRepository.appendLog("MissAV 网盘添加已加入单线程队列：${pending.item.name} / ${pending.pickcode}")
+        missavCloudAddQueue.addLast(pending)
+        startNextMissavCloudAdd()
+    }
+
+    private fun startNextMissavCloudAdd() {
+        if (isMissavCloudAddRunning) return
+        val pending = missavCloudAddQueue.removeFirstOrNull() ?: return
+        isMissavCloudAddRunning = true
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(message = progressMessage("正在处理 MissAV 队列：${pending.item.name}"))
+            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    withAddLock(pending.item.name) {
+                        processCloudVideoAdd(pending.item, pending.pickcode, pending.forceDistinct)
+                    }
+                }
+            }.onSuccess { result ->
+                _uiState.update {
+                    it.copy(
+                        addingPickcodes = it.addingPickcodes - result.pickcode,
+                        addedPickcodes = it.addedPickcodes + result.pickcode,
+                        message = progressMessage(result.message)
+                    )
+                }
+                isMissavCloudAddRunning = false
+                startNextMissavCloudAdd()
+            }.onFailure { error ->
+                val message = error.message ?: error::class.java.simpleName
+                val pendingMissav = buildPendingMissavContext(pending.item, pending.pickcode)
+                if (error is MissavCookieRequiredException && pendingMissav != null) {
+                    scrapeRepository.appendLog("MissAV 需要 WebView 获取页面，暂停队列等待：${pendingMissav.number}")
+                    startMissavWebView(pendingMissav)
+                    return@onFailure
+                }
+                scrapeRepository.appendLog("网盘添加失败：${pending.item.name} / ${pending.pickcode}，原因：$message")
+                _uiState.update {
+                    it.copy(
+                        addingPickcodes = it.addingPickcodes - pending.pickcode,
+                        message = message
+                    )
+                }
+                isMissavCloudAddRunning = false
+                startNextMissavCloudAdd()
+            }
+        }
+    }
+
+    private fun enqueueOrStartMissavWebView(pending: PendingMissavScrape) {
+        val state = _uiState.value
+        if (state.hiddenMissavRequest != null || state.pendingMissavScrape != null) {
+            if (missavWebViewQueue.none { it.pickcode == pending.pickcode }) {
+                missavWebViewQueue.addLast(pending)
+            }
+            scrapeRepository.appendLog("MissAV 隐藏 WebView 正在处理，加入等待队列：${pending.number}")
+            _uiState.update {
+                it.copy(message = progressMessage("MissAV WebView 正在处理，已将 ${pending.number} 加入等待队列"))
+            }
+            return
+        }
+        startMissavWebView(pending)
+    }
+
+    private fun startMissavWebView(pending: PendingMissavScrape) {
+        scrapeRepository.appendLog("网盘添加影片时 MissAV 返回 Cloudflare/403，切换到隐藏 WebView：${pending.number}")
+        _uiState.update {
+            it.copy(
+                hiddenMissavRequest = HiddenMissavWebRequest(
+                    id = System.currentTimeMillis(),
+                    number = pending.number,
+                    url = "https://missav.ai/cn/${pending.number.lowercase()}"
+                ),
+                pendingMissavScrape = pending,
+                message = progressMessage("MissAV 返回验证页，正在使用隐藏 WebView 获取页面")
+            )
+        }
+    }
+
+    private fun startNextQueuedMissavWebView() {
+        val next = if (missavWebViewQueue.isEmpty()) null else missavWebViewQueue.removeFirst()
+        next?.let { startMissavWebView(it) }
+    }
+
+    private fun finishMissavWebViewTaskAndContinue() {
+        if (isMissavCloudAddRunning) {
+            isMissavCloudAddRunning = false
+            startNextMissavCloudAdd()
+        } else {
+            startNextQueuedMissavWebView()
+        }
+    }
+
+    private suspend fun processCloudVideoAdd(
+        item: Cloud115FileItem,
+        pickcode: String,
+        forceDistinct: Boolean
+    ): CloudAddResult {
+        scrapeRepository.appendLog("开始处理网盘添加队列：${item.name} / $pickcode")
+        val generated = strmRepository.generateStrmForVideo(item, forceDistinct = forceDistinct)
+        val libraryRoot = settingsRepository.getLibraryRootUri()
+            ?: error("请先到设置页选择影片库目录")
+        val rootUri = Uri.parse(libraryRoot)
+
+        if (!generated.shouldScrape) {
+            scrapeRepository.appendLog("附加播放源 STRM 写入完成，不单独入库：${generated.fileName}")
+            return CloudAddResult(
+                pickcode = pickcode,
+                message = "已加入播放源：${generated.movieNumberHint ?: item.name}"
+            )
+        }
+
+        scrapeRepository.appendLog("STRM 写入完成，开始扫描单个 STRM：${generated.fileName}")
+        val addedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(generated.strmUri), mergeByMovieNumber = !generated.forceDistinct)
+
+        val number = MovieNumberExtractor.extract(generated.fileName)
+            ?: MovieNumberExtractor.extract(item.name)
+            ?: error("STRM 已添加，但无法从文件名提取番号，无法自动刮削")
+        val movieForScrape = addedMovie
+            ?: movieRepository.findMovieByNumberAndVariant(libraryRoot, number, generated.fileName)
+            ?: error("STRM 已添加，但扫描后没有在影片库中找到 $number")
+        recordRepository.attachMovie(pickcode, movieForScrape.id)
+
+        val source = settingsRepository.getDefaultScrapeSource()
+        scrapeRepository.appendLog("开始刮削队列影片：$number，来源：$source")
+        val scrapeResult = scrapeRepository.scrapeStrmUriWithOutput(
+            libraryRootUri = libraryRoot,
+            strmUri = generated.strmUri,
+            source = source,
+            forceDistinct = generated.forceDistinct
+        )
+        scrapeRepository.appendLog("刮削完成，开始刷新单个影片：$number")
+        val refreshedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(scrapeResult.strmUri), mergeByMovieNumber = !generated.forceDistinct)
+        if (refreshedMovie != null) {
+            if (
+                addedMovie != null &&
+                addedMovie.id != refreshedMovie.id &&
+                addedMovie.videoUri != refreshedMovie.videoUri
+            ) {
+                movieRepository.deleteMovie(addedMovie.id)
+                scrapeRepository.appendLog("已删除刮削前临时入库记录，避免重复显示：${addedMovie.videoName}")
+            }
+            recordRepository.updateStrmLocation(
+                pickcode = pickcode,
+                strmUri = refreshedMovie.videoUri,
+                libraryRootUri = refreshedMovie.libraryRootUri,
+                movieId = refreshedMovie.id
+            )
+        } else {
+            scrapeRepository.appendLog("未定位到整理后的 STRM，跳过单片刷新：$number")
+        }
+        return CloudAddResult(
+            pickcode = pickcode,
+            message = if (generated.created) {
+                "已添加并刮削：$number"
+            } else {
+                "STRM 已存在，已刷新并刮削：$number"
+            }
+        )
+    }
+
+    private suspend fun <T> withAddLock(fileName: String, block: suspend () -> T): T {
+        val key = MovieNumberExtractor.extract(fileName)?.uppercase() ?: fileName.trim().lowercase()
+        val lock = synchronized(addLocks) {
+            addLocks.getOrPut(key) { Mutex() }
+        }
+        if (lock.isLocked) {
+            scrapeRepository.appendLog("同番号添加任务等待整理完成：$key")
+        }
+        return lock.withLock {
+            block()
         }
     }
 
@@ -400,25 +581,43 @@ class CloudBrowserViewModel(
 
     private fun loadCurrent() {
         val current = backStack.last()
-        viewModelScope.launch {
-            _uiState.update { it.copy(path = backStack.toList(), isLoading = true, errorMessage = null) }
+        val requestedPath = backStack.toList()
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    path = requestedPath,
+                    isLoading = it.items.isEmpty() || it.path != requestedPath,
+                    errorMessage = null
+                )
+            }
             runCatching {
+                val sortAscending = _uiState.value.sortAscending
                 val items = strmRepository.listFiles(current.cid)
-                val addedPickcodes = strmRepository.existingPickcodesForVisibleItems(items)
-                val addedDomesticFolderCids = domesticMovieRepository.addedFolderCids()
-                Triple(items, addedPickcodes, addedDomesticFolderCids)
-            }.onSuccess { (items, addedPickcodes, addedDomesticFolderCids) ->
+                coroutineScope {
+                    val addedPickcodes = async { strmRepository.existingPickcodesForVisibleItems(items) }
+                    val addedDomesticFolderCids = async { domesticMovieRepository.addedFolderCidsForVisibleItems(items) }
+                    CloudDirectoryLoadResult(
+                        items = withContext(Dispatchers.Default) { items.sortedByModifiedTime(sortAscending) },
+                        addedPickcodes = addedPickcodes.await(),
+                        addedDomesticFolderCids = addedDomesticFolderCids.await()
+                    )
+                }
+            }.onSuccess { result ->
+                if (backStack != requestedPath) return@onSuccess
                 _uiState.update {
                     it.copy(
-                        items = items.sortedByModifiedTime(it.sortAscending),
-                        addedPickcodes = addedPickcodes,
-                        addedDomesticFolderCids = addedDomesticFolderCids,
+                        items = result.items,
+                        addedPickcodes = result.addedPickcodes,
+                        addedDomesticFolderCids = result.addedDomesticFolderCids,
+                        excludedVideoNames = settingsRepository.getCloudExcludedVideoNames(),
                         path = backStack.toList(),
                         isLoading = false,
                         errorMessage = null
                     )
                 }
             }.onFailure { error ->
+                if (backStack != requestedPath) return@onFailure
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -426,20 +625,6 @@ class CloudBrowserViewModel(
                     )
                 }
             }
-        }
-    }
-
-    private fun warmUpAddedPickcodeIndex() {
-        viewModelScope.launch {
-            runCatching { recordRepository.existingPickcodes() }
-                .onSuccess { addedPickcodes ->
-                    _uiState.update {
-                        it.copy(addedPickcodes = it.addedPickcodes + addedPickcodes)
-                    }
-                }
-                .onFailure { error ->
-                    scrapeRepository.appendLog("鍚庡彴琛ョ储寮曞凡鍏ュ簱 STRM 澶辫触锛?{error.message}")
-                }
         }
     }
 
@@ -472,16 +657,17 @@ data class CloudBrowserUiState(
     val items: List<Cloud115FileItem> = emptyList(),
     val path: List<CloudPathItem> = emptyList(),
     val isLoading: Boolean = false,
-    val generatingCid: Long? = null,
     val sortAscending: Boolean = false,
     val addingPickcodes: Set<String> = emptySet(),
     val addedPickcodes: Set<String> = emptySet(),
+    val excludedVideoNames: Set<String> = emptySet(),
     val addingDomesticFolderCids: Set<Long> = emptySet(),
     val addedDomesticFolderCids: Set<Long> = emptySet(),
     val hiddenMissavRequest: HiddenMissavWebRequest? = null,
     val pendingMissavScrape: PendingMissavScrape? = null,
     val pendingReplaceConflict: PendingReplaceConflict? = null,
     val openMovieId: Long? = null,
+    val scrollResetVersion: Int = 0,
     val errorMessage: String? = null,
     val message: String? = null
 )
@@ -491,9 +677,20 @@ data class CloudPathItem(
     val name: String
 )
 
+data class CloudScrollPosition(
+    val firstVisibleItemIndex: Int = 0,
+    val firstVisibleItemScrollOffset: Int = 0
+)
+
 private data class CloudAddResult(
     val pickcode: String,
     val message: String
+)
+
+private data class CloudDirectoryLoadResult(
+    val items: List<Cloud115FileItem>,
+    val addedPickcodes: Set<String>,
+    val addedDomesticFolderCids: Set<Long>
 )
 
 data class PendingMissavScrape(
@@ -503,9 +700,17 @@ data class PendingMissavScrape(
     val pickcode: String
 )
 
+private data class PendingCloudAdd(
+    val item: Cloud115FileItem,
+    val pickcode: String,
+    val forceDistinct: Boolean,
+    val alreadyMarkedAdding: Boolean
+)
+
 data class PendingReplaceConflict(
     val item: Cloud115FileItem,
     val oldPickcode: String,
     val oldFileName: String,
     val movieNumber: String
 )
+

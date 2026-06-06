@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.data.repository
+﻿package com.example.localmovielibrary.data.repository
 
 import android.content.Context
 import android.net.Uri
@@ -9,9 +9,15 @@ import com.example.localmovielibrary.data.local.DomesticMovieEntity
 import com.example.localmovielibrary.data.local.DomesticVideoSourceDao
 import com.example.localmovielibrary.data.local.DomesticVideoSourceEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -20,32 +26,55 @@ class DomesticMovieRepository(
     private val context: Context,
     private val dao: DomesticMovieDao,
     private val sourceDao: DomesticVideoSourceDao,
-    private val cloud115Client: Cloud115Client
+    private val cloud115Client: Cloud115Client,
+    private val settingsRepository: AppSettingsRepository
 ) {
-    fun observeAll(): Flow<List<DomesticMovieEntity>> = dao.observeAll()
+    private val imageSyncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncingImageFolderCids = mutableSetOf<Long>()
+    private val imageIndexMutex = Mutex()
+    private var imageIndexCache: DomesticImageIndexCache? = null
 
     fun observeAllWithSources(): Flow<List<DomesticMovieWithSources>> =
         combine(dao.observeAll(), sourceDao.observeAll()) { movies, sources ->
             val sourcesByFolder = sources.groupBy { it.folderCid }
-            movies.map { movie ->
+            val result = movies.map { movie ->
                 DomesticMovieWithSources(
                     movie = movie,
                     sources = sourcesByFolder[movie.folderCid].orEmpty()
                         .ifEmpty { movie.toFallbackSource() }
                 )
             }
-        }.onEach { movies ->
-            movies.forEach { item ->
-                ensureLocalImageIfNeeded(item.movie)
+            val missingImages = result
+                .map { it.movie }
+                .filter { movie -> !movie.imagePickcode.isNullOrBlank() && !movie.imageUrl.orEmpty().isUsableLocalImage() }
+                .filter { movie -> claimImageSync(movie.folderCid) }
+            if (missingImages.isNotEmpty()) {
+                imageSyncScope.launch {
+                    missingImages.forEach { movie ->
+                        try {
+                            ensureLocalImageIfNeeded(movie)
+                        } finally {
+                            releaseImageSync(movie.folderCid)
+                        }
+                    }
+                }
             }
+            result
         }
+            .flowOn(Dispatchers.Default)
+            .distinctUntilChanged()
 
-    suspend fun addedFolderCids(): Set<Long> = withContext(Dispatchers.IO) {
-        dao.getAddedFolderCids().toSet()
+    suspend fun addedFolderCidsForVisibleItems(items: List<Cloud115FileItem>): Set<Long> = withContext(Dispatchers.IO) {
+        val folderCids = items
+            .asSequence()
+            .filter { it.isDirectory }
+            .mapNotNull { it.cid }
+            .toSet()
+        if (folderCids.isEmpty()) emptySet() else dao.getAddedFolderCids(folderCids.toList()).toSet()
     }
 
     suspend fun addFolder(folder: Cloud115FileItem): DomesticMovieEntity = withContext(Dispatchers.IO) {
-        val folderCid = folder.cid ?: error("A目录项目不是文件夹")
+        val folderCid = folder.cid ?: error("A 目录项目不是文件夹")
         val existing = dao.getByFolderCid(folderCid)
 
         val children = cloud115Client.listFiles(folderCid)
@@ -94,10 +123,39 @@ class DomesticMovieRepository(
     }
 
     private suspend fun findMatchingImage(folderName: String): Cloud115FileItem? {
-        val images = cloud115Client.listFiles(A_DIRECTORY_CID)
-            .filter { !it.isDirectory && it.isImageFile() && !it.pickcode.isNullOrBlank() }
         val key = folderName.matchKey()
-        return images.firstOrNull { image -> image.name.substringBeforeLast('.', image.name).matchKey() == key }
+        if (key.isBlank()) return null
+        return loadDomesticImageIndex()[key]
+    }
+
+    private suspend fun loadDomesticImageIndex(): Map<String, Cloud115FileItem> {
+        val cached = synchronized(this) {
+            imageIndexCache?.takeIf { System.currentTimeMillis() - it.loadedAtMs <= IMAGE_INDEX_CACHE_TTL_MS }
+        }
+        if (cached != null) return cached.imagesByKey
+
+        return imageIndexMutex.withLock {
+            val cachedInsideLock = synchronized(this) {
+                imageIndexCache?.takeIf { System.currentTimeMillis() - it.loadedAtMs <= IMAGE_INDEX_CACHE_TTL_MS }
+            }
+            if (cachedInsideLock != null) return@withLock cachedInsideLock.imagesByKey
+
+            val domesticRootCid = settingsRepository.getDomesticRootCid()
+                ?: error("请先在设置页配置 A目录 CID")
+            val index = cloud115Client.listFiles(domesticRootCid)
+                .asSequence()
+                .filter { !it.isDirectory && it.isImageFile() && !it.pickcode.isNullOrBlank() }
+                .mapNotNull { image ->
+                    val key = image.name.substringBeforeLast('.', image.name).matchKey()
+                    key.takeIf { it.isNotBlank() }?.let { it to image }
+                }
+                .distinctBy { it.first }
+                .toMap()
+            synchronized(this) {
+                imageIndexCache = DomesticImageIndexCache(index, System.currentTimeMillis())
+            }
+            index
+        }
     }
 
     private suspend fun ensureLocalImageIfNeeded(movie: DomesticMovieEntity) {
@@ -107,6 +165,17 @@ class DomesticMovieRepository(
         runCatching {
             val localUri = downloadImageToLocalFile(movie.folderCid, pickcode, movie.imageName)
             dao.updateImageUrl(movie.folderCid, localUri, System.currentTimeMillis())
+        }
+    }
+
+    private fun claimImageSync(folderCid: Long): Boolean =
+        synchronized(syncingImageFolderCids) {
+            syncingImageFolderCids.add(folderCid)
+        }
+
+    private fun releaseImageSync(folderCid: Long) {
+        synchronized(syncingImageFolderCids) {
+            syncingImageFolderCids.remove(folderCid)
         }
     }
 
@@ -166,7 +235,7 @@ class DomesticMovieRepository(
         )
 
     companion object {
-        const val A_DIRECTORY_CID: Long = 3435367965829999146L
+        private const val IMAGE_INDEX_CACHE_TTL_MS = 5 * 60_000L
         private val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "wmv", "m4v", "ts", "iso", "flv", "webm")
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
     }
@@ -175,4 +244,9 @@ class DomesticMovieRepository(
 data class DomesticMovieWithSources(
     val movie: DomesticMovieEntity,
     val sources: List<DomesticVideoSourceEntity>
+)
+
+private data class DomesticImageIndexCache(
+    val imagesByKey: Map<String, Cloud115FileItem>,
+    val loadedAtMs: Long
 )

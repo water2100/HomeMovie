@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.data.local.MovieEntity
+import com.example.localmovielibrary.util.movieKeyFromText
 import java.util.Locale
 
 class LibraryScanner(private val context: Context) {
@@ -207,11 +208,7 @@ class LibraryScanner(private val context: Context) {
     private fun MovieEntity.movieNumberKey(): String? {
         val source = listOf(videoName, title, originalTitle.orEmpty(), uniqueIds.joinToString(" "))
             .joinToString(" ")
-        val match = Regex("""(?i)\b([a-z]{2,10})[-_ ]?(\d{2,6})\b""")
-            .findAll(source.substringBeforeLast('.', source))
-            .lastOrNull()
-            ?: return null
-        return "${match.groupValues[1].uppercase(Locale.ROOT)}-${match.groupValues[2]}"
+        return movieKeyFromText(source)
     }
 }
 

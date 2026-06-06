@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
+import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
@@ -28,7 +29,8 @@ import java.nio.ByteOrder
 import kotlin.math.max
 
 class SherpaOnnxSubtitleRecognizer(
-    private val context: Context
+    private val context: Context,
+    private val settingsRepository: AppSettingsRepository
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -40,11 +42,7 @@ class SherpaOnnxSubtitleRecognizer(
     private var processorJob: Job? = null
     private var playerPcmInput: PlayerPcmInput? = null
 
-    fun hasModelAssets(): Boolean =
-        runCatching {
-            val files = appContext.assets.list(MODEL_DIR)?.toSet().orEmpty()
-            files.contains(MODEL_FILE) && files.contains(TOKENS_FILE)
-        }.getOrDefault(false)
+    fun hasModelAssets(): Boolean = AsrModelManager(appContext, settingsRepository).currentStatus().isReady
 
     fun startFromMicrophone(
         onStatus: (String) -> Unit,
@@ -131,21 +129,23 @@ class SherpaOnnxSubtitleRecognizer(
 
     private fun ensureRecognizer(): OfflineRecognizer {
         recognizer?.let { return it }
+        val modelStatus = AsrModelManager(appContext, settingsRepository).currentStatus()
+        if (!modelStatus.isReady) error("缺少 sherpa-onnx SenseVoice 模型文件，请先到设置页下载")
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
             modelConfig = OfflineModelConfig(
                 senseVoice = OfflineSenseVoiceModelConfig(
-                    model = "$MODEL_DIR/$MODEL_FILE",
+                    model = modelStatus.modelFile.absolutePath,
                     language = "ja",
                     useInverseTextNormalization = true
                 ),
-                tokens = "$MODEL_DIR/$TOKENS_FILE",
+                tokens = modelStatus.tokensFile.absolutePath,
                 numThreads = 2,
                 debug = false,
                 provider = "cpu"
             )
         )
-        return OfflineRecognizer(appContext.assets, config).also { recognizer = it }
+        return OfflineRecognizer(config = config).also { recognizer = it }
     }
 
     private fun createMicrophoneAudioRecord(): AudioRecord {

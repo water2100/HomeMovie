@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.data.repository
+﻿package com.example.localmovielibrary.data.repository
 
 import android.content.ContentResolver
 import android.content.Context
@@ -9,18 +9,24 @@ import com.example.localmovielibrary.data.local.CloudStrmRecordDao
 import com.example.localmovielibrary.data.local.CloudStrmRecordEntity
 import com.example.localmovielibrary.data.local.MovieDao
 import com.example.localmovielibrary.data.local.MovieEntity
-import com.example.localmovielibrary.data.local.MovieLibraryMetadata
+import com.example.localmovielibrary.data.local.MovieListItem
+import com.example.localmovielibrary.data.local.MoviePlaybackKeyItem
 import kotlinx.coroutines.flow.map
 import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.scanner.LibraryScanner
 import com.example.localmovielibrary.scanner.NfoParser
-import com.example.localmovielibrary.util.MovieVariant
 import com.example.localmovielibrary.util.detectMovieVariant
 import com.example.localmovielibrary.util.extractMovieNumberInfo
+import com.example.localmovielibrary.util.containsMetadataValue
+import com.example.localmovielibrary.util.metadataKey
+import com.example.localmovielibrary.util.movieKeyFromText
+import com.example.localmovielibrary.util.movieVersionKeyFromText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.abs
 
 class MovieRepository(
     private val context: Context,
@@ -30,11 +36,118 @@ class MovieRepository(
     private val contentResolver: ContentResolver
 ) {
     fun observeMovies(): Flow<List<MovieEntity>> =
-        movieDao.observeMovieListItems().map { items -> items.map { it.toMovieEntity() } }
+        movieDao.observeMovieListInvalidation()
+            .map { loadMovieListItems(favoritesOnly = false) }
+            .distinctUntilChanged()
 
-    fun observeMovieLibraryMetadata(): Flow<List<MovieLibraryMetadata>> = movieDao.observeMovieLibraryMetadata()
+    fun observeFavoriteMovies(): Flow<List<MovieEntity>> =
+        movieDao.observeFavoriteMovieListInvalidation()
+            .map { loadMovieListItems(favoritesOnly = true) }
+            .distinctUntilChanged()
+
+    fun observeMoviePlaybackKeys(): Flow<List<MoviePlaybackKeyItem>> =
+        movieDao.observeMoviePlaybackKeyInvalidation()
+            .map { loadMoviePlaybackKeys() }
+            .distinctUntilChanged()
+
+    suspend fun getLibrarySummaries(): MovieLibrarySummaries = withContext(Dispatchers.IO) {
+        MovieLibrarySummaries(
+            collections = summarizeTexts(movieDao.getSeriesMetadataTexts().mapNotNull { it.value }),
+            actors = summarizeValues(movieDao.getActorMetadataLists().flatMap { it.items }),
+            tags = summarizeValues(movieDao.getTagMetadataLists().flatMap { it.items }),
+            genres = summarizeValues(movieDao.getGenreMetadataLists().flatMap { it.items }),
+            studios = summarizeValues(movieDao.getStudioMetadataLists().flatMap { it.items })
+        )
+    }
+
+    suspend fun getMoviesForActorAvatarUpdate(): List<MovieEntity> = withContext(Dispatchers.IO) {
+        movieDao.getMoviesForMetadataLookupLite()
+    }
+
+    private suspend fun loadMovieListItems(favoritesOnly: Boolean): List<MovieEntity> = withContext(Dispatchers.IO) {
+        val result = mutableListOf<MovieListItem>()
+        var offset = 0
+        while (true) {
+            val page = if (favoritesOnly) {
+                movieDao.getFavoriteMovieListItemsPage(MOVIE_LIST_PAGE_SIZE, offset)
+            } else {
+                movieDao.getMovieListItemsPage(MOVIE_LIST_PAGE_SIZE, offset)
+            }
+            if (page.isEmpty()) break
+            result += page
+            if (page.size < MOVIE_LIST_PAGE_SIZE) break
+            offset += MOVIE_LIST_PAGE_SIZE
+        }
+        result.map { it.toMovieEntity() }
+    }
+
+    private suspend fun loadMoviePlaybackKeys(): List<MoviePlaybackKeyItem> = withContext(Dispatchers.IO) {
+        val result = mutableListOf<MoviePlaybackKeyItem>()
+        var offset = 0
+        while (true) {
+            val page = movieDao.getMoviePlaybackKeyItemsPage(MOVIE_LIST_PAGE_SIZE, offset)
+            if (page.isEmpty()) break
+            result += page
+            if (page.size < MOVIE_LIST_PAGE_SIZE) break
+            offset += MOVIE_LIST_PAGE_SIZE
+        }
+        result
+    }
 
     fun observeMovie(id: Long): Flow<MovieEntity?> = movieDao.observeMovie(id)
+
+    suspend fun findSimilarMovies(current: MovieEntity, limit: Int = 12): List<MovieEntity> = withContext(Dispatchers.IO) {
+        val currentCode = current.similarCodeInfo()
+        val currentActors = current.actors.map { it.similarNormalized() }.filter { it.isNotBlank() }.toSet()
+        if (currentCode == null && currentActors.isEmpty()) return@withContext emptyList()
+
+        val candidates = similarCandidates(current, currentCode, currentActors)
+        candidates
+            .asSequence()
+            .filter { it.id != current.id }
+            .map { movie ->
+                val movieCode = movie.similarCodeInfo()
+                val sameActorScore = movie.actors.count { it.similarNormalized() in currentActors }
+                val samePrefix = currentCode != null && movieCode?.prefix == currentCode.prefix
+                val distance = if (currentCode != null && movieCode != null && samePrefix) {
+                    abs(movieCode.number - currentCode.number)
+                } else {
+                    Int.MAX_VALUE
+                }
+                val score = sameActorScore * 1000 + if (samePrefix) 250 else 0
+                movie to SimilarMovieRank(score = score, distance = distance)
+            }
+            .filter { (_, rank) -> rank.score > 0 }
+            .sortedWith(
+                compareByDescending<Pair<MovieEntity, SimilarMovieRank>> { it.second.score }
+                    .thenBy { it.second.distance }
+                    .thenBy { pair -> pair.first.sortTitle.ifBlank { pair.first.title }.lowercase(Locale.ROOT) }
+            )
+            .map { it.first }
+            .take(limit)
+            .toList()
+    }
+
+    private suspend fun similarCandidates(
+        current: MovieEntity,
+        currentCode: SimilarCodeInfo?,
+        currentActors: Set<String>
+    ): List<MovieEntity> {
+        val candidates = linkedMapOf<Long, MovieEntity>()
+        currentActors
+            .take(SIMILAR_ACTOR_PREFILTER_LIMIT)
+            .forEach { actor ->
+                movieDao.getSimilarCandidatesByActorLite("%${actor.escapeLikePattern()}%")
+                    .forEach { candidates[it.id] = it }
+            }
+        currentCode?.let { code ->
+            movieDao.getSimilarCandidatesByCodeLite("%${code.prefix.lowercase(Locale.ROOT)}%")
+                .forEach { candidates[it.id] = it }
+            movieDao.getSimilarCandidatesByCodeLite("%${code.prefix.uppercase(Locale.ROOT)}%")
+                .forEach { candidates[it.id] = it }
+        }
+        return candidates.values.toList()
+    }
 
     suspend fun searchMovies(query: String, scope: String): List<MovieEntity> = withContext(Dispatchers.IO) {
         val text = query.trim()
@@ -42,9 +155,9 @@ class MovieRepository(
         val pattern = "%${text.escapeLikePattern()}%"
         when (scope.lowercase(Locale.ROOT)) {
             "title" -> movieDao.searchMoviesByTitleLite(pattern)
-            "actor" -> movieDao.searchMoviesByActorLite(pattern)
-            "tag" -> movieDao.searchMoviesByTagLite(pattern)
-            "genre" -> movieDao.searchMoviesByGenreLite(pattern)
+            "actor" -> filterMetadataMovies(movieDao.getMoviesForActorLookupLite(pattern), text, exact = false) { it.actors }
+            "tag" -> filterMetadataMovies(movieDao.getMoviesForTagLookupLite(pattern), text, exact = false) { it.tags }
+            "genre" -> filterMetadataMovies(movieDao.getMoviesForGenreLookupLite(pattern), text, exact = false) { it.genres }
             else -> movieDao.searchMoviesLite(pattern)
         }
     }
@@ -54,14 +167,37 @@ class MovieRepository(
         if (text.isBlank()) return@withContext emptyList()
         val pattern = "%${text.escapeLikePattern()}%"
         when (type.lowercase(Locale.ROOT)) {
-            "actor" -> movieDao.searchMoviesByActorLite(pattern)
-            "tag" -> movieDao.searchMoviesByTagLite(pattern)
-            "genre" -> movieDao.searchMoviesByGenreLite(pattern)
+            "actor" -> filterMetadataMovies(movieDao.getMoviesForActorLookupLite(pattern), text, exact = true) { it.actors }
+            "tag" -> filterMetadataMovies(movieDao.getMoviesForTagLookupLite(pattern), text, exact = true) { it.tags }
+            "genre" -> filterMetadataMovies(movieDao.getMoviesForGenreLookupLite(pattern), text, exact = true) { it.genres }
             "year" -> movieDao.searchMoviesByYearLite(text)
-            "studio" -> movieDao.searchMoviesByStudioLite(pattern)
-            "collection" -> movieDao.searchMoviesByCollectionLite(pattern)
+            "studio" -> filterMetadataMovies(movieDao.getMoviesForStudioLookupLite(pattern), text, exact = true) { it.studios }
+            "collection" -> filterCollectionMovies(text, exact = true)
             else -> emptyList()
         }
+    }
+
+    private suspend fun filterMetadataMovies(
+        candidates: List<MovieEntity>,
+        value: String,
+        exact: Boolean,
+        values: (MovieEntity) -> List<String>
+    ): List<MovieEntity> {
+        return candidates
+            .filter { movie -> values(movie).containsMetadataValue(value, exact) }
+            .sortedBy { it.sortTitle.ifBlank { it.title }.lowercase(Locale.ROOT) }
+    }
+
+    private suspend fun filterCollectionMovies(value: String, exact: Boolean): List<MovieEntity> {
+        val query = value.metadataKey()
+        if (query.isBlank()) return emptyList()
+        val pattern = "%${value.escapeLikePattern()}%"
+        return movieDao.getMoviesForCollectionLookupLite(pattern)
+            .filter { movie ->
+                val candidate = movie.series.orEmpty().metadataKey()
+                candidate.isNotBlank() && if (exact) candidate == query else candidate.contains(query)
+            }
+            .sortedBy { it.sortTitle.ifBlank { it.title }.lowercase(Locale.ROOT) }
     }
 
     suspend fun scanLibrary(rootUri: Uri): Int {
@@ -74,30 +210,43 @@ class MovieRepository(
             val existingMovies = movieDao.getMoviesByLibraryRootLite(rootUri.toString())
             val existingByUri = existingMovies.associateBy { it.videoUri }
             val existingById = existingMovies.associateBy { it.id }
-            val cloudRecords = cloudStrmRecordDao.getAll()
+            val existingMovieIds = existingMovies.map { it.id }.filter { it > 0 }
+            val cloudRecords = (
+                cloudStrmRecordDao.getByLibraryRoot(rootUri.toString()) +
+                    existingMovieIds.takeIf { it.isNotEmpty() }?.let { cloudStrmRecordDao.getByMovieIds(it) }.orEmpty()
+                ).distinctBy { it.pickcode }
             val existingByPickcode = buildExistingMoviePickcodeMap(existingMovies, existingById, cloudRecords)
             val existingByNumber = existingMovies.mapNotNull { movie ->
                 movie.movieNumberKey()?.let { it to movie }
             }.toMap()
-            movieDao.deleteByLibraryRoot(rootUri.toString())
-            movieDao.upsertAll(
-                movies.map { scanned ->
-                    val pickcode = scanned.extractPickcodeFromStrm()
-                    val old = pickcode?.let { existingByPickcode[it] }
-                        ?: existingByUri[scanned.videoUri]
-                        ?: scanned.movieNumberKey()?.let { existingByNumber[it] }
-                    if (old == null) {
-                        scanned
-                    } else {
-                        scanned.copy(
-                            isFavorite = old.isFavorite,
-                            isWatched = old.isWatched,
-                            scannedAtMillis = old.scannedAtMillis,
-                            updatedAt = old.updatedAt
-                        )
-                    }
+            val matchedExistingIds = linkedSetOf<Long>()
+            val synchronizedMovies = movies.map { scanned ->
+                val pickcode = scanned.extractPickcodeFromStrm()
+                val old = pickcode?.let { existingByPickcode[it] }
+                    ?: existingByUri[scanned.videoUri]
+                    ?: scanned.movieNumberKey()?.let { existingByNumber[it] }
+                if (old == null) {
+                    scanned
+                } else {
+                    matchedExistingIds += old.id
+                    scanned.copy(
+                        id = old.id,
+                        isFavorite = old.isFavorite,
+                        isWatched = old.isWatched,
+                        scannedAtMillis = old.scannedAtMillis,
+                        updatedAt = old.updatedAt
+                    )
                 }
-            )
+            }
+            val removedIds = existingMovies
+                .asSequence()
+                .map { it.id }
+                .filter { it !in matchedExistingIds }
+                .toList()
+            movieDao.synchronizeLibraryMovies(removedIds, synchronizedMovies)
+            if (removedIds.isNotEmpty()) {
+                cloudStrmRecordDao.deleteByMovieIds(removedIds)
+            }
             updateCloudStrmRecordsAfterScan(movies, rootUri.toString(), cloudRecords)
             movies.size
         }
@@ -138,8 +287,8 @@ class MovieRepository(
             )
         }
         val root = DocumentFile.fromTreeUri(context, rootUri)
-            ?: error("Library root directory is unavailable")
-        if (!root.canWrite()) error("Library root directory is not writable")
+            ?: error("影片库目录不可用")
+        if (!root.canWrite()) error("影片库目录没有写入权限")
 
         var movedFolders = 0
         root.listFiles()
@@ -174,13 +323,14 @@ class MovieRepository(
     }
 
     suspend fun deleteMovieWithFiles(movieId: Long): DeleteMovieResult = withContext(Dispatchers.IO) {
-        val movie = movieDao.getMovie(movieId)
+        val movie = movieDao.getMovieLite(movieId)
         val pickcodes = linkedSetOf<String>()
         if (movie != null && movie.videoName.endsWith(".strm", ignoreCase = true)) {
             val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
             val target = root?.let {
                 findFileWithParentFast(it, movie.libraryRootUri, movie.videoUri)
                     ?: findFileWithParent(it, movie.videoUri)
+                    ?: findStrmWithParentByMovieNumber(it, movie)
             }
             if (target != null) {
                 val movieDirectory = target.parent.takeIf { it.uri != root.uri }
@@ -208,8 +358,12 @@ class MovieRepository(
     }
 
     suspend fun refreshMovie(movieId: Long): Boolean = withContext(Dispatchers.IO) {
-        val old = movieDao.getMovie(movieId) ?: return@withContext false
-        val refreshed = scanner.scanFile(Uri.parse(old.libraryRootUri), Uri.parse(old.videoUri))
+        val old = movieDao.getMovieLite(movieId) ?: return@withContext false
+        val rootUri = Uri.parse(old.libraryRootUri)
+        val refreshed = scanner.scanFile(rootUri, Uri.parse(old.videoUri))
+            ?: findMovedMovieStrmUri(old)?.let { movedUri ->
+                scanner.scanFile(rootUri, movedUri)
+            }
             ?: return@withContext false
 
         movieDao.upsert(
@@ -223,15 +377,36 @@ class MovieRepository(
         true
     }
 
+    suspend fun refreshMovieRecoveringMovedStrm(movieId: Long): MovieEntity? = withContext(Dispatchers.IO) {
+        val old = movieDao.getMovieLite(movieId) ?: return@withContext null
+        val rootUri = Uri.parse(old.libraryRootUri)
+        val refreshed = scanner.scanFile(rootUri, Uri.parse(old.videoUri))
+            ?: findMovedMovieStrmUri(old)?.let { movedUri ->
+                scanner.scanFile(rootUri, movedUri)
+            }
+            ?: return@withContext null
+
+        val movie = refreshed.copy(
+            id = old.id,
+            isFavorite = old.isFavorite,
+            isWatched = old.isWatched,
+            scannedAtMillis = old.scannedAtMillis,
+            updatedAt = System.currentTimeMillis()
+        )
+        movieDao.upsert(movie)
+        movie
+    }
+
     suspend fun scanSingleMovie(rootUri: Uri, videoUri: Uri, mergeByMovieNumber: Boolean = true): MovieEntity? = withContext(Dispatchers.IO) {
         val scanned = scanner.scanFile(rootUri, videoUri) ?: return@withContext null
         val pickcode = scanned.extractPickcodeFromStrm()
         val old = pickcode?.let { pick ->
-            cloudStrmRecordDao.get(pick)?.movieId?.let { movieDao.getMovie(it) }
+            cloudStrmRecordDao.get(pick)?.movieId?.let { movieDao.getMovieLite(it) }
         }
-            ?: movieDao.getMovieByVideoUri(scanned.videoUri)
+            ?: movieDao.getMovieByVideoUriLite(scanned.videoUri)
             ?: scanned.movieNumberKey()?.takeIf { mergeByMovieNumber }?.let { key ->
-                movieDao.getMoviesByLibraryRootLite(rootUri.toString()).firstOrNull { it.movieNumberKey() == key }
+                movieDao.getMovieNumberCandidatesByLibraryRootLite(rootUri.toString(), key.movieNumberCandidateLikePattern())
+                    .firstOrNull { it.movieNumberKey() == key }
             }
         val movie = old?.let {
             scanned.copy(
@@ -243,7 +418,7 @@ class MovieRepository(
             )
         } ?: scanned
         movieDao.upsert(movie)
-        val saved = movieDao.getMovieByVideoUri(movie.videoUri) ?: movie
+        val saved = movieDao.getMovieByVideoUriLite(movie.videoUri) ?: movie
         if (pickcode != null) {
             updateCloudStrmRecordLocation(pickcode, saved, rootUri.toString())
         }
@@ -252,19 +427,22 @@ class MovieRepository(
 
     suspend fun findMovieByNumber(rootUri: String, number: String): MovieEntity? = withContext(Dispatchers.IO) {
         val normalized = number.movieNumberKeyFromText() ?: number.uppercase(Locale.ROOT)
-        movieDao.getMoviesByLibraryRootLite(rootUri)
+        movieDao.getMovieNumberCandidatesByLibraryRootLite(rootUri, normalized.movieNumberCandidateLikePattern())
             .firstOrNull { it.movieNumberKey() == normalized }
     }
 
     suspend fun findMovieByNumberAndVariant(rootUri: String, number: String, sourceText: String): MovieEntity? = withContext(Dispatchers.IO) {
         val normalized = number.movieNumberKeyFromText() ?: number.uppercase(Locale.ROOT)
         val expectedKey = normalized + detectMovieVariant(sourceText).suffix
-        movieDao.getMoviesByLibraryRootLite(rootUri)
+        movieDao.getMovieNumberCandidatesByLibraryRootLite(rootUri, expectedKey.movieNumberCandidateLikePattern())
             .firstOrNull { movie -> movie.movieNumberKey() == expectedKey }
     }
 
     suspend fun getPlaybackParts(movieId: Long): List<MoviePlaybackPart> = withContext(Dispatchers.IO) {
-        val movie = movieDao.getMovie(movieId) ?: return@withContext emptyList()
+        val movie = movieDao.getMovieLite(movieId) ?: return@withContext emptyList()
+        val indexedParts = getIndexedPlaybackParts(movie)
+        if (indexedParts.isNotEmpty()) return@withContext indexedParts
+
         val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri)) ?: return@withContext movie.singlePart()
         val target = findFileWithParentFast(root, movie.libraryRootUri, movie.videoUri)
             ?: findFileWithParent(root, movie.videoUri)
@@ -285,6 +463,33 @@ class MovieRepository(
             .distinctBy { it.videoUri }
             .sortedWith(compareBy<MoviePlaybackPart> { it.label.playbackPartUiSortKey() }.thenBy { it.fileName.lowercase() })
         parts.ifEmpty { movie.singlePart() }
+    }
+
+    private suspend fun getIndexedPlaybackParts(movie: MovieEntity): List<MoviePlaybackPart> {
+        val number = extractMovieNumberInfo(movie.videoName)?.number
+            ?: extractMovieNumberInfo(movie.title)?.number
+            ?: movie.videoName.movieNumberKeyFromText()
+            ?: movie.title.movieNumberKeyFromText()
+        val records = if (number != null) {
+            cloudStrmRecordDao.getPlaybackRecords(movie.id, number, movie.libraryRootUri, movie.videoUri)
+        } else {
+            cloudStrmRecordDao.getByMovieId(movie.id)
+        }
+
+        return records
+            .asSequence()
+            .filter { it.strmUri.isNotBlank() }
+            .distinctBy { it.playbackRecordKey() }
+            .map { record ->
+                MoviePlaybackPart(
+                    label = record.fileName.playbackPartUiLabel(),
+                    videoUri = record.strmUri,
+                    fileName = record.fileName
+                )
+            }
+            .distinctBy { it.videoUri }
+            .sortedWith(compareBy<MoviePlaybackPart> { it.label.playbackPartUiSortKey() }.thenBy { it.fileName.lowercase(Locale.ROOT) })
+            .toList()
     }
 
     private fun findFileWithParent(directory: DocumentFile, videoUri: String): FileWithParent? {
@@ -316,6 +521,36 @@ class MovieRepository(
         } ?: return null
         val file = parent.findFile(fileName)?.takeIf { it.isFile } ?: return null
         return FileWithParent(parent = parent, file = file)
+    }
+
+    private fun findMovedMovieStrmUri(movie: MovieEntity): Uri? {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri)) ?: return null
+        return findStrmWithParentByMovieNumber(root, movie)?.file?.uri
+    }
+
+    private fun findStrmWithParentByMovieNumber(root: DocumentFile, movie: MovieEntity): FileWithParent? {
+        val number = extractMovieNumberInfo(movie.videoName)?.number
+            ?: extractMovieNumberInfo(movie.title)?.number
+            ?: movie.videoName.movieNumberKeyFromText()
+            ?: movie.title.movieNumberKeyFromText()
+            ?: return null
+        val expectedVariant = detectMovieVariant(movie.videoName)
+        fun walk(directory: DocumentFile): FileWithParent? {
+            directory.listFiles().forEach { child ->
+                if (child.isDirectory) {
+                    walk(child)?.let { return it }
+                } else if (
+                    child.isFile &&
+                    child.name.orEmpty().endsWith(".strm", ignoreCase = true) &&
+                    child.name.orEmpty().contains(number, ignoreCase = true) &&
+                    detectMovieVariant(child.name.orEmpty()) == expectedVariant
+                ) {
+                    return FileWithParent(directory, child)
+                }
+            }
+            return null
+        }
+        return walk(root)
     }
 
     private fun readPickcode(file: DocumentFile): String? {
@@ -366,7 +601,7 @@ class MovieRepository(
         val existingByPickcode = existingRecords.associateBy { it.pickcode }
         scannedMovies.forEach { scanned ->
             val pickcode = scanned.extractPickcodeFromStrm() ?: return@forEach
-            val saved = movieDao.getMovieByVideoUri(scanned.videoUri) ?: return@forEach
+            val saved = movieDao.getMovieByVideoUriLite(scanned.videoUri) ?: return@forEach
             val existing = existingByPickcode[pickcode]
             if (existing == null) {
                 val info = extractMovieNumberInfo(saved.videoName) ?: extractMovieNumberInfo(saved.title)
@@ -526,6 +761,19 @@ class MovieRepository(
     }
 }
 
+data class MovieLibrarySummaries(
+    val collections: List<MovieMetadataSummary> = emptyList(),
+    val actors: List<MovieMetadataSummary> = emptyList(),
+    val tags: List<MovieMetadataSummary> = emptyList(),
+    val genres: List<MovieMetadataSummary> = emptyList(),
+    val studios: List<MovieMetadataSummary> = emptyList()
+)
+
+data class MovieMetadataSummary(
+    val value: String,
+    val count: Int
+)
+
 data class MoviePlaybackPart(
     val label: String,
     val videoUri: String,
@@ -545,6 +793,9 @@ private data class FileWithParent(
 private fun MovieEntity.singlePart(): List<MoviePlaybackPart> =
     listOf(MoviePlaybackPart(label = videoName.playbackPartUiLabel(), videoUri = videoUri, fileName = videoName))
 
+private fun CloudStrmRecordEntity.playbackRecordKey(): String =
+    pickcode.ifBlank { strmUri.ifBlank { fileName } }
+
 data class LibraryReorganizeResult(
     val rootCount: Int,
     val movieCount: Int,
@@ -555,22 +806,61 @@ data class LibraryReorganizeResult(
         get() = failedRoots.isNotEmpty()
 }
 
+private data class SimilarMovieRank(val score: Int, val distance: Int)
+
+private data class SimilarCodeInfo(val prefix: String, val number: Int)
+
+private const val SIMILAR_ACTOR_PREFILTER_LIMIT = 4
+private const val MOVIE_LIST_PAGE_SIZE = 80
+
+private fun MovieEntity.similarCodeInfo(): SimilarCodeInfo? {
+    val source = listOf(title, originalTitle.orEmpty(), videoName).joinToString(" ")
+    val match = Regex("""(?i)\b([a-z]{2,10})[-_ ]?(\d{2,6})\b""").find(source) ?: return null
+    return SimilarCodeInfo(
+        prefix = match.groupValues[1].uppercase(Locale.ROOT),
+        number = match.groupValues[2].toIntOrNull() ?: return null
+    )
+}
+
+private fun String.similarNormalized(): String = trim().lowercase(Locale.ROOT)
+
 private fun MovieEntity.movieNumberKey(): String? {
     val source = listOf(videoName, title, originalTitle.orEmpty(), uniqueIds.joinToString(" "))
         .joinToString(" ")
-    val number = source.movieNumberKeyFromText() ?: return null
-    return number + detectMovieVariant(source).suffix
+    return movieVersionKeyFromText(source)
 }
 
 private fun String.movieNumberKeyFromText(): String? {
-    val match = Regex("""(?i)\b([a-z]{2,10})[-_ ]?(\d{2,6})\b""").findAll(this.substringBeforeLast('.', this)).lastOrNull() ?: return null
-    return "${match.groupValues[1].uppercase(Locale.ROOT)}-${match.groupValues[2]}"
+    return movieKeyFromText(this)
 }
 
 private fun String.escapeLikePattern(): String =
     replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace("_", "\\_")
+
+private fun String.movieNumberCandidateLikePattern(): String {
+    val info = extractMovieNumberInfo(this)
+    if (info != null) {
+        val (prefix, digits) = info.number.split("-", limit = 2)
+        return "%${prefix.escapeLikePattern()}%${digits.escapeLikePattern()}%"
+    }
+    return "%${escapeLikePattern()}%"
+}
+
+private fun summarizeValues(values: List<String>): List<MovieMetadataSummary> =
+    values.map { it.trim().replace(Regex("""\s+"""), " ") }
+        .filter { it.isNotBlank() }
+        .groupBy { it.metadataKey() }
+        .map { (_, grouped) -> MovieMetadataSummary(grouped.first(), grouped.size) }
+        .sortedWith(compareByDescending<MovieMetadataSummary> { it.count }.thenBy { it.value.lowercase(Locale.ROOT) })
+
+private fun summarizeTexts(values: List<String>): List<MovieMetadataSummary> =
+    values.map { it.trim().replace(Regex("""\s+"""), " ") }
+        .filter { it.isNotBlank() }
+        .groupBy { it.metadataKey() }
+        .map { (_, grouped) -> MovieMetadataSummary(grouped.first(), grouped.size) }
+        .sortedWith(compareByDescending<MovieMetadataSummary> { it.count }.thenBy { it.value.lowercase(Locale.ROOT) })
 
 private fun String.extractBracketActorName(): String? {
     val match = Regex("""^[\u3010\[]([^\u3011\]]+)[\u3011\]]""").find(this) ?: return null
@@ -614,13 +904,13 @@ private fun String.segmentPartLabel(): String? {
 }
 
 private fun String.playbackPartLabel(): String {
-    if (detectMovieVariant(this) == MovieVariant.FourK) return "4K"
-    return segmentPartLabel() ?: "正片"
+    detectMovieVariant(this).displayName.takeIf { it.isNotBlank() }?.let { return it }
+    return segmentPartLabel() ?: "姝ｇ墖"
 }
 
 private fun String.playbackPartSortKey(): Int =
     when {
-        this == "正片" -> 0
+        this == "姝ｇ墖" -> 0
         this == "4K" -> 50
         length == 1 && first() in 'A'..'Z' -> 10 + first().code - 'A'.code
         matches(Regex("""P\d{1,2}""")) -> 100 + (drop(1).toIntOrNull() ?: 99)
@@ -630,29 +920,29 @@ private fun String.playbackPartSortKey(): Int =
 private fun String.playbackPartDisplayLabel(): String {
     val part = segmentPartLabel()
     val variant = detectMovieVariant(this)
-        .suffix
-        .removePrefix("-")
+        .displayName
         .takeIf { it.isNotBlank() }
     return when {
         part != null && variant != null -> "$part $variant"
         part != null -> part
         variant != null -> variant
-        else -> "姝ｇ墖"
+        else -> "默认"
     }
 }
 
 private fun String.playbackPartDisplaySortKey(): Int {
     val partToken = substringBefore(' ')
     val partScore = when {
-        this == "姝ｇ墖" -> 0
-        partToken == "4K" || partToken == "8K" -> 0
+        this == "默认" -> 0
+        partToken == "4K" || partToken == "8K" || partToken == "60FPS" || partToken == "4K60FPS" || partToken == "8K60FPS" -> 0
         partToken.length == 1 && partToken.first() in 'A'..'Z' -> 10 + partToken.first().code - 'A'.code
         partToken.matches(Regex("""P\d{1,2}""")) -> 100 + (partToken.drop(1).toIntOrNull() ?: 99)
         else -> 9_000
     }
     val variantScore = when {
-        contains("8K") -> 2
-        contains("4K") -> 1
+        contains("8K") -> 3
+        contains("4K") -> 2
+        contains("60FPS") -> 1
         else -> 0
     }
     return partScore * 10 + variantScore
@@ -661,8 +951,7 @@ private fun String.playbackPartDisplaySortKey(): Int {
 private fun String.playbackPartUiLabel(): String {
     val part = segmentPartLabel()
     val variant = detectMovieVariant(this)
-        .suffix
-        .removePrefix("-")
+        .displayName
         .takeIf { it.isNotBlank() }
     return when {
         part != null && variant != null -> "$part $variant"
@@ -676,14 +965,15 @@ private fun String.playbackPartUiSortKey(): Int {
     val partToken = substringBefore(' ')
     val partScore = when {
         this == "\u6B63\u7247" -> 0
-        partToken == "4K" || partToken == "8K" -> 0
+        partToken == "4K" || partToken == "8K" || partToken == "60FPS" || partToken == "4K60FPS" || partToken == "8K60FPS" -> 0
         partToken.length == 1 && partToken.first() in 'A'..'Z' -> 10 + partToken.first().code - 'A'.code
         partToken.matches(Regex("""P\d{1,2}""")) -> 100 + (partToken.drop(1).toIntOrNull() ?: 99)
         else -> 9_000
     }
     val variantScore = when {
-        contains("8K") -> 2
-        contains("4K") -> 1
+        contains("8K") -> 3
+        contains("4K") -> 2
+        contains("60FPS") -> 1
         else -> 0
     }
     return partScore * 10 + variantScore

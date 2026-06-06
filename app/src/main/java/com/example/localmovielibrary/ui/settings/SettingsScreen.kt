@@ -1,14 +1,15 @@
 ﻿package com.example.localmovielibrary.ui.settings
 
-import android.app.Activity
-import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Article
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteSweep
@@ -30,35 +32,65 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.example.localmovielibrary.cloud115.Cloud115LoginApp
+import com.example.localmovielibrary.cloud115.Cloud115LoginApps
+import com.example.localmovielibrary.cloud115.SavedCloud115Account
+import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.translate.DeepSeekPromptTemplate
+import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
+import com.example.localmovielibrary.translate.TranslateProvider
+import com.example.localmovielibrary.ui.shared.MovieImageCacheStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val SettingsBackground = Color(0xFF070A0E)
+
+private enum class SettingsPage {
+    Directory,
+    Cloud,
+    Scrape,
+    Translate
+}
 
 @Composable
 fun SettingsScreen(
@@ -68,14 +100,46 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val strmDirectoryPicker = rememberTreePicker { uri -> viewModel.saveStrmDirectory(uri) }
     val libraryDirectoryPicker = rememberTreePicker { uri -> viewModel.scanLibrary(uri) }
+    var currentPage by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
     var showStrmBaseUrlDialog by remember { mutableStateOf(false) }
+    var showImageCacheDialog by remember { mutableStateOf(false) }
+    var showTranslateDialog by remember { mutableStateOf(false) }
+    var imageCacheSizeText by remember { mutableStateOf("计算中...") }
+
+    BackHandler(enabled = currentPage != null) {
+        currentPage = null
+    }
+
+    fun refreshImageCacheSize() {
+        scope.launch {
+            val sizeBytes = withContext(Dispatchers.IO) {
+                MovieImageCacheStore.diskCacheSizeBytes(context)
+            }
+            imageCacheSizeText = formatCacheSize(sizeBytes)
+        }
+    }
 
     LaunchedEffect(uiState.savedMessage) {
         uiState.savedMessage?.let {
-            snackbarHostState.showSnackbar(it)
+            val snackbarJob = launch { snackbarHostState.showSnackbar(it) }
+            delay(1_600)
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarJob.cancel()
             viewModel.clearMessage()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshImageCacheSize()
+    }
+
+    LaunchedEffect(currentPage) {
+        if (currentPage == SettingsPage.Cloud) {
+            viewModel.refreshSavedCloud115Accounts()
         }
     }
 
@@ -85,7 +149,10 @@ fun SettingsScreen(
             .background(SettingsBackground)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            SettingsTopBar()
+            SettingsTopBar(
+                title = currentPage?.titleText() ?: "设置",
+                onBack = currentPage?.let { { currentPage = null } }
+            )
 
             Column(
                 modifier = Modifier
@@ -94,187 +161,72 @@ fun SettingsScreen(
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
-                SettingsSectionTitle("影片库目录")
-                DirectorySummary(
-                    title = uiState.libraryRootDisplayName,
-                    selected = uiState.libraryRootUri != null,
-                    emptyText = "尚未选择影片库目录"
-                )
-                Button(
-                    onClick = { libraryDirectoryPicker.launch(treeIntent()) },
-                    enabled = !uiState.isScanning && !uiState.isReorganizing && !uiState.isScraping,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    if (uiState.isScanning) {
-                        CircularProgressIndicator(strokeWidth = 2.dp, color = Color.Black)
-                    } else {
-                        Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+                when (currentPage) {
+                    null -> SettingsOverviewPage(
+                        uiState = uiState,
+                        imageCacheSizeText = imageCacheSizeText,
+                        onOpenPage = { currentPage = it },
+                        onOpenLogs = onOpenScrapeLogs,
+                        onSave = viewModel::save
+                    )
+
+                    SettingsPage.Directory -> DirectorySettingsPage(
+                        uiState = uiState,
+                        onPickLibrary = { libraryDirectoryPicker.launch(null) },
+                        onPickStrmDirectory = { strmDirectoryPicker.launch(null) },
+                        onNoMediaEnabledChange = viewModel::updateLibraryNoMediaEnabled,
+                        onReorganize = viewModel::reorganizeExistingLibraries,
+                        onRebuildIndex = viewModel::rebuildCloudStrmIndex
+                    )
+
+                    SettingsPage.Cloud -> CloudSettingsPage(
+                        uiState = uiState,
+                        onCloud115AppSelected = viewModel::selectCloud115LoginApp,
+                        onSavedCloud115AccountSelected = viewModel::applySavedCloud115Account,
+                        onSavedCloud115AccountDelete = viewModel::deleteSavedCloud115Account,
+                        onRefreshSavedCloud115Accounts = viewModel::refreshSavedCloud115Accounts,
+                        onDomesticRootCidChange = viewModel::updateDomesticRootCid,
+                        onStartCloud115QrLogin = viewModel::startCloud115QrLogin,
+                        onCancelCloud115QrLogin = viewModel::cancelCloud115QrLogin,
+                        onOpenStrmBaseUrlDialog = { showStrmBaseUrlDialog = true },
+                        onOpenMissavWeb = onOpenMissavWeb,
+                        onCloudAddButtonMessageEnabledChange = viewModel::updateCloudAddButtonMessageEnabled,
+                        onExcludedVideoNameDraftChange = viewModel::updateNewExcludedVideoName,
+                        onAddExcludedVideoName = viewModel::addExcludedVideoName,
+                        onRemoveExcludedVideoName = viewModel::removeExcludedVideoName
+                    )
+
+                    SettingsPage.Scrape -> ScrapeSettingsPage(
+                        uiState = uiState,
+                        imageCacheSizeText = imageCacheSizeText,
+                        onSourceSelected = viewModel::updateDefaultScrapeSource,
+                        onRetryCountChange = viewModel::updateImageDownloadRetryCount,
+                        onConcurrencyLimitChange = viewModel::updateScrapeConcurrencyLimit,
+                        onRefreshCacheSize = ::refreshImageCacheSize,
+                        onClearImageCache = { showImageCacheDialog = true },
+                        onOpenLogs = onOpenScrapeLogs,
+                        onClearLogs = viewModel::clearScrapeLog
+                    )
+
+                    SettingsPage.Translate -> TranslateSettingsSummaryPage(
+                        uiState = uiState,
+                        onProviderSelected = viewModel::updateTranslateProvider,
+                        onAsrModelSelected = viewModel::updateAsrModel,
+                        onAsrModelBaseUrlChange = viewModel::updateAsrModelBaseUrl,
+                        onDownloadAsrModel = viewModel::downloadAsrModel,
+                        onOpenTranslateDialog = { showTranslateDialog = true }
+                    )
+                }
+                if (currentPage != null) {
+                    Button(
+                        onClick = viewModel::save,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !uiState.isScraping,
+                        shape = RoundedCornerShape(22.dp)
+                    ) {
+                        Icon(Icons.Rounded.Save, contentDescription = null)
+                        Text("保存设置", modifier = Modifier.padding(start = 8.dp))
                     }
-                    Text(
-                        text = if (uiState.isScanning) "扫描中..." else "选择并扫描影片库",
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                }
-
-                OutlinedButton(
-                    onClick = viewModel::reorganizeExistingLibraries,
-                    enabled = !uiState.isScanning && !uiState.isReorganizing && !uiState.isScraping,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    if (uiState.isReorganizing) {
-                        CircularProgressIndicator(strokeWidth = 2.dp, color = Color.White)
-                    } else {
-                        Icon(Icons.Rounded.Article, contentDescription = null)
-                    }
-                    Text(
-                        text = if (uiState.isReorganizing) "正在重新整理..." else "重新整理当前影片库",
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                }
-                Text(
-                    text = "按演员目录整理当前影片库，并重新扫描当前影片库。不会处理历史影片库目录。",
-                    color = Color.White.copy(alpha = 0.56f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-
-                SettingsSectionTitle("STRM 保存位置")
-                DirectorySummary(
-                    title = uiState.strmTreeDisplayName,
-                    selected = uiState.strmTreeUri != null,
-                    emptyText = "尚未选择 STRM 保存目录"
-                )
-                Button(
-                    onClick = { strmDirectoryPicker.launch(treeIntent()) },
-                    enabled = !uiState.isScraping,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Icon(Icons.Rounded.FolderOpen, contentDescription = null)
-                    Text("选择 STRM 保存目录", modifier = Modifier.padding(start = 8.dp))
-                }
-                OutlinedButton(
-                    onClick = viewModel::rebuildCloudStrmIndex,
-                    enabled = !uiState.isScraping && !uiState.isRebuildingStrmIndex,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    if (uiState.isRebuildingStrmIndex) {
-                        CircularProgressIndicator(strokeWidth = 2.dp, color = Color.White)
-                    } else {
-                        Icon(Icons.Rounded.Article, contentDescription = null)
-                    }
-                    Text(
-                        text = if (uiState.isRebuildingStrmIndex) "正在重建索引..." else "重建 STRM 索引并规范分段命名",
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                }
-
-                SettingsSectionTitle("STRM 入口地址")
-                OutlinedButton(
-                    onClick = { showStrmBaseUrlDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    Text(
-                        text = "点击设置 STRM 入口地址",
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "已隐藏",
-                        color = Color.White.copy(alpha = 0.58f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                SettingsSectionTitle("A目录")
-                DirectorySummary(
-                    title = "A目录：${DomesticMovieRepository.A_DIRECTORY_CID}",
-                    selected = true,
-                    emptyText = ""
-                )
-
-                SettingsSectionTitle("默认刮削")
-                DefaultScrapeSourceRow(
-                    selected = uiState.defaultScrapeSource,
-                    onSelected = viewModel::updateDefaultScrapeSource
-                )
-
-                SettingsSectionTitle("图片下载")
-                OutlinedTextField(
-                    value = uiState.imageDownloadRetryCountText,
-                    onValueChange = viewModel::updateImageDownloadRetryCount,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("图片下载重试次数") },
-                    supportingText = { Text("建议 3 到 6 次。DMM 图片地址优先请求。") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    colors = settingsTextFieldColors()
-                )
-
-                SettingsSectionTitle("百度翻译")
-                Text(
-                    text = "用于后续实时字幕：ASR 识别出的文本会发送到百度翻译，音频不会发送给百度翻译接口。",
-                    color = Color.White.copy(alpha = 0.62f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-                OutlinedTextField(
-                    value = uiState.baiduTranslateAppId,
-                    onValueChange = viewModel::updateBaiduTranslateAppId,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("百度翻译 APP ID") },
-                    colors = settingsTextFieldColors()
-                )
-                OutlinedTextField(
-                    value = uiState.baiduTranslateSecretKey,
-                    onValueChange = viewModel::updateBaiduTranslateSecretKey,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("百度翻译密钥") },
-                    colors = settingsTextFieldColors()
-                )
-
-                SettingsSectionTitle("刮削日志")
-                Text(
-                    text = "未刮削 STRM 可以在影片详情页的“更多”中手动刮削；网盘添加影片时会使用默认刮削来源。",
-                    color = Color.White.copy(alpha = 0.62f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-                ScrapeLogPanel(
-                    log = uiState.scrapeLog,
-                    onClear = viewModel::clearScrapeLog,
-                    onOpenLogs = onOpenScrapeLogs
-                )
-
-                SettingsSectionTitle("115 Cookie")
-                OutlinedTextField(
-                    value = uiState.cookies,
-                    onValueChange = viewModel::updateCookies,
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 5,
-                    maxLines = 8,
-                    shape = RoundedCornerShape(18.dp),
-                    placeholder = { Text("不填写时会使用 App 内置的 115-cookies.txt") },
-                    colors = settingsTextFieldColors()
-                )
-
-                SettingsSectionTitle("MissAV Cookie")
-                MissavCookieStatusCard(
-                    hasCookie = uiState.hasMissavCookie,
-                    onOpenMissavWeb = onOpenMissavWeb
-                )
-
-                Button(
-                    onClick = viewModel::save,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !uiState.isScraping,
-                    shape = RoundedCornerShape(22.dp)
-                ) {
-                    Icon(Icons.Rounded.Save, contentDescription = null)
-                    Text("保存设置", modifier = Modifier.padding(start = 8.dp))
                 }
             }
         }
@@ -282,8 +234,8 @@ fun SettingsScreen(
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(16.dp)
+                .align(Alignment.TopCenter)
+                .padding(top = 72.dp, start = 16.dp, end = 16.dp)
         )
 
         if (showStrmBaseUrlDialog) {
@@ -292,6 +244,973 @@ fun SettingsScreen(
                 onValueChange = viewModel::updateBaseUrl,
                 onDismiss = { showStrmBaseUrlDialog = false }
             )
+        }
+        if (showImageCacheDialog) {
+            ClearImageCacheDialog(
+                sizeText = imageCacheSizeText,
+                onDismiss = { showImageCacheDialog = false },
+                onConfirm = {
+                    showImageCacheDialog = false
+                    scope.launch {
+                        val clearedBytes = withContext(Dispatchers.IO) {
+                            MovieImageCacheStore.clear(context)
+                        }
+                        imageCacheSizeText = formatCacheSize(0L)
+                        val snackbarJob = launch {
+                            snackbarHostState.showSnackbar("已清理图片缓存：${formatCacheSize(clearedBytes)}")
+                        }
+                        delay(1_600)
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarJob.cancel()
+                    }
+                }
+            )
+        }
+        if (showTranslateDialog) {
+            TranslateSettingsDialog(
+                provider = uiState.translateProvider,
+                baiduAppId = uiState.baiduTranslateAppId,
+                baiduSecretKey = uiState.baiduTranslateSecretKey,
+                deepSeekApiKey = uiState.deepSeekApiKey,
+                deepSeekBaseUrl = uiState.deepSeekBaseUrl,
+                deepSeekModel = uiState.deepSeekModel,
+                deepSeekThinkingEnabled = uiState.deepSeekThinkingEnabled,
+                deepSeekPromptEnabled = uiState.deepSeekPromptEnabled,
+                deepSeekPromptOptions = uiState.deepSeekPromptOptions,
+                deepSeekPromptTemplateId = uiState.deepSeekPromptTemplateId,
+                deepSeekCustomPrompt = uiState.deepSeekCustomPrompt,
+                onBaiduAppIdChange = viewModel::updateBaiduTranslateAppId,
+                onBaiduSecretKeyChange = viewModel::updateBaiduTranslateSecretKey,
+                onDeepSeekApiKeyChange = viewModel::updateDeepSeekApiKey,
+                onDeepSeekBaseUrlChange = viewModel::updateDeepSeekBaseUrl,
+                onDeepSeekModelChange = viewModel::updateDeepSeekModel,
+                onDeepSeekThinkingChange = viewModel::updateDeepSeekThinkingEnabled,
+                onDeepSeekPromptEnabledChange = viewModel::updateDeepSeekPromptEnabled,
+                onDeepSeekPromptTemplateChange = viewModel::updateDeepSeekPromptTemplate,
+                onDeepSeekCustomPromptChange = viewModel::updateDeepSeekCustomPrompt,
+                onDismiss = { showTranslateDialog = false },
+                onSave = {
+                    viewModel.saveBaiduTranslateSettings()
+                    showTranslateDialog = false
+                }
+            )
+        }
+    }
+}
+
+private fun SettingsPage.titleText(): String = when (this) {
+    SettingsPage.Directory -> "目录设置"
+    SettingsPage.Cloud -> "网盘设置"
+    SettingsPage.Scrape -> "刮削设置"
+    SettingsPage.Translate -> "实时字幕翻译"
+}
+
+@Composable
+private fun SettingsOverviewPage(
+    uiState: SettingsUiState,
+    imageCacheSizeText: String,
+    onOpenPage: (SettingsPage) -> Unit,
+    onOpenLogs: () -> Unit,
+    onSave: () -> Unit
+) {
+    SettingsGroupCard(title = "目录") {
+        SettingsEntryRow(
+            title = "本地影片库与 STRM 目录",
+            subtitle = "影片库：${uiState.libraryRootDisplayName}\nSTRM：${uiState.strmTreeDisplayName}",
+            onClick = { onOpenPage(SettingsPage.Directory) }
+        )
+    }
+    SettingsGroupCard(title = "网盘") {
+        SettingsEntryRow(
+            title = "115、STRM 入口与 A目录",
+            subtitle = "115 账号登录与切换 · A目录 ${uiState.domesticRootCidText.ifBlank { "未配置" }}",
+            onClick = { onOpenPage(SettingsPage.Cloud) }
+        )
+    }
+    SettingsGroupCard(title = "刮削") {
+        SettingsEntryRow(
+            title = "默认刮削与图片缓存",
+            subtitle = "${uiState.defaultScrapeSource.label} · 并发 ${uiState.scrapeConcurrencyLimitText} · 图片重试 ${uiState.imageDownloadRetryCountText} 次 · 缓存 $imageCacheSizeText",
+            onClick = { onOpenPage(SettingsPage.Scrape) }
+        )
+        SettingsEntryRow(
+            title = "刮削日志",
+            subtitle = "查看每天的刮削事件和失败原因",
+            onClick = onOpenLogs
+        )
+    }
+    SettingsGroupCard(title = "字幕") {
+        SettingsEntryRow(
+            title = "实时字幕翻译",
+            subtitle = "当前：${uiState.translateProvider.label}",
+            onClick = { onOpenPage(SettingsPage.Translate) }
+        )
+    }
+    Button(
+        onClick = onSave,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !uiState.isScraping,
+        shape = RoundedCornerShape(22.dp)
+    ) {
+        Icon(Icons.Rounded.Save, contentDescription = null)
+        Text("保存设置", modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
+@Composable
+private fun DirectorySettingsPage(
+    uiState: SettingsUiState,
+    onPickLibrary: () -> Unit,
+    onPickStrmDirectory: () -> Unit,
+    onNoMediaEnabledChange: (Boolean) -> Unit,
+    onReorganize: () -> Unit,
+    onRebuildIndex: () -> Unit
+) {
+    SettingsSectionTitle("影片库目录")
+    DirectorySummary(
+        title = uiState.libraryRootDisplayName,
+        selected = uiState.libraryRootUri != null,
+        emptyText = "尚未选择影片库目录"
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "生成 .nomedia 文件屏蔽图片",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "开启后会在影片库目录创建 .nomedia，避免相册显示海报和剧照；关闭后删除该文件。",
+                color = Color.White.copy(alpha = 0.56f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(
+            checked = uiState.libraryNoMediaEnabled,
+            onCheckedChange = onNoMediaEnabledChange,
+            enabled = uiState.libraryRootUri != null && !uiState.isScanning && !uiState.isReorganizing
+        )
+    }
+    Button(
+        onClick = onPickLibrary,
+        enabled = !uiState.isScanning && !uiState.isReorganizing && !uiState.isScraping,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        if (uiState.isScanning) {
+            CircularProgressIndicator(strokeWidth = 2.dp, color = Color.Black)
+        } else {
+            Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+        }
+        Text(
+            text = if (uiState.isScanning) "扫描中..." else "选择并扫描影片库",
+            modifier = Modifier.padding(start = 8.dp)
+        )
+    }
+
+    OutlinedButton(
+        onClick = onReorganize,
+        enabled = !uiState.isScanning && !uiState.isReorganizing && !uiState.isScraping,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        if (uiState.isReorganizing) {
+            CircularProgressIndicator(strokeWidth = 2.dp, color = Color.White)
+        } else {
+            Icon(Icons.Rounded.Article, contentDescription = null)
+        }
+        Text(
+            text = if (uiState.isReorganizing) "正在重新整理..." else "重新整理当前影片库",
+            modifier = Modifier.padding(start = 8.dp)
+        )
+    }
+    Text(
+        text = "按演员目录整理当前影片库，并重新扫描当前影片库。不会处理历史影片库目录。",
+        color = Color.White.copy(alpha = 0.56f),
+        style = MaterialTheme.typography.bodySmall
+    )
+
+    SettingsSectionTitle("STRM 保存位置")
+    DirectorySummary(
+        title = uiState.strmTreeDisplayName,
+        selected = uiState.strmTreeUri != null,
+        emptyText = "尚未选择 STRM 保存目录"
+    )
+    Button(
+        onClick = onPickStrmDirectory,
+        enabled = !uiState.isScraping,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+        Text("选择 STRM 保存目录", modifier = Modifier.padding(start = 8.dp))
+    }
+    OutlinedButton(
+        onClick = onRebuildIndex,
+        enabled = !uiState.isScraping && !uiState.isRebuildingStrmIndex,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        if (uiState.isRebuildingStrmIndex) {
+            CircularProgressIndicator(strokeWidth = 2.dp, color = Color.White)
+        } else {
+            Icon(Icons.Rounded.Article, contentDescription = null)
+        }
+        Text(
+            text = if (uiState.isRebuildingStrmIndex) "正在重建索引..." else "重建 STRM 索引并规范分段命名",
+            modifier = Modifier.padding(start = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun CloudSettingsPage(
+    uiState: SettingsUiState,
+    onCloud115AppSelected: (Cloud115LoginApp) -> Unit,
+    onSavedCloud115AccountSelected: (SavedCloud115Account) -> Unit,
+    onSavedCloud115AccountDelete: (SavedCloud115Account) -> Unit,
+    onRefreshSavedCloud115Accounts: () -> Unit,
+    onDomesticRootCidChange: (String) -> Unit,
+    onStartCloud115QrLogin: () -> Unit,
+    onCancelCloud115QrLogin: () -> Unit,
+    onOpenStrmBaseUrlDialog: () -> Unit,
+    onOpenMissavWeb: () -> Unit,
+    onCloudAddButtonMessageEnabledChange: (Boolean) -> Unit,
+    onExcludedVideoNameDraftChange: (String) -> Unit,
+    onAddExcludedVideoName: () -> Unit,
+    onRemoveExcludedVideoName: (String) -> Unit
+) {
+    SettingsSectionTitle("115 Cookie")
+    Cloud115QrLoginPanel(
+        uiState = uiState,
+        onCloud115AppSelected = onCloud115AppSelected,
+        onSavedCloud115AccountSelected = onSavedCloud115AccountSelected,
+        onSavedCloud115AccountDelete = onSavedCloud115AccountDelete,
+        onRefreshSavedCloud115Accounts = onRefreshSavedCloud115Accounts,
+        onStartCloud115QrLogin = onStartCloud115QrLogin,
+        onCancelCloud115QrLogin = onCancelCloud115QrLogin
+    )
+    SettingsSectionTitle("STRM 入口地址")
+    OutlinedButton(
+        onClick = onOpenStrmBaseUrlDialog,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Text(
+            text = "点击设置 STRM 入口地址",
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = "已隐藏",
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+    SettingsSectionTitle("A目录")
+    OutlinedTextField(
+        value = uiState.domesticRootCidText,
+        onValueChange = onDomesticRootCidChange,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+        label = { Text("A目录 CID") },
+        placeholder = { Text("未配置时不启用国产目录") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        colors = settingsTextFieldColors()
+    )
+    SettingsSectionTitle("网盘添加")
+    CloudAddBehaviorPanel(
+        enabled = uiState.cloudAddButtonMessageEnabled,
+        onEnabledChange = onCloudAddButtonMessageEnabledChange
+    )
+    SettingsSectionTitle("排除视频")
+    ExcludedCloudVideosPanel(
+        names = uiState.cloudExcludedVideoNames,
+        draft = uiState.newExcludedVideoName,
+        onDraftChange = onExcludedVideoNameDraftChange,
+        onAdd = onAddExcludedVideoName,
+        onRemove = onRemoveExcludedVideoName
+    )
+    SettingsSectionTitle("MissAV Cookie")
+    MissavCookieStatusCard(
+        hasCookie = uiState.hasMissavCookie,
+        onOpenMissavWeb = onOpenMissavWeb
+    )
+}
+
+@Composable
+private fun CloudAddBehaviorPanel(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "开启按钮提示",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "关闭后，网盘点击添加不会弹出正在添加、已添加这类提示。",
+                color = Color.White.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = onEnabledChange
+        )
+    }
+}
+
+@Composable
+private fun ExcludedCloudVideosPanel(
+    names: List<String>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var showManageDialog by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "排除视频名单",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "已排除 ${names.size} 个视频。命中后仍可播放，但不显示添加按钮。",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            OutlinedButton(
+                onClick = { showManageDialog = true },
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("管理")
+            }
+        }
+    }
+
+    if (showManageDialog) {
+        AlertDialog(
+            onDismissRequest = { showManageDialog = false },
+            title = { Text("排除视频名单") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("名单中的视频不会显示添加按钮。")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = onDraftChange,
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            shape = RoundedCornerShape(18.dp),
+                            label = { Text("视频文件名") },
+                            placeholder = { Text("例如 广告.mp4") }
+                        )
+                        Button(
+                            onClick = onAdd,
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Text("添加")
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (names.isEmpty()) {
+                            Text("暂无排除视频")
+                        } else {
+                            names.forEach { name ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color.Black.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                                        .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = name,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    TextButton(onClick = { onRemove(name) }) {
+                                        Text("删除")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showManageDialog = false }) {
+                    Text("完成")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ScrapeSettingsPage(
+    uiState: SettingsUiState,
+    imageCacheSizeText: String,
+    onSourceSelected: (ScrapeSource) -> Unit,
+    onRetryCountChange: (String) -> Unit,
+    onConcurrencyLimitChange: (String) -> Unit,
+    onRefreshCacheSize: () -> Unit,
+    onClearImageCache: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onClearLogs: () -> Unit
+) {
+    SettingsSectionTitle("默认刮削")
+    DefaultScrapeSourceRow(
+        selected = uiState.defaultScrapeSource,
+        onSelected = onSourceSelected
+    )
+    SettingsSectionTitle("刮削队列")
+    OutlinedTextField(
+        value = uiState.scrapeConcurrencyLimitText,
+        onValueChange = onConcurrencyLimitChange,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+        label = { Text("同时刮削任务数") },
+        supportingText = { Text("范围 1 到 ${AppSettingsRepository.MAX_SCRAPE_CONCURRENCY_LIMIT}。建议 2，过高可能导致请求失败或图片下载失败。") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        colors = settingsTextFieldColors()
+    )
+    SettingsSectionTitle("图片下载")
+    OutlinedTextField(
+        value = uiState.imageDownloadRetryCountText,
+        onValueChange = onRetryCountChange,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+        label = { Text("图片下载重试次数") },
+        supportingText = { Text("建议 3 到 6 次。DMM 图片地址优先请求。") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        colors = settingsTextFieldColors()
+    )
+    ImageCachePanel(
+        sizeText = imageCacheSizeText,
+        onRefresh = onRefreshCacheSize,
+        onClear = onClearImageCache
+    )
+    SettingsSectionTitle("刮削日志")
+    Text(
+        text = "未刮削 STRM 可以在影片详情页的“更多”中手动刮削；网盘添加影片时会使用默认刮削来源。",
+        color = Color.White.copy(alpha = 0.62f),
+        style = MaterialTheme.typography.bodySmall
+    )
+    ScrapeLogPanel(
+        log = uiState.scrapeLog,
+        onClear = onClearLogs,
+        onOpenLogs = onOpenLogs
+    )
+}
+
+@Composable
+private fun TranslateSettingsSummaryPage(
+    uiState: SettingsUiState,
+    onProviderSelected: (TranslateProvider) -> Unit,
+    onAsrModelSelected: (com.example.localmovielibrary.asr.AsrModelOption) -> Unit,
+    onAsrModelBaseUrlChange: (String) -> Unit,
+    onDownloadAsrModel: () -> Unit,
+    onOpenTranslateDialog: () -> Unit
+) {
+    SettingsSectionTitle("翻译方式")
+    TranslateProviderSelector(
+        provider = uiState.translateProvider,
+        onProviderSelected = onProviderSelected
+    )
+    Text(
+        text = "只在这里选择翻译方式。密钥、模型和接口地址放到弹窗里配置，避免设置页堆太长。",
+        color = Color.White.copy(alpha = 0.62f),
+        style = MaterialTheme.typography.bodySmall
+    )
+    OutlinedButton(
+        onClick = onOpenTranslateDialog,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Icon(Icons.Rounded.Settings, contentDescription = null)
+        Text("配置 ${uiState.translateProvider.label}", modifier = Modifier.padding(start = 8.dp))
+    }
+    if (uiState.translateProvider == TranslateProvider.DeepSeek) {
+        val promptTemplate = uiState.deepSeekPromptOptions
+            .firstOrNull { it.id == uiState.deepSeekPromptTemplateId }
+        Text(
+            text = "当前提示词：${promptTemplate?.label ?: uiState.deepSeekPromptTemplateId}",
+            color = Color.White.copy(alpha = 0.62f),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+    SettingsSectionTitle("本地 ASR 模型")
+    AsrModelPanel(
+        uiState = uiState,
+        onModelSelected = onAsrModelSelected,
+        onBaseUrlChange = onAsrModelBaseUrlChange,
+        onDownload = onDownloadAsrModel
+    )
+}
+
+@Composable
+private fun TranslateProviderSelector(
+    provider: TranslateProvider,
+    onProviderSelected: (TranslateProvider) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Text(
+                text = provider.label,
+                modifier = Modifier.weight(1f),
+                color = Color.White
+            )
+            Text(text = "选择", color = Color.White.copy(alpha = 0.62f))
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            TranslateProvider.entries.forEach { item ->
+                DropdownMenuItem(
+                    text = { Text(item.label) },
+                    onClick = {
+                        expanded = false
+                        onProviderSelected(item)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AsrModelPanel(
+    uiState: SettingsUiState,
+    onModelSelected: (com.example.localmovielibrary.asr.AsrModelOption) -> Unit,
+    onBaseUrlChange: (String) -> Unit,
+    onDownload: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = uiState.asrModelOptions.firstOrNull { it.id == uiState.selectedAsrModelId }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text(
+                    text = selected?.label ?: uiState.selectedAsrModelId,
+                    modifier = Modifier.weight(1f),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text("模型", color = Color.White.copy(alpha = 0.62f))
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                uiState.asrModelOptions.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        onClick = {
+                            expanded = false
+                            onModelSelected(option)
+                        }
+                    )
+                }
+            }
+        }
+        selected?.description?.let {
+            Text(
+                text = it,
+                color = Color.White.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Text(
+            text = if (uiState.isAsrModelReady) "状态：已下载，${uiState.asrModelSizeText}" else "状态：未下载",
+            color = if (uiState.isAsrModelReady) Color(0xFF7BD88F) else Color.White.copy(alpha = 0.68f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        OutlinedTextField(
+            value = uiState.asrModelBaseUrl,
+            onValueChange = onBaseUrlChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = false,
+            minLines = 2,
+            maxLines = 3,
+            shape = RoundedCornerShape(18.dp),
+            label = { Text("模型下载地址") },
+            supportingText = { Text("目录地址即可，App 会下载 model.int8.onnx 和 tokens.txt。") },
+            colors = settingsTextFieldColors()
+        )
+        if (uiState.isAsrModelDownloading || uiState.asrModelDownloadMessage.isNotBlank()) {
+            LinearProgressIndicator(
+                progress = { uiState.asrModelDownloadProgress / 100f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = uiState.asrModelDownloadMessage.ifBlank { "${uiState.asrModelDownloadProgress}%" },
+                color = Color.White.copy(alpha = 0.62f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Button(
+            onClick = onDownload,
+            enabled = !uiState.isAsrModelDownloading,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Text(if (uiState.isAsrModelDownloading) "下载中..." else "下载/更新模型")
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroupCard(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SettingsSectionTitle(title)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(18.dp))
+                .padding(vertical = 4.dp),
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun SettingsEntryRow(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = title,
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = subtitle,
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ClearImageCacheDialog(
+    sizeText: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("清理图片缓存") },
+        text = { Text("当前图片缓存约 $sizeText。确认清理后，海报和缩略图会在下次显示时重新缓存。") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("确认清理")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun TranslateSettingsDialog(
+    provider: TranslateProvider,
+    baiduAppId: String,
+    baiduSecretKey: String,
+    deepSeekApiKey: String,
+    deepSeekBaseUrl: String,
+    deepSeekModel: String,
+    deepSeekThinkingEnabled: Boolean,
+    deepSeekPromptEnabled: Boolean,
+    deepSeekPromptOptions: List<DeepSeekPromptTemplate>,
+    deepSeekPromptTemplateId: String,
+    deepSeekCustomPrompt: String,
+    onBaiduAppIdChange: (String) -> Unit,
+    onBaiduSecretKeyChange: (String) -> Unit,
+    onDeepSeekApiKeyChange: (String) -> Unit,
+    onDeepSeekBaseUrlChange: (String) -> Unit,
+    onDeepSeekModelChange: (String) -> Unit,
+    onDeepSeekThinkingChange: (Boolean) -> Unit,
+    onDeepSeekPromptEnabledChange: (Boolean) -> Unit,
+    onDeepSeekPromptTemplateChange: (DeepSeekPromptTemplate) -> Unit,
+    onDeepSeekCustomPromptChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit
+) {
+    var promptMenuExpanded by remember { mutableStateOf(false) }
+    val selectedPromptTemplate = deepSeekPromptOptions.firstOrNull { it.id == deepSeekPromptTemplateId }
+        ?: deepSeekPromptOptions.firstOrNull()
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .background(Color(0xFF202126), RoundedCornerShape(22.dp))
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "${provider.label} 配置",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "ASR 识别出的文本会发送到所选翻译服务；音频不会发送给翻译接口。",
+                color = Color.White.copy(alpha = 0.62f),
+                style = MaterialTheme.typography.bodySmall
+            )
+            when (provider) {
+                TranslateProvider.Baidu -> {
+                    OutlinedTextField(
+                        value = baiduAppId,
+                        onValueChange = onBaiduAppIdChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("百度翻译 APP ID") },
+                        colors = settingsTextFieldColors()
+                    )
+                    OutlinedTextField(
+                        value = baiduSecretKey,
+                        onValueChange = onBaiduSecretKeyChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("百度翻译密钥") },
+                        colors = settingsTextFieldColors()
+                    )
+                }
+
+                TranslateProvider.DeepSeek -> {
+                    OutlinedTextField(
+                        value = deepSeekApiKey,
+                        onValueChange = onDeepSeekApiKeyChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("DeepSeek API Key") },
+                        colors = settingsTextFieldColors()
+                    )
+                    OutlinedTextField(
+                        value = deepSeekModel,
+                        onValueChange = onDeepSeekModelChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("DeepSeek 模型") },
+                        placeholder = { Text("deepseek-v4-flash") },
+                        colors = settingsTextFieldColors()
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "思考模式",
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "实时字幕建议关闭，速度更快。",
+                                color = Color.White.copy(alpha = 0.56f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(
+                            checked = deepSeekThinkingEnabled,
+                            onCheckedChange = onDeepSeekThinkingChange
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "启用翻译提示词",
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "关闭后不会向大模型发送额外 system prompt。",
+                                color = Color.White.copy(alpha = 0.56f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(
+                            checked = deepSeekPromptEnabled,
+                            onCheckedChange = onDeepSeekPromptEnabledChange
+                        )
+                    }
+                    if (deepSeekPromptEnabled) {
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { promptMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            ) {
+                                Text(
+                                    text = "提示词：${selectedPromptTemplate?.label.orEmpty()}",
+                                    modifier = Modifier.weight(1f),
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = promptMenuExpanded,
+                                onDismissRequest = { promptMenuExpanded = false },
+                                modifier = Modifier.background(Color(0xFF25272D))
+                            ) {
+                                deepSeekPromptOptions.forEach { template ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "${if (template.id == deepSeekPromptTemplateId) "✓ " else ""}${template.label}",
+                                                color = Color.White
+                                            )
+                                        },
+                                        onClick = {
+                                            onDeepSeekPromptTemplateChange(template)
+                                            promptMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        if (deepSeekPromptTemplateId == DeepSeekPromptTemplates.CUSTOM_ID) {
+                            OutlinedTextField(
+                                value = deepSeekCustomPrompt,
+                                onValueChange = onDeepSeekCustomPromptChange,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 130.dp, max = 260.dp),
+                                minLines = 5,
+                                maxLines = 10,
+                                shape = RoundedCornerShape(18.dp),
+                                label = { Text("自定义翻译提示词") },
+                                placeholder = { Text("输入 system prompt，只输出译文等规则可以写在这里") },
+                                colors = settingsTextFieldColors()
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = deepSeekBaseUrl,
+                        onValueChange = onDeepSeekBaseUrlChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("DeepSeek 接口地址") },
+                        placeholder = { Text("https://api.deepseek.com") },
+                        colors = settingsTextFieldColors()
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)
+            ) {
+                OutlinedButton(onClick = onDismiss, shape = RoundedCornerShape(18.dp)) {
+                    Text("取消")
+                }
+                Button(onClick = onSave, shape = RoundedCornerShape(18.dp)) {
+                    Text("保存")
+                }
+            }
         }
     }
 }
@@ -385,6 +1304,270 @@ private fun DefaultScrapeSourceRow(
 }
 
 @Composable
+private fun Cloud115QrLoginPanel(
+    uiState: SettingsUiState,
+    onCloud115AppSelected: (Cloud115LoginApp) -> Unit,
+    onSavedCloud115AccountSelected: (SavedCloud115Account) -> Unit,
+    onSavedCloud115AccountDelete: (SavedCloud115Account) -> Unit,
+    onRefreshSavedCloud115Accounts: () -> Unit,
+    onStartCloud115QrLogin: () -> Unit,
+    onCancelCloud115QrLogin: () -> Unit
+) {
+    val context = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Rounded.Public,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.82f)
+            )
+            Column(modifier = Modifier.padding(start = 10.dp)) {
+                Text(
+                    text = "115 二维码登录",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "扫码成功后会自动保存 Cookie，并写入文件 115cookie_userId_app.txt。",
+                    color = Color.White.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        SavedCloud115AccountSelector(
+            accounts = uiState.savedCloud115Accounts,
+            selectedFileName = uiState.selectedCloud115AccountFileName,
+            onSelected = onSavedCloud115AccountSelected,
+            onDelete = onSavedCloud115AccountDelete,
+            onRefresh = onRefreshSavedCloud115Accounts
+        )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { expanded = true },
+                enabled = !uiState.isCloud115QrLoginActive,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text(
+                    text = uiState.selectedCloud115LoginApp.description,
+                    modifier = Modifier.weight(1f),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(text = "登录方式", color = Color.White.copy(alpha = 0.62f))
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                Cloud115LoginApps.all.forEach { app ->
+                    DropdownMenuItem(
+                        text = { Text(app.description) },
+                        onClick = {
+                            expanded = false
+                            onCloud115AppSelected(app)
+                        }
+                    )
+                }
+            }
+        }
+        if (uiState.cloud115QrToken != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 220.dp, max = 260.dp)
+                    .background(Color.White, RoundedCornerShape(14.dp))
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(uiState.cloud115QrToken.qrImageUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = "115 登录二维码",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            Text(
+                text = "二维码地址：${uiState.cloud115QrToken.qrImageUrl}",
+                color = Color.White.copy(alpha = 0.42f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (uiState.cloud115QrStatusText.isNotBlank()) {
+            Text(
+                text = uiState.cloud115QrStatusText,
+                color = Color.White.copy(alpha = 0.72f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        uiState.cloud115QrSavedFile?.let { path ->
+            Text(
+                text = "保存位置：$path",
+                color = Color.White.copy(alpha = 0.48f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = onStartCloud115QrLogin,
+                enabled = !uiState.isCloud115QrLoginActive,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text(if (uiState.cloud115QrToken == null) "获取二维码" else "重新获取")
+            }
+            if (uiState.isCloud115QrLoginActive) {
+                OutlinedButton(
+                    onClick = onCancelCloud115QrLogin,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text("取消登录")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedCloud115AccountSelector(
+    accounts: List<SavedCloud115Account>,
+    selectedFileName: String?,
+    onSelected: (SavedCloud115Account) -> Unit,
+    onDelete: (SavedCloud115Account) -> Unit,
+    onRefresh: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = accounts.firstOrNull { it.fileName == selectedFileName }
+    var pending by remember(accounts, selectedFileName) { mutableStateOf(selected) }
+    var deleteTarget by remember { mutableStateOf<SavedCloud115Account?>(null) }
+    deleteTarget?.let { account ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = Color(0xFF202126),
+            title = { Text("删除 115 账号？", color = Color.White) },
+            text = {
+                Text(
+                    text = "确定删除账号「${account.displayName}」的本地 Cookie 文件吗？删除后不会影响 115 网盘真实账号。",
+                    color = Color.White.copy(alpha = 0.72f)
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        if (pending?.fileName == account.fileName) pending = null
+                        onDelete(account)
+                    }
+                ) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = {
+                        onRefresh()
+                        expanded = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text(
+                        text = selected?.displayName
+                            ?: pending?.displayName
+                            ?: if (accounts.isEmpty()) "暂无已保存账号" else "选择已保存账号",
+                        modifier = Modifier.weight(1f),
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(text = "账号", color = Color.White.copy(alpha = 0.62f))
+                }
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    if (accounts.isEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("没有找到已保存 Cookie 文件") },
+                            onClick = { expanded = false }
+                        )
+                    } else {
+                        accounts.forEach { account ->
+                            DropdownMenuItem(
+                                text = { Text(account.displayName) },
+                                onClick = {
+                                    expanded = false
+                                    pending = account
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = onRefresh,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("刷新")
+            }
+            OutlinedButton(
+                onClick = { pending?.let { deleteTarget = it } },
+                enabled = pending != null,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("删除")
+            }
+        }
+        Button(
+            onClick = { pending?.let(onSelected) },
+            enabled = pending != null && pending?.fileName != selectedFileName,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Text(if (pending == null) "请选择账号" else "确定使用 ${pending?.displayName.orEmpty()}")
+        }
+        Text(
+            text = "可识别 115cookie_a_ios.txt、115cookie_b_os_linux.txt 这类文件，并切换为当前网盘 Cookie。",
+            color = Color.White.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@Composable
 private fun MissavCookieStatusCard(
     hasCookie: Boolean,
     onOpenMissavWeb: () -> Unit
@@ -422,6 +1605,199 @@ private fun MissavCookieStatusCard(
         ) {
             Icon(Icons.Rounded.Public, contentDescription = null)
             Text(if (hasCookie) "刷新 MissAV Cookie" else "获取 MissAV Cookie", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+@Composable
+private fun ImageCachePanel(
+    sizeText: String,
+    onRefresh: () -> Unit,
+    onClear: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "图片缓存",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = sizeText,
+                    color = Color.White.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(18.dp)) {
+                Text("刷新")
+            }
+        }
+        OutlinedButton(
+            onClick = onClear,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Icon(Icons.Rounded.DeleteSweep, contentDescription = null)
+            Text("清理图片缓存", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+@Composable
+private fun TranslateSettingsPanel(
+    provider: TranslateProvider,
+    baiduAppId: String,
+    baiduSecretKey: String,
+    deepSeekApiKey: String,
+    deepSeekBaseUrl: String,
+    deepSeekModel: String,
+    deepSeekThinkingEnabled: Boolean,
+    onProviderSelected: (TranslateProvider) -> Unit,
+    onBaiduAppIdChange: (String) -> Unit,
+    onBaiduSecretKeyChange: (String) -> Unit,
+    onDeepSeekApiKeyChange: (String) -> Unit,
+    onDeepSeekBaseUrlChange: (String) -> Unit,
+    onDeepSeekModelChange: (String) -> Unit,
+    onDeepSeekThinkingChange: (Boolean) -> Unit,
+    onSave: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "ASR 识别出的文本会发送到所选翻译服务；音频不会发送给翻译接口。",
+            color = Color.White.copy(alpha = 0.62f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text(
+                    text = provider.label,
+                    modifier = Modifier.weight(1f),
+                    color = Color.White
+                )
+                Text(text = "选择", color = Color.White.copy(alpha = 0.62f))
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                TranslateProvider.entries.forEach { item ->
+                    DropdownMenuItem(
+                        text = { Text(item.label) },
+                        onClick = {
+                            expanded = false
+                            onProviderSelected(item)
+                        }
+                    )
+                }
+            }
+        }
+
+        when (provider) {
+            TranslateProvider.Baidu -> {
+                OutlinedTextField(
+                    value = baiduAppId,
+                    onValueChange = onBaiduAppIdChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    label = { Text("百度翻译 APP ID") },
+                    colors = settingsTextFieldColors()
+                )
+                OutlinedTextField(
+                    value = baiduSecretKey,
+                    onValueChange = onBaiduSecretKeyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    label = { Text("百度翻译密钥") },
+                    colors = settingsTextFieldColors()
+                )
+            }
+
+            TranslateProvider.DeepSeek -> {
+                OutlinedTextField(
+                    value = deepSeekApiKey,
+                    onValueChange = onDeepSeekApiKeyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    label = { Text("DeepSeek API Key") },
+                    colors = settingsTextFieldColors()
+                )
+                OutlinedTextField(
+                    value = deepSeekModel,
+                    onValueChange = onDeepSeekModelChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    label = { Text("DeepSeek 模型") },
+                    placeholder = { Text("deepseek-v4-flash") },
+                    colors = settingsTextFieldColors()
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "思考模式",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "实时字幕建议关闭，速度更快。",
+                            color = Color.White.copy(alpha = 0.56f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = deepSeekThinkingEnabled,
+                        onCheckedChange = onDeepSeekThinkingChange
+                    )
+                }
+                OutlinedTextField(
+                    value = deepSeekBaseUrl,
+                    onValueChange = onDeepSeekBaseUrlChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(18.dp),
+                    label = { Text("DeepSeek 接口地址") },
+                    placeholder = { Text("https://api.deepseek.com") },
+                    colors = settingsTextFieldColors()
+                )
+            }
+        }
+
+        OutlinedButton(
+            onClick = onSave,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Icon(Icons.Rounded.Save, contentDescription = null)
+            Text("保存翻译配置", modifier = Modifier.padding(start = 8.dp))
         }
     }
 }
@@ -470,7 +1846,7 @@ private fun ScrapeLogPanel(
 }
 
 @Composable
-private fun SettingsTopBar() {
+private fun SettingsTopBar(title: String = "设置", onBack: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -478,9 +1854,15 @@ private fun SettingsTopBar() {
             .padding(start = 18.dp, end = 18.dp, top = 24.dp, bottom = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Rounded.Settings, contentDescription = null, tint = Color.White)
+        if (onBack != null) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回设置", tint = Color.White)
+            }
+        } else {
+            Icon(Icons.Rounded.Settings, contentDescription = null, tint = Color.White)
+        }
         Text(
-            text = "设置",
+            text = title,
             color = Color.White,
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.ExtraBold,
@@ -542,20 +1924,23 @@ private fun settingsTextFieldColors() = OutlinedTextFieldDefaults.colors(
 
 @Composable
 private fun rememberTreePicker(onPicked: (Uri) -> Unit) =
-    rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val uri = result.data?.data
-        if (result.resultCode == Activity.RESULT_OK && uri != null) {
+    rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
             onPicked(uri)
         }
     }
 
-private fun treeIntent(): Intent =
-    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+private fun formatCacheSize(bytes: Long): String {
+    val kb = bytes / 1024.0
+    val mb = kb / 1024.0
+    val gb = mb / 1024.0
+    return when {
+        gb >= 1.0 -> String.format("%.2f GB", gb)
+        mb >= 1.0 -> String.format("%.1f MB", mb)
+        kb >= 1.0 -> String.format("%.0f KB", kb)
+        else -> "$bytes B"
     }
+}
 
 private val ScrapeSource.label: String
     get() = when (this) {

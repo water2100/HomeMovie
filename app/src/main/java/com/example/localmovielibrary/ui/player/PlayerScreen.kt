@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.ui.player
+﻿package com.example.localmovielibrary.ui.player
 
 import android.Manifest
 import android.app.Activity
@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
@@ -32,17 +34,17 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AspectRatio
-import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.FullscreenExit
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -110,18 +112,27 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
     val vrMode = uiState.vrMode
     val vrControlMode = uiState.vrControlMode
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
+    var controlsLocked by rememberSaveable { mutableStateOf(false) }
     var isPlaying by rememberSaveable(player) { mutableStateOf(player?.isPlaying == true) }
     var positionMs by rememberSaveable(player) { mutableLongStateOf(player?.currentPosition?.coerceAtLeast(0L) ?: 0L) }
     var durationMs by rememberSaveable(player) { mutableLongStateOf(player?.duration?.takeIf { it > 0 } ?: 0L) }
-    var isLandscape by rememberSaveable { mutableStateOf(false) }
+    var isLandscape by rememberSaveable { mutableStateOf(true) }
     var speed by rememberSaveable { mutableFloatStateOf(viewModel.playbackSpeed) }
     var resizeModeIndex by rememberSaveable { mutableStateOf(0) }
+    var subtitleModelHint by remember { mutableStateOf<String?>(null) }
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    var gestureMode by remember { mutableStateOf<GestureMode?>(null) }
     var gestureStartSide by remember { mutableStateOf<GestureSide?>(null) }
     var gestureFeedback by remember { mutableStateOf<GestureFeedback?>(null) }
-    var manualControl by remember { mutableStateOf<GestureSide?>(null) }
+    var seekDragStartPositionMs by remember { mutableLongStateOf(0L) }
+    var seekDragTotalX by remember { mutableFloatStateOf(0f) }
+    var seekDragTotalY by remember { mutableFloatStateOf(0f) }
+    var seekDragPreviewMs by remember { mutableStateOf<Long?>(null) }
     var brightnessValue by remember(activity) {
         mutableFloatStateOf(activity?.window?.attributes?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f)
+    }
+    val originalScreenBrightness = remember(activity) {
+        activity?.window?.attributes?.screenBrightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
     }
     var volumeValue by remember(audioManager) {
         mutableFloatStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat())
@@ -138,6 +149,27 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
             viewModel.startLiveSubtitleFromPlayerAudio()
         } else {
             viewModel.onLiveSubtitlePermissionDenied()
+        }
+    }
+    fun restorePlayerBrightness() {
+        val window = activity?.window ?: return
+        val attrs = window.attributes
+        attrs.screenBrightness = originalScreenBrightness
+        window.attributes = attrs
+    }
+
+    val leavePlayer = {
+        restorePlayerBrightness()
+        viewModel.leavePlayer()
+        onBack()
+    }
+
+    BackHandler(onBack = leavePlayer)
+
+    DisposableEffect(Unit) {
+        onDispose {
+            restorePlayerBrightness()
+            viewModel.leavePlayer()
         }
     }
 
@@ -157,7 +189,7 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
             GlassIconButton(
                 icon = Icons.AutoMirrored.Rounded.ArrowBack,
                 contentDescription = "Back",
-                onClick = onBack,
+                onClick = leavePlayer,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(18.dp)
@@ -177,6 +209,7 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             window?.let { WindowCompat.setDecorFitsSystemWindows(it, true) }
             controller?.show(WindowInsetsCompat.Type.systemBars())
+            restorePlayerBrightness()
         }
     }
 
@@ -231,6 +264,13 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
         }
     }
 
+    LaunchedEffect(subtitleModelHint) {
+        if (subtitleModelHint != null) {
+            delay(2_400)
+            subtitleModelHint = null
+        }
+    }
+
     fun setBrightness(value: Float) {
         val window = activity?.window ?: return
         brightnessValue = value.coerceIn(0.02f, 1f)
@@ -260,39 +300,83 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .then(if (vrMode.isVr) Modifier else Modifier.pointerInput(isLandscape, activity, audioManager) {
+            .then(if (vrMode.isVr || controlsLocked) Modifier else Modifier.pointerInput(isLandscape, activity, audioManager) {
                 detectDragGestures(
                     onDragStart = { offset ->
+                        gestureMode = null
                         gestureStartSide = if (offset.x < size.width / 2f) GestureSide.Brightness else GestureSide.Volume
+                        seekDragStartPositionMs = positionMs
+                        seekDragTotalX = 0f
+                        seekDragTotalY = 0f
+                        seekDragPreviewMs = null
                     },
-                    onDragEnd = { gestureStartSide = null },
-                    onDragCancel = { gestureStartSide = null },
+                    onDragEnd = {
+                        seekDragPreviewMs?.let { target ->
+                            viewModel.seekTo(target)
+                            positionMs = target
+                        }
+                        seekDragPreviewMs = null
+                        gestureMode = null
+                        gestureStartSide = null
+                    },
+                    onDragCancel = {
+                        seekDragPreviewMs = null
+                        gestureMode = null
+                        gestureStartSide = null
+                    },
                     onDrag = { change, dragAmount ->
-                        if (!isLandscape || abs(dragAmount.y) <= abs(dragAmount.x)) return@detectDragGestures
-                        val delta = -dragAmount.y / size.height.coerceAtLeast(1)
-                        when (gestureStartSide) {
-                            GestureSide.Brightness -> {
-                                setBrightness(brightnessValue + delta * 1.15f)
-                                controlsVisible = true
+                        if (!isLandscape) return@detectDragGestures
+                        seekDragTotalX += dragAmount.x
+                        seekDragTotalY += dragAmount.y
+                        if (gestureMode == null) {
+                            val threshold = 18f
+                            if (abs(seekDragTotalX) < threshold && abs(seekDragTotalY) < threshold) {
+                                return@detectDragGestures
                             }
-                            GestureSide.Volume -> {
-                                val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-                                setVolume(volumeValue + delta * maxVolume * 1.25f)
-                                controlsVisible = true
+                            gestureMode = if (abs(seekDragTotalX) > abs(seekDragTotalY)) {
+                                GestureMode.Seek
+                            } else {
+                                GestureMode.VerticalAdjust
                             }
-                            null -> Unit
+                        }
+                        if (gestureMode == GestureMode.Seek) {
+                            if (durationMs <= 0L) return@detectDragGestures
+                            val seekPerScreenMs = (durationMs * 0.10f)
+                                .toLong()
+                                .coerceIn(30_000L, 180_000L)
+                            val deltaMs = ((seekDragTotalX / size.width.coerceAtLeast(1)) * seekPerScreenMs).toLong()
+                            seekDragPreviewMs = (seekDragStartPositionMs + deltaMs).coerceIn(0L, durationMs)
+                            controlsVisible = false
+                        } else {
+                            val delta = -dragAmount.y / size.height.coerceAtLeast(1)
+                            when (gestureStartSide) {
+                                GestureSide.Brightness -> {
+                                    setBrightness(brightnessValue + delta * 1.15f)
+                                    controlsVisible = true
+                                }
+                                GestureSide.Volume -> {
+                                    val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                    setVolume(volumeValue + delta * maxVolume * 1.25f)
+                                    controlsVisible = true
+                                }
+                                null -> Unit
+                            }
                         }
                     }
                 )
             })
-            .then(if (vrMode.isVr) Modifier else Modifier.clickable { controlsVisible = !controlsVisible })
+            .then(if (vrMode.isVr || controlsLocked) Modifier else Modifier.clickable { controlsVisible = !controlsVisible })
     ) {
         if (vrMode.isVr) {
             VrSphericalPlayerView(
                 player = player,
                 vrMode = vrMode,
                 controlMode = vrControlMode,
-                onTap = { controlsVisible = !controlsVisible },
+                onTap = {
+                    if (!controlsLocked) {
+                        controlsVisible = !controlsVisible
+                    }
+                },
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -317,7 +401,13 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
             modifier = Modifier.align(Alignment.Center)
         )
 
-        LiveSubtitleOverlay(
+        SeekDragFeedbackOverlay(
+            targetPositionMs = seekDragPreviewMs,
+            startPositionMs = seekDragStartPositionMs,
+            modifier = Modifier.align(Alignment.Center)
+        )
+
+        LiveSubtitleOverlayModern(
             enabled = uiState.liveSubtitleEnabled,
             sourceText = uiState.liveSubtitleSourceText,
             translatedText = uiState.liveSubtitleTranslatedText,
@@ -327,8 +417,14 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
+        SubtitleModelHintOverlay(
+            text = subtitleModelHint,
+            controlsVisible = controlsVisible,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = controlsVisible && !controlsLocked,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -345,7 +441,7 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                 vrMode = vrMode,
                 vrControlMode = vrControlMode,
                 liveSubtitleEnabled = uiState.liveSubtitleEnabled,
-                onBack = onBack,
+                onBack = leavePlayer,
                 onVrMode = { mode ->
                     viewModel.setVrMode(mode)
                     controlsVisible = true
@@ -380,6 +476,11 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                     if (uiState.liveSubtitleEnabled) {
                         viewModel.stopLiveSubtitleRecognition()
                     } else {
+                        if (!viewModel.hasLiveSubtitleModel()) {
+                            subtitleModelHint = "\u8BF7\u5148\u5728\u8BBE\u7F6E\u7FFB\u8BD1\u9875\u9762\u4E2D\u4E0B\u8F7D\u6A21\u578B"
+                            controlsVisible = true
+                            return@PlayerOverlay
+                        }
                         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
                         if (granted) {
                             viewModel.startLiveSubtitleFromPlayerAudio()
@@ -389,20 +490,8 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                     }
                     controlsVisible = true
                 },
-                onAudio = {
-                    // TODO: Add audio track selector.
-                    controlsVisible = true
-                },
                 onAspect = {
                     resizeModeIndex = (resizeModeIndex + 1) % resizeModes.size
-                    controlsVisible = true
-                },
-                onBrightness = {
-                    manualControl = GestureSide.Brightness
-                    controlsVisible = true
-                },
-                onVolume = {
-                    manualControl = GestureSide.Volume
                     controlsVisible = true
                 },
                 onOrientation = {
@@ -412,16 +501,18 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
             )
         }
 
-        ManualControlOverlay(
-            control = manualControl,
-            brightnessValue = brightnessValue,
-            volumeValue = volumeValue,
-            maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1),
-            onBrightnessChange = ::setBrightness,
-            onVolumeChange = ::setVolume,
-            onDismiss = { manualControl = null },
-            modifier = Modifier.align(Alignment.Center)
+        PlayerLockButton(
+            locked = controlsLocked,
+            onClick = {
+                controlsLocked = !controlsLocked
+                controlsVisible = !controlsLocked
+            },
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(start = 18.dp, bottom = 18.dp)
         )
+
     }
 }
 
@@ -446,7 +537,7 @@ private fun LiveSubtitleOverlay(
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         val statusText = sourceText.ifBlank {
-            if (listening) "正在聆听日语语音..." else ""
+            if (listening) "\u6B63\u5728\u8BC6\u522B\u5F71\u7247\u58F0\u97F3..." else ""
         }
         if (statusText.isNotBlank()) {
             Text(
@@ -476,9 +567,102 @@ private fun LiveSubtitleOverlay(
     }
 }
 
+@Composable
+private fun LiveSubtitleOverlayModern(
+    enabled: Boolean,
+    sourceText: String,
+    translatedText: String,
+    errorText: String?,
+    listening: Boolean,
+    controlsVisible: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (!enabled) return
+    val bottomPadding = if (controlsVisible) 156.dp else 42.dp
+    val hasSubtitle = sourceText.isNotBlank() || translatedText.isNotBlank()
+    if (!hasSubtitle && errorText.isNullOrBlank()) return
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 22.dp)
+            .padding(bottom = bottomPadding),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color.Black.copy(alpha = 0.66f))
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            if (!errorText.isNullOrBlank()) {
+                Text(
+                    text = errorText,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            } else {
+                if (sourceText.isNotBlank()) {
+                    Text(
+                        text = sourceText,
+                        color = Color.White.copy(alpha = 0.82f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                if (translatedText.isNotBlank()) {
+                    Text(
+                        text = translatedText,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleModelHintOverlay(
+    text: String?,
+    controlsVisible: Boolean,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = !text.isNullOrBlank(),
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 22.dp)
+            .padding(bottom = if (controlsVisible) 138.dp else 34.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text(
+                text = text.orEmpty(),
+                color = Color(0xFF70F28A),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color.Black.copy(alpha = 0.68f))
+                    .padding(horizontal = 16.dp, vertical = 9.dp)
+            )
+        }
+    }
+}
+
 private enum class GestureSide {
     Brightness,
     Volume
+}
+
+private enum class GestureMode {
+    Seek,
+    VerticalAdjust
 }
 
 private data class GestureFeedback(
@@ -537,6 +721,49 @@ private fun GestureFeedbackOverlay(
                     .clip(RoundedCornerShape(999.dp)),
                 color = Color.White,
                 trackColor = Color.White.copy(alpha = 0.24f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SeekDragFeedbackOverlay(
+    targetPositionMs: Long?,
+    startPositionMs: Long,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = targetPositionMs != null,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = modifier
+    ) {
+        val target = targetPositionMs ?: return@AnimatedVisibility
+        val deltaSeconds = ((target - startPositionMs) / 1000).toInt()
+        val deltaText = when {
+            deltaSeconds > 0 -> "+${formatSeekDelta(deltaSeconds)}"
+            deltaSeconds < 0 -> "-${formatSeekDelta(-deltaSeconds)}"
+            else -> "0:00"
+        }
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color.Black.copy(alpha = 0.66f))
+                .padding(horizontal = 26.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = deltaText,
+                color = Color.White,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Text(
+                text = formatTime(target),
+                color = Color.White.copy(alpha = 0.8f),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
             )
         }
     }
@@ -652,10 +879,7 @@ private fun PlayerOverlay(
     onSeek: (Float) -> Unit,
     onSpeed: () -> Unit,
     onSubtitle: () -> Unit,
-    onAudio: () -> Unit,
     onAspect: () -> Unit,
-    onBrightness: () -> Unit,
-    onVolume: () -> Unit,
     onOrientation: () -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -671,30 +895,25 @@ private fun PlayerOverlay(
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        CenterControls(
-            isPlaying = isPlaying,
-            onSeekBack = onSeekBack,
-            onTogglePlay = onTogglePlay,
-            onSeekForward = onSeekForward,
-            modifier = Modifier.align(Alignment.Center)
-        )
-
         BottomGradientControls(
             positionMs = positionMs,
             durationMs = durationMs,
             speed = speed,
             aspectLabel = aspectLabel,
-            errorMessage = errorMessage,
-            liveSubtitleEnabled = liveSubtitleEnabled,
+                errorMessage = errorMessage,
+                liveSubtitleEnabled = liveSubtitleEnabled,
+                isPlaying = isPlaying,
+                isLandscape = isLandscape,
+                onSeekBack = onSeekBack,
+            onTogglePlay = onTogglePlay,
+            onSeekForward = onSeekForward,
             onSeek = onSeek,
             onSpeed = onSpeed,
-            onSubtitle = onSubtitle,
-            onAudio = onAudio,
-            onAspect = onAspect,
-            onBrightness = onBrightness,
-            onVolume = onVolume,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
+                onSubtitle = onSubtitle,
+                onAspect = onAspect,
+                onOrientation = onOrientation,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
     }
 }
 
@@ -744,7 +963,7 @@ private fun TopGradientBar(
         Box {
             GlassIconButton(
                 icon = Icons.Rounded.MoreVert,
-                contentDescription = "播放模式",
+                contentDescription = "\u64AD\u653E\u6A21\u5F0F",
                 onClick = { modeMenuExpanded = true }
             )
             PlaybackModeMenu(
@@ -779,7 +998,7 @@ private fun PlaybackModeMenu(
         DropdownMenuItem(
             text = {
                 Text(
-                    text = "播放模式",
+                    text = "\u64AD\u653E\u6A21\u5F0F",
                     color = Color.White.copy(alpha = 0.62f),
                     fontWeight = FontWeight.Bold
                 )
@@ -790,7 +1009,7 @@ private fun PlaybackModeMenu(
             DropdownMenuItem(
                 text = {
                     Text(
-                        text = "${if (mode == selectedMode) "✓ " else ""}${mode.label}",
+                        text = "${if (mode == selectedMode) "\u2713 " else ""}${mode.label}",
                         color = Color.White
                     )
                 },
@@ -800,7 +1019,7 @@ private fun PlaybackModeMenu(
         DropdownMenuItem(
             text = {
                 Text(
-                    text = "控制方式",
+                    text = "\u63A7\u5236\u65B9\u5F0F",
                     color = Color.White.copy(alpha = 0.62f),
                     fontWeight = FontWeight.Bold
                 )
@@ -812,7 +1031,7 @@ private fun PlaybackModeMenu(
                 enabled = selectedMode.isVr,
                 text = {
                     Text(
-                        text = "${if (mode == selectedControlMode) "✓ " else ""}${mode.label}",
+                        text = "${if (mode == selectedControlMode) "\u2713 " else ""}${mode.label}",
                         color = if (selectedMode.isVr) Color.White else Color.White.copy(alpha = 0.38f)
                     )
                 },
@@ -832,18 +1051,30 @@ private fun CenterControls(
 ) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(30.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RoundIconButton(icon = Icons.Rounded.Replay10, contentDescription = "Replay 10 seconds", size = 62, onClick = onSeekBack)
+        RoundIconButton(
+            icon = Icons.Rounded.Replay10,
+            contentDescription = "Replay 10 seconds",
+            size = 42,
+            iconSize = 27,
+            onClick = onSeekBack
+        )
         RoundIconButton(
             icon = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
             contentDescription = if (isPlaying) "Pause" else "Play",
-            size = 86,
-            iconSize = 48,
+            size = 54,
+            iconSize = 32,
             onClick = onTogglePlay
         )
-        RoundIconButton(icon = Icons.Rounded.Forward10, contentDescription = "Forward 10 seconds", size = 62, onClick = onSeekForward)
+        RoundIconButton(
+            icon = Icons.Rounded.Forward10,
+            contentDescription = "Forward 10 seconds",
+            size = 42,
+            iconSize = 27,
+            onClick = onSeekForward
+        )
     }
 }
 
@@ -855,13 +1086,16 @@ private fun BottomGradientControls(
     aspectLabel: String,
     errorMessage: String?,
     liveSubtitleEnabled: Boolean,
+    isPlaying: Boolean,
+    isLandscape: Boolean,
+    onSeekBack: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onSeekForward: () -> Unit,
     onSeek: (Float) -> Unit,
     onSpeed: () -> Unit,
     onSubtitle: () -> Unit,
-    onAudio: () -> Unit,
     onAspect: () -> Unit,
-    onBrightness: () -> Unit,
-    onVolume: () -> Unit,
+    onOrientation: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -873,7 +1107,7 @@ private fun BottomGradientControls(
                 )
             )
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 24.dp, vertical = 18.dp)
+            .padding(horizontal = 24.dp, vertical = 12.dp)
     ) {
         errorMessage?.let {
             Text(
@@ -900,26 +1134,78 @@ private fun BottomGradientControls(
             )
             TimeText(formatTime(durationMs))
         }
-        Spacer(modifier = Modifier.height(10.dp))
-        val toolScrollState = rememberScrollState()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(toolScrollState),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            GlassToolButton(icon = Icons.Rounded.Speed, label = "${speed.formatSpeed()}x", onClick = onSpeed)
-            GlassToolButton(icon = Icons.Rounded.Brightness6, label = "\u4EAE\u5EA6", onClick = onBrightness)
-            GlassToolButton(icon = Icons.Rounded.VolumeUp, label = "\u97F3\u91CF", onClick = onVolume)
-            GlassToolButton(
-                icon = Icons.Rounded.ClosedCaption,
-                label = if (liveSubtitleEnabled) "字幕开" else "实时字幕",
-                onClick = onSubtitle
+        if (isLandscape) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 0.dp)
+            ) {
+                CenterControls(
+                    isPlaying = isPlaying,
+                    onSeekBack = onSeekBack,
+                    onTogglePlay = onTogglePlay,
+                    onSeekForward = onSeekForward,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                PlayerToolRow(
+                    speed = speed,
+                    liveSubtitleEnabled = liveSubtitleEnabled,
+                    isLandscape = isLandscape,
+                    onSpeed = onSpeed,
+                    onSubtitle = onSubtitle,
+                    onOrientation = onOrientation,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
+            }
+        } else {
+            CenterControls(
+                isPlaying = isPlaying,
+                onSeekBack = onSeekBack,
+                onTogglePlay = onTogglePlay,
+                onSeekForward = onSeekForward,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = 0.dp, bottom = 6.dp)
             )
-            GlassToolButton(icon = Icons.Rounded.Audiotrack, label = "Audio", onClick = onAudio)
-            GlassToolButton(icon = Icons.Rounded.AspectRatio, label = aspectLabel, onClick = onAspect)
+            PlayerToolRow(
+                speed = speed,
+                liveSubtitleEnabled = liveSubtitleEnabled,
+                isLandscape = isLandscape,
+                onSpeed = onSpeed,
+                onSubtitle = onSubtitle,
+                onOrientation = onOrientation,
+                modifier = Modifier.align(Alignment.End)
+            )
         }
+    }
+}
+
+@Composable
+private fun PlayerToolRow(
+    speed: Float,
+    liveSubtitleEnabled: Boolean,
+    isLandscape: Boolean,
+    onSpeed: () -> Unit,
+    onSubtitle: () -> Unit,
+    onOrientation: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        GlassToolButton(icon = Icons.Rounded.Speed, label = "${speed.formatSpeed()}x", onClick = onSpeed)
+        GlassToolButton(
+            icon = Icons.Rounded.ClosedCaption,
+            label = if (liveSubtitleEnabled) "字幕开" else "实时字幕",
+            onClick = onSubtitle
+        )
+        GlassToolButton(
+            icon = if (isLandscape) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+            label = if (isLandscape) "\u7AD6\u5C4F" else "\u6A2A\u5C4F",
+            onClick = onOrientation
+        )
     }
 }
 
@@ -971,6 +1257,28 @@ private fun GlassIconButton(
 }
 
 @Composable
+private fun PlayerLockButton(
+    locked: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = if (locked) 0.62f else 0.38f))
+    ) {
+        Icon(
+            imageVector = if (locked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+            contentDescription = if (locked) "解除锁定" else "锁定控件",
+            tint = Color.White,
+            modifier = Modifier.size(24.dp)
+        )
+    }
+}
+
+@Composable
 private fun GlassToolButton(icon: ImageVector, label: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -1015,6 +1323,12 @@ private fun formatTime(ms: Long): String {
     } else {
         "%02d:%02d".format(minutes, seconds)
     }
+}
+
+private fun formatSeekDelta(seconds: Int): String {
+    val minutes = seconds / 60
+    val remainingSeconds = seconds % 60
+    return "%d:%02d".format(minutes, remainingSeconds)
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {

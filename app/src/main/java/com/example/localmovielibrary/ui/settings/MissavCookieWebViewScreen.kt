@@ -2,6 +2,7 @@ package com.example.localmovielibrary.ui.settings
 
 import android.annotation.SuppressLint
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -40,7 +41,7 @@ fun MissavCookieWebViewScreen(
 ) {
     var saved by remember { mutableStateOf(false) }
     var statusText by remember {
-        mutableStateOf("请在此页面打开一次 MissAV；获取到 Cookie 后会自动保存，后续刮削将在后台完成。")
+        mutableStateOf("请在此页面打开一次 MissAV。获取到 Cookie 后会自动保存，后续刮削会在后台继续。")
     }
     val missavUrl = remember(number) { "https://missav.ai/cn/${number.lowercase()}" }
     BackHandler { onBack() }
@@ -52,7 +53,7 @@ fun MissavCookieWebViewScreen(
             val cookie = collectMissavCookies()
             when {
                 html.isCloudflareChallengeHtml() -> {
-                    statusText = "检测到 Cloudflare 验证页，请完成验证；完成后 Cookie 会自动保存。"
+                    statusText = "检测到 Cloudflare 验证页，请完成验证。完成后 Cookie 会自动保存。"
                 }
                 cookie.hasUsefulMissavCookie() || (cookie.isNotBlank() && html.isMissavReadyPage(number)) -> {
                     saved = true
@@ -110,6 +111,16 @@ fun MissavCookieWebViewScreen(
                         settings.databaseEnabled = true
                         settings.userAgentString = MissavScraper.USER_AGENT
                         webViewClient = object : WebViewClient() {
+                            override fun onRenderProcessGone(
+                                view: WebView?,
+                                detail: RenderProcessGoneDetail?
+                            ): Boolean {
+                                statusText = "MissAV WebView 渲染进程崩溃，请返回后重试。"
+                                view?.stopLoading()
+                                view?.destroy()
+                                return true
+                            }
+
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
                                 trySaveCookie(view)

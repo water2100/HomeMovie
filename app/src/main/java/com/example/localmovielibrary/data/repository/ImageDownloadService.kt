@@ -2,6 +2,7 @@ package com.example.localmovielibrary.data.repository
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,7 +30,7 @@ class ImageDownloadService(
                 if (attempt < retryCount - 1) {
                     val delayMillis = Random.nextLong(1_000L, 2_001L)
                     logger("等待 ${delayMillis}ms 后重试图片下载")
-                    Thread.sleep(delayMillis)
+                    delay(delayMillis)
                 }
             }
         }

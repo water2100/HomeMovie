@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.LazyRow
@@ -28,23 +29,34 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.ui.home.HomeImageMode
-import com.example.localmovielibrary.ui.shared.UriImage
+import com.example.localmovielibrary.ui.shared.MovieArtwork
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.collectLatest
 
 private val SearchBackground = Color(0xFF070A0E)
 private val SearchPanel = Color.White.copy(alpha = 0.075f)
+private const val SEARCH_INITIAL_COUNT = 90
+private const val SEARCH_PAGE_SIZE = 60
+private const val SEARCH_PREFETCH_THRESHOLD = 18
 
 @Composable
 fun SearchScreen(
@@ -70,7 +82,12 @@ fun SearchScreen(
         when {
             !uiState.hasQuery -> SearchEmptyPrompt(uiState.minSearchLength)
             uiState.results.isEmpty() -> SearchNoResults()
-            else -> SearchResultsGrid(movies = uiState.results, imageMode = imageMode, onMovieClick = onMovieClick)
+            else -> SearchResultsGrid(
+                movies = uiState.results,
+                imageMode = imageMode,
+                resetKey = "${uiState.scope.name}:${uiState.query}",
+                onMovieClick = onMovieClick
+            )
         }
     }
 }
@@ -83,6 +100,14 @@ private fun SearchHeader(
     onClear: () -> Unit,
     onScopeSelected: (SearchScope) -> Unit
 ) {
+    var queryFieldValue by remember { mutableStateOf(TextFieldValue(query, selection = TextRange(query.length))) }
+
+    LaunchedEffect(query) {
+        if (query != queryFieldValue.text) {
+            queryFieldValue = TextFieldValue(query, selection = TextRange(query.length))
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -100,8 +125,11 @@ private fun SearchHeader(
             )
         }
         OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
+            value = queryFieldValue,
+            onValueChange = { value ->
+                queryFieldValue = value
+                onQueryChange(value.text)
+            },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
@@ -109,7 +137,7 @@ private fun SearchHeader(
             trailingIcon = {
                 if (query.isNotEmpty()) {
                     IconButton(onClick = onClear) {
-                        Icon(Icons.Rounded.Close, contentDescription = "Clear")
+                        Icon(Icons.Rounded.Close, contentDescription = "清空搜索")
                     }
                 }
             },
@@ -130,8 +158,12 @@ private fun SearchHeader(
             )
         )
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(SearchScope.values().size) { index ->
-                val scope = SearchScope.values()[index]
+            items(
+                count = SearchScope.entries.size,
+                key = { SearchScope.entries[it].name },
+                contentType = { "search-scope-chip" }
+            ) { index ->
+                val scope = SearchScope.entries[index]
                 FilterChip(
                     selected = selectedScope == scope,
                     onClick = { onScopeSelected(scope) },
@@ -146,8 +178,40 @@ private fun SearchHeader(
 private fun SearchResultsGrid(
     movies: List<MovieEntity>,
     imageMode: HomeImageMode,
+    resetKey: String,
     onMovieClick: (Long) -> Unit
 ) {
+    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+    var visibleCount by rememberSaveable { mutableStateOf(SEARCH_INITIAL_COUNT) }
+    val visibleMovies = remember(movies, visibleCount) {
+        movies.take(visibleCount.coerceIn(0, movies.size))
+    }
+
+    LaunchedEffect(resetKey) {
+        visibleCount = SEARCH_INITIAL_COUNT.coerceAtMost(movies.size)
+        gridState.scrollToItem(0)
+    }
+
+    LaunchedEffect(movies.size) {
+        if (visibleCount == 0 && movies.isNotEmpty()) {
+            visibleCount = SEARCH_INITIAL_COUNT.coerceAtMost(movies.size)
+        } else if (visibleCount > movies.size) {
+            visibleCount = movies.size
+        }
+    }
+
+    LaunchedEffect(gridState, movies.size) {
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .collectLatest { lastVisibleIndex ->
+                if (
+                    movies.size > visibleCount &&
+                    lastVisibleIndex >= visibleCount - SEARCH_PREFETCH_THRESHOLD
+                ) {
+                    visibleCount = (visibleCount + SEARCH_PAGE_SIZE).coerceAtMost(movies.size)
+                }
+            }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
             text = "\u627E\u5230 ${movies.size} \u90E8\u5F71\u7247",
@@ -156,13 +220,18 @@ private fun SearchResultsGrid(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)
         )
         LazyVerticalGrid(
+            state = gridState,
             columns = GridCells.Adaptive(minSize = if (imageMode == HomeImageMode.Thumb) 170.dp else 112.dp),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
             horizontalArrangement = Arrangement.spacedBy(13.dp)
         ) {
-            items(movies, key = { it.id }) { movie ->
+            items(
+                items = visibleMovies,
+                key = { it.id },
+                contentType = { if (imageMode == HomeImageMode.Thumb) "search-thumb-card" else "search-poster-card" }
+            ) { movie ->
                 SearchMoviePosterCard(movie = movie, imageMode = imageMode, onClick = { onMovieClick(movie.id) })
             }
         }
@@ -181,21 +250,12 @@ private fun SearchMoviePosterCard(movie: MovieEntity, imageMode: HomeImageMode, 
             colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF111720)),
             elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                UriImage(
-                    uri = if (imageMode == HomeImageMode.Thumb) {
-                        movie.thumbUri ?: movie.fanartUri ?: movie.posterUri
-                    } else {
-                        movie.posterUri ?: movie.thumbUri ?: movie.fanartUri
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    maxDecodeSize = 520
-                )
-                if (movie.posterUri == null && movie.thumbUri == null && movie.fanartUri == null) {
-                    PosterPlaceholder(movie.title)
-                }
-            }
+            MovieArtwork(
+                movie = movie,
+                preferThumb = imageMode == HomeImageMode.Thumb,
+                modifier = Modifier.fillMaxSize(),
+                maxDecodeSize = if (imageMode == HomeImageMode.Thumb) 960 else 720
+            )
         }
         Spacer(Modifier.height(8.dp))
         Text(
@@ -213,23 +273,6 @@ private fun SearchMoviePosterCard(movie: MovieEntity, imageMode: HomeImageMode, 
                 style = MaterialTheme.typography.labelSmall
             )
         }
-    }
-}
-
-@Composable
-private fun PosterPlaceholder(title: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF202A35), Color(0xFF10151B)))),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = title.take(2).uppercase(),
-            color = Color.White.copy(alpha = 0.72f),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.ExtraBold
-        )
     }
 }
 

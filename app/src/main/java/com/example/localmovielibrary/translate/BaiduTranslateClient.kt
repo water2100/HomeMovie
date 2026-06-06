@@ -26,7 +26,7 @@ class BaiduTranslateClient(
         val appId = settingsRepository.getBaiduTranslateAppId()
         val secretKey = settingsRepository.getBaiduTranslateSecretKey()
         if (appId.isBlank() || secretKey.isBlank()) {
-            error("请先在设置中配置百度翻译 App ID 和 Secret Key")
+            error("请先在设置中配置百度翻译 App ID 和密钥")
         }
         val salt = Random.nextInt(100_000, 999_999).toString()
         val sign = "$appId$query$salt$secretKey".md5()

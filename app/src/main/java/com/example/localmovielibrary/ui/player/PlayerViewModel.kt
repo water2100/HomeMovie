@@ -27,7 +27,9 @@ import com.example.localmovielibrary.playback.SubtitleRenderersFactory
 import com.example.localmovielibrary.playback.vr.VrControlMode
 import com.example.localmovielibrary.playback.vr.VrMode
 import com.example.localmovielibrary.playback.vr.VrModeSettings
-import com.example.localmovielibrary.translate.BaiduTranslateClient
+import com.example.localmovielibrary.subtitle.SavedSubtitleCue
+import com.example.localmovielibrary.subtitle.LiveSubtitleStore
+import com.example.localmovielibrary.translate.TranslationClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,7 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlin.math.abs
 
 class PlayerViewModel(
     private val application: Application,
@@ -43,17 +45,24 @@ class PlayerViewModel(
     title: String,
     private val fileName: String,
     directLinkRepository: DirectLinkRepository,
-    settingsRepository: AppSettingsRepository,
+    private val settingsRepository: AppSettingsRepository,
     private val playbackProgressRepository: PlaybackProgressRepository
 ) : AndroidViewModel(application) {
-    private val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+    private val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f)
     private var speedIndex = 1
     private val resolver = PlaybackResolver(application.contentResolver, directLinkRepository)
-    private val translateClient = BaiduTranslateClient(settingsRepository)
-    private val subtitleRecognizer = SherpaOnnxSubtitleRecognizer(application)
+    private val translateClient = TranslationClient(settingsRepository)
+    private val liveSubtitleStore = LiveSubtitleStore(application, settingsRepository)
+    private val subtitleRecognizer = SherpaOnnxSubtitleRecognizer(application, settingsRepository)
     private val mediaKey = videoUri.toString()
     private var progressJob: Job? = null
+    private var savedSubtitleJob: Job? = null
+    private var liveSubtitleClearJob: Job? = null
     private var lastTranslatedSource = ""
+    private var lastTranslationStartedAtMs = 0L
+    private var lastPersistedPositionMs = Long.MIN_VALUE
+    private var lastPersistedDurationMs = 0L
+    private var lastPersistedAtMs = 0L
     private var retriedAfterForbidden = false
     private val vrModeSettings = VrModeSettings(application)
 
@@ -160,7 +169,7 @@ class PlayerViewModel(
             val previousPlayer = _uiState.value.player
             val resumePositionMs = previousPlayer?.currentPosition?.coerceAtLeast(0L)
                 ?: playbackProgressRepository.getResumePosition(mediaKey)
-            previousPlayer?.let { persistProgress(it) }
+            previousPlayer?.let { persistProgress(it, force = true) }
             progressJob?.cancel()
             previousPlayer?.release()
             _uiState.value = _uiState.value.copy(player = null, isLoading = true, errorMessage = null)
@@ -206,6 +215,15 @@ class PlayerViewModel(
         }
     }
 
+    fun leavePlayer() {
+        val player = uiState.value.player
+        if (player != null) {
+            saveProgress(player)
+            player.pause()
+        }
+        stopLiveSubtitleRecognition()
+    }
+
     fun seekBack() {
         uiState.value.player?.let { player ->
             player.seekBack()
@@ -232,6 +250,8 @@ class PlayerViewModel(
         uiState.value.player?.setPlaybackSpeed(playbackSpeed)
         return playbackSpeed
     }
+
+    fun hasLiveSubtitleModel(): Boolean = subtitleRecognizer.hasModelAssets()
 
     fun setVrMode(mode: VrMode) {
         vrModeSettings.saveMode(mediaKey, mode)
@@ -320,7 +340,7 @@ class PlayerViewModel(
                 }
             },
             onText = { text ->
-                translateRecognizedSubtitle(text)
+                translateRecognizedSubtitleAndSave(text)
             },
             onError = { message ->
                 _uiState.update {
@@ -335,6 +355,19 @@ class PlayerViewModel(
     }
 
     fun startLiveSubtitleFromPlayerAudio() {
+        if (_uiState.value.liveSubtitleListening) return
+        savedSubtitleJob?.cancel()
+        viewModelScope.launch {
+            val savedCues = liveSubtitleStore.load(videoUri, fileName)
+            if (savedCues.isNotEmpty()) {
+                startSavedSubtitlePlayback(savedCues)
+            } else {
+                startLiveSubtitleCaptureFromPlayerAudio()
+            }
+        }
+    }
+
+    private fun startLiveSubtitleCaptureFromPlayerAudio() {
         if (_uiState.value.liveSubtitleListening) return
         if (!subtitleRecognizer.hasModelAssets()) {
             _uiState.update {
@@ -352,7 +385,7 @@ class PlayerViewModel(
             state.copy(
                 liveSubtitleEnabled = true,
                 liveSubtitleListening = true,
-                liveSubtitleSourceText = "正在启动播放器内录 ASR...",
+                liveSubtitleSourceText = "",
                 liveSubtitleTranslatedText = state.liveSubtitleTranslatedText,
                 liveSubtitleError = null
             )
@@ -363,13 +396,13 @@ class PlayerViewModel(
                     it.copy(
                         liveSubtitleEnabled = true,
                         liveSubtitleListening = true,
-                        liveSubtitleSourceText = message,
+                        liveSubtitleSourceText = "",
                         liveSubtitleError = null
                     )
                 }
             },
             onText = { text ->
-                translateRecognizedSubtitle(text)
+                translateRecognizedSubtitleAndSave(text)
             },
             onError = { message ->
                 _uiState.update {
@@ -384,6 +417,10 @@ class PlayerViewModel(
     }
 
     fun stopLiveSubtitleRecognition() {
+        savedSubtitleJob?.cancel()
+        savedSubtitleJob = null
+        liveSubtitleClearJob?.cancel()
+        liveSubtitleClearJob = null
         subtitleRecognizer.stop()
         _uiState.update {
             it.copy(
@@ -393,6 +430,38 @@ class PlayerViewModel(
                 liveSubtitleTranslatedText = "",
                 liveSubtitleError = null
             )
+        }
+    }
+
+    private fun startSavedSubtitlePlayback(cues: List<SavedSubtitleCue>) {
+        subtitleRecognizer.stop()
+        savedSubtitleJob?.cancel()
+        _uiState.update {
+            it.copy(
+                liveSubtitleEnabled = true,
+                liveSubtitleListening = false,
+                liveSubtitleSourceText = "",
+                liveSubtitleTranslatedText = "",
+                liveSubtitleError = null
+            )
+        }
+        savedSubtitleJob = viewModelScope.launch {
+            var lastCue: SavedSubtitleCue? = null
+            while (isActive && _uiState.value.liveSubtitleEnabled) {
+                val positionMs = _uiState.value.player?.currentPosition?.coerceAtLeast(0L) ?: 0L
+                val cue = cues.lastOrNull { positionMs in it.startMs..it.endMs }
+                if (cue != lastCue) {
+                    lastCue = cue
+                    _uiState.update {
+                        it.copy(
+                            liveSubtitleSourceText = cue?.sourceText.orEmpty(),
+                            liveSubtitleTranslatedText = cue?.translatedText.orEmpty(),
+                            liveSubtitleError = null
+                        )
+                    }
+                }
+                delay(250)
+            }
         }
     }
 
@@ -406,21 +475,95 @@ class PlayerViewModel(
         }
     }
 
-    private fun translateRecognizedSubtitle(text: String) {
-        if (text == lastTranslatedSource) return
-        lastTranslatedSource = text
+    private fun translateRecognizedSubtitleAndSave(text: String) {
+        val cleanText = text.trim()
+        if (cleanText.length < 2 || cleanText == lastTranslatedSource) return
+        val now = System.currentTimeMillis()
+        if (now - lastTranslationStartedAtMs < LIVE_TRANSLATE_MIN_INTERVAL_MS) {
+            _uiState.update {
+                it.copy(
+                    liveSubtitleEnabled = true,
+                    liveSubtitleListening = true,
+                    liveSubtitleSourceText = cleanText,
+                    liveSubtitleTranslatedText = "",
+                    liveSubtitleError = null
+                )
+            }
+            scheduleLiveSubtitleClear(cleanText, "")
+            return
+        }
+        lastTranslationStartedAtMs = now
+        lastTranslatedSource = cleanText
         _uiState.update {
             it.copy(
                 liveSubtitleEnabled = true,
                 liveSubtitleListening = true,
-                liveSubtitleSourceText = text,
-                liveSubtitleTranslatedText = "正在翻译...",
+                liveSubtitleSourceText = cleanText,
+                liveSubtitleTranslatedText = "",
                 liveSubtitleError = null
             )
         }
+        scheduleLiveSubtitleClear(cleanText, "")
         viewModelScope.launch {
             runCatching {
-                translateClient.translate(text, from = "jp", to = "zh")
+                translateClient.translate(cleanText, from = "jp", to = "zh")
+            }.onSuccess { translated ->
+                val finalTranslated = translated.trim().ifBlank { "翻译返回为空" }
+                _uiState.update {
+                    it.copy(
+                        liveSubtitleTranslatedText = finalTranslated,
+                        liveSubtitleError = null
+                    )
+                }
+                scheduleLiveSubtitleClear(cleanText, finalTranslated)
+                liveSubtitleStore.append(
+                    videoUri = videoUri,
+                    fileName = fileName,
+                    sourceText = cleanText,
+                    translatedText = finalTranslated,
+                    positionMs = _uiState.value.player?.currentPosition?.coerceAtLeast(0L) ?: 0L
+                )
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        liveSubtitleTranslatedText = "",
+                        liveSubtitleError = error.message ?: "翻译失败"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun translateRecognizedSubtitle(text: String) {
+        val cleanText = text.trim()
+        if (cleanText.length < 2 || cleanText == lastTranslatedSource) return
+        val now = System.currentTimeMillis()
+        if (now - lastTranslationStartedAtMs < LIVE_TRANSLATE_MIN_INTERVAL_MS) {
+            _uiState.update {
+                it.copy(
+                    liveSubtitleEnabled = true,
+                    liveSubtitleListening = true,
+                    liveSubtitleSourceText = cleanText,
+                    liveSubtitleError = null
+                )
+            }
+            scheduleLiveSubtitleClear(cleanText, _uiState.value.liveSubtitleTranslatedText)
+            return
+        }
+        lastTranslationStartedAtMs = now
+        lastTranslatedSource = cleanText
+        _uiState.update {
+            it.copy(
+                liveSubtitleEnabled = true,
+                liveSubtitleListening = true,
+                liveSubtitleSourceText = cleanText,
+                liveSubtitleError = null
+            )
+        }
+        scheduleLiveSubtitleClear(cleanText, _uiState.value.liveSubtitleTranslatedText)
+        viewModelScope.launch {
+            runCatching {
+                translateClient.translate(cleanText, from = "jp", to = "zh")
             }.onSuccess { translated ->
                 _uiState.update {
                     it.copy(
@@ -439,51 +582,97 @@ class PlayerViewModel(
         }
     }
 
+    private fun scheduleLiveSubtitleClear(sourceText: String, translatedText: String) {
+        if (sourceText.isBlank() && translatedText.isBlank()) return
+        liveSubtitleClearJob?.cancel()
+        liveSubtitleClearJob = viewModelScope.launch {
+            delay(LIVE_SUBTITLE_VISIBLE_MS)
+            _uiState.update { state ->
+                val sameSource = sourceText.isBlank() || state.liveSubtitleSourceText == sourceText
+                val sameTranslated = translatedText.isBlank() || state.liveSubtitleTranslatedText == translatedText
+                if (state.liveSubtitleEnabled && state.liveSubtitleError == null && sameSource && sameTranslated) {
+                    state.copy(
+                        liveSubtitleSourceText = "",
+                        liveSubtitleTranslatedText = ""
+                    )
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
     private fun startProgressSaver(player: Player) {
         progressJob?.cancel()
         progressJob = viewModelScope.launch {
             while (isActive) {
-                delay(5_000)
-                persistProgress(player)
+                delay(PROGRESS_SAVE_INTERVAL_MS)
+                persistProgress(player, force = false)
             }
         }
     }
 
     private fun saveProgress(player: Player) {
         viewModelScope.launch {
-            persistProgress(player)
+            persistProgress(player, force = true)
         }
     }
 
-    private suspend fun persistProgress(player: Player) {
+    private suspend fun persistProgress(player: Player, force: Boolean) {
         if (player.playbackState == Player.STATE_ENDED) {
             playbackProgressRepository.clear(mediaKey)
+            lastPersistedPositionMs = Long.MIN_VALUE
+            lastPersistedDurationMs = 0L
+            lastPersistedAtMs = 0L
             return
+        }
+        val positionMs = player.currentPosition.coerceAtLeast(0L)
+        val durationMs = player.duration.takeIf { it > 0L } ?: 0L
+        val now = System.currentTimeMillis()
+        if (!force) {
+            if (positionMs < MIN_AUTOSAVE_POSITION_MS) return
+            val positionDelta = if (lastPersistedPositionMs == Long.MIN_VALUE) Long.MAX_VALUE else abs(positionMs - lastPersistedPositionMs)
+            val durationStable = abs(durationMs - lastPersistedDurationMs) <= 1_000L
+            val intervalNotReached = now - lastPersistedAtMs < PROGRESS_SAVE_INTERVAL_MS
+            if (positionDelta < PROGRESS_SAVE_POSITION_DELTA_MS && durationStable && intervalNotReached) return
         }
         playbackProgressRepository.save(
             mediaKey = mediaKey,
-            positionMs = player.currentPosition.coerceAtLeast(0L),
-            durationMs = player.duration.takeIf { it > 0L } ?: 0L
+            positionMs = positionMs,
+            durationMs = durationMs
         )
+        lastPersistedPositionMs = positionMs
+        lastPersistedDurationMs = durationMs
+        lastPersistedAtMs = now
     }
 
     private fun clearProgress() {
         viewModelScope.launch {
             playbackProgressRepository.clear(mediaKey)
+            lastPersistedPositionMs = Long.MIN_VALUE
+            lastPersistedDurationMs = 0L
+            lastPersistedAtMs = 0L
         }
     }
 
     override fun onCleared() {
         val player = uiState.value.player
         progressJob?.cancel()
+        savedSubtitleJob?.cancel()
+        liveSubtitleClearJob?.cancel()
         subtitleRecognizer.release()
         if (player != null) {
-            runBlocking { persistProgress(player) }
             player.release()
         }
     }
 
     companion object {
+        private const val LIVE_TRANSLATE_MIN_INTERVAL_MS = 1_200L
+        private const val LIVE_SUBTITLE_VISIBLE_MS = 4_000L
+        private const val PROGRESS_SAVE_INTERVAL_MS = 15_000L
+        private const val PROGRESS_SAVE_POSITION_DELTA_MS = 10_000L
+        private const val MIN_AUTOSAVE_POSITION_MS = 5_000L
+
         fun factory(
             application: Application,
             videoUri: Uri,

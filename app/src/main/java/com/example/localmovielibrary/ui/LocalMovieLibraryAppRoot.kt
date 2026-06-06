@@ -160,12 +160,11 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     CloudBrowserScreen(
                         viewModel = viewModel,
                         onBack = { navController.popBackStack() },
-                        onSettings = { navController.navigate(Route.Settings) },
                         onPlayVideo = { item ->
                             val pickcode = item.pickcode ?: return@CloudBrowserScreen
                             navController.navigate(Route.player("cloud115://play/$pickcode", item.name, item.name))
                         },
-                        onMovieAdded = { movieId -> navController.navigate(Route.detail(movieId)) }
+                        onMovieAdded = { }
                     )
                 }
                 composable(Route.Settings) {
@@ -174,7 +173,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             repository = appContainer.settingsRepository,
                             movieRepository = appContainer.movieRepository,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
-                            scrapeRepository = appContainer.strmScrapeRepository
+                            scrapeRepository = appContainer.strmScrapeRepository,
+                            cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
+                            asrModelManager = appContainer.asrModelManager
                         )
                     )
                     SettingsScreen(
@@ -193,7 +194,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             repository = appContainer.settingsRepository,
                             movieRepository = appContainer.movieRepository,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
-                            scrapeRepository = appContainer.strmScrapeRepository
+                            scrapeRepository = appContainer.strmScrapeRepository,
+                            cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
+                            asrModelManager = appContainer.asrModelManager
                         )
                     )
                     MissavCookieWebViewScreen(
@@ -341,7 +344,7 @@ private fun AppBottomNavigation(
         NavigationBarItem(
             selected = currentRoute == Route.Home,
             onClick = { onNavigate(Route.Home) },
-            icon = { Icon(Icons.Rounded.Home, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Home, contentDescription = "首页") },
             label = { Text("\u9996\u9875") },
             colors = bottomNavColors()
         )
@@ -350,35 +353,35 @@ private fun AppBottomNavigation(
                 currentRoute == Route.MovieLibrary ||
                 currentRoute == Route.FilterResult,
             onClick = { onNavigate(Route.Movies) },
-            icon = { Icon(Icons.Rounded.Movie, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Movie, contentDescription = "影片") },
             label = { Text("\u5F71\u7247") },
             colors = bottomNavColors()
         )
         NavigationBarItem(
             selected = currentRoute == Route.Favorites,
             onClick = { onNavigate(Route.Favorites) },
-            icon = { Icon(Icons.Rounded.Favorite, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Favorite, contentDescription = "收藏") },
             label = { Text("\u6536\u85CF") },
             colors = bottomNavColors()
         )
         NavigationBarItem(
             selected = currentRoute == Route.Search,
             onClick = { onNavigate(Route.Search) },
-            icon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Search, contentDescription = "搜索") },
             label = { Text("\u641C\u7D22") },
             colors = bottomNavColors()
         )
         NavigationBarItem(
             selected = currentRoute == Route.CloudBrowser,
             onClick = { onNavigate(Route.CloudBrowser) },
-            icon = { Icon(Icons.Rounded.Cloud, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Cloud, contentDescription = "网盘") },
             label = { Text("\u7F51\u76D8") },
             colors = bottomNavColors()
         )
         NavigationBarItem(
             selected = currentRoute == Route.Settings,
             onClick = { onNavigate(Route.Settings) },
-            icon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Settings, contentDescription = "设置") },
             label = { Text("\u8BBE\u7F6E") },
             colors = bottomNavColors()
         )

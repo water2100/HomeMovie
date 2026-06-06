@@ -5,6 +5,13 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val purgeStaleRoomGeneratedSources by tasks.registering(Delete::class) {
+    delete(
+        layout.buildDirectory.dir("generated/ksp/debug/java/com/example/localmovielibrary/data/local"),
+        layout.buildDirectory.dir("kspCaches/debug/backups/java/byRounds")
+    )
+}
+
 android {
     namespace = "com.example.localmovielibrary"
     compileSdk = 35
@@ -14,7 +21,11 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildFeatures {
@@ -33,6 +44,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+tasks.matching { task ->
+    task.name in setOf("kspDebugKotlin", "compileDebugKotlin")
+}.configureEach {
+    dependsOn(purgeStaleRoomGeneratedSources)
 }
 
 dependencies {

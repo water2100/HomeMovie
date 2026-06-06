@@ -4,13 +4,15 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import com.example.localmovielibrary.data.local.MovieEntity
-import com.example.localmovielibrary.data.local.MovieLibraryMetadata
-import com.example.localmovielibrary.data.local.PlaybackProgressEntity
+import com.example.localmovielibrary.data.local.MoviePlaybackKeyItem
+import com.example.localmovielibrary.data.local.PlaybackProgressListItem
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieWithSources
+import com.example.localmovielibrary.data.repository.MovieLibrarySummaries
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.PlaybackProgressRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
@@ -19,6 +21,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -36,21 +40,45 @@ class HomeViewModel(
     private val displayedMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     private val pendingMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     private val pendingNewCount = MutableStateFlow(0)
+    private val librarySummaries = MutableStateFlow(MovieLibrarySummaries())
     private val avatarUpdateState = scrapeRepository.actorAvatarUpdateState
     private val libraryUpdateState = combine(avatarUpdateState, pendingNewCount) { avatarUpdate, newCount ->
         avatarUpdate to newCount
     }
-    private val libraryMetadata = repository.observeMovieLibraryMetadata()
-    private val moviesWithLibraryMetadata = combine(displayedMovies, libraryMetadata) { movieList, metadata ->
-        movieList.withLibraryMetadata(metadata)
-    }
-    private val playbackProgress = playbackProgressRepository.observeAll()
+    private val movieBaseBuckets = displayedMovies.map { movieList ->
+        HomeMovieBaseBuckets(
+            sourceMovies = movieList,
+            recentlyAdded = movieList.sortedByDescending { it.scannedAtMillis }.take(12),
+            favoriteMovies = movieList.filter { it.isFavorite }.sortedByDescending { it.updatedAt }.take(12),
+            stats = LibraryStats(
+                total = movieList.size,
+                watched = movieList.count { it.isWatched },
+                favorites = movieList.count { it.isFavorite }
+            )
+        )
+    }.flowOn(Dispatchers.Default)
+    private val movieBuckets = combine(movieBaseBuckets, sortState) { base, sort ->
+        HomeMovieBuckets(
+            sourceMovies = base.sourceMovies,
+            movies = base.sourceMovies.sortedWith(movieComparator(sort)),
+            recentlyAdded = base.recentlyAdded,
+            favoriteMovies = base.favoriteMovies,
+            sortState = sort,
+            stats = base.stats
+        )
+    }.flowOn(Dispatchers.Default)
+    private val playbackProgress = playbackProgressRepository.observeRecent(HOME_RECENT_PROGRESS_LIMIT)
+    private val playbackKeys = repository.observeMoviePlaybackKeys()
+    private val moviesWithProgress = combine(movieBuckets, playbackProgress, playbackKeys) { buckets, progress, keys ->
+        val playbackIndex = buckets.sourceMovies.toPlaybackMovieIndex(keys)
+        buckets to progress.recentlyPlayedMovies(playbackIndex).take(12)
+    }.flowOn(Dispatchers.Default)
     private val domesticMovies = domesticMovieRepository.observeAllWithSources()
-    private val moviesWithProgress = combine(moviesWithLibraryMetadata, playbackProgress) { movieList, progress ->
-        movieList to progress
-    }
     private val moviesWithProgressAndDomestic = combine(moviesWithProgress, domesticMovies) { movieData, domestic ->
         movieData to domestic
+    }
+    private val homeMovieData = combine(moviesWithProgressAndDomestic, librarySummaries) { movieData, summaries ->
+        movieData to summaries
     }
 
     init {
@@ -63,31 +91,26 @@ class HomeViewModel(
         }
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(moviesWithProgressAndDomestic, scanState, sortState, imageModeState, libraryUpdateState) { combinedMovieData, scan, sort, imageMode, libraryUpdate ->
+    val uiState: StateFlow<HomeUiState> = combine(homeMovieData, scanState, imageModeState, libraryUpdateState) { combinedHomeData, scan, imageMode, libraryUpdate ->
+        val (combinedMovieData, summaries) = combinedHomeData
         val (movieData, domestic) = combinedMovieData
-        val (movieList, progress) = movieData
+        val (buckets, recentlyPlayed) = movieData
         val (avatarUpdate, newCount) = libraryUpdate
-        val sortedByRecent = movieList.sortedByDescending { it.scannedAtMillis }
-        val recentlyPlayed = progress.recentlyPlayedMovies(movieList).take(12)
-        val sortedMovies = movieList.sortedWith(movieComparator(sort))
         HomeUiState(
-            movies = sortedMovies,
-            recentlyAdded = sortedByRecent.take(12),
+            movies = buckets.movies,
+            recentlyAdded = buckets.recentlyAdded,
             recentlyPlayed = recentlyPlayed,
-            favoriteMovies = movieList.filter { it.isFavorite }.sortedByDescending { it.updatedAt }.take(12),
+            favoriteMovies = buckets.favoriteMovies,
             domesticMovies = domestic,
             scanState = scan,
-            sortState = sort,
+            sortState = buckets.sortState,
             imageMode = imageMode,
             isUpdatingActorAvatars = avatarUpdate.isUpdating,
             actorAvatarUpdateMessage = avatarUpdate.message,
             actorAvatarRefreshVersion = avatarUpdate.refreshVersion,
             pendingNewCount = newCount,
-            stats = LibraryStats(
-                total = movieList.size,
-                watched = movieList.count { it.isWatched },
-                favorites = movieList.count { it.isFavorite }
-            )
+            librarySummaries = summaries,
+            stats = buckets.stats
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
@@ -170,10 +193,21 @@ class HomeViewModel(
     }
 
     fun updateMissingActorAvatars() {
-        scrapeRepository.startUpdateMissingActorAvatars(uiState.value.movies)
+        viewModelScope.launch {
+            scrapeRepository.startUpdateMissingActorAvatars(repository.getMoviesForActorAvatarUpdate())
+        }
+    }
+
+    fun refreshLibrarySummaries() {
+        viewModelScope.launch {
+            runCatching { repository.getLibrarySummaries() }
+                .onSuccess { librarySummaries.value = it }
+        }
     }
 
     companion object {
+        private const val HOME_RECENT_PROGRESS_LIMIT = 100
+
         fun factory(
             repository: MovieRepository,
             domesticMovieRepository: DomesticMovieRepository,
@@ -248,32 +282,27 @@ private fun <T : Comparable<T>> compareNullable(left: T?, right: T?): Int =
 
 private fun Long.stableRandomKey(): Long = (this * 1103515245L + 12345L) and 0x7fffffff
 
-private fun List<MovieEntity>.withLibraryMetadata(metadata: List<MovieLibraryMetadata>): List<MovieEntity> {
-    if (isEmpty() || metadata.isEmpty()) return this
-    val metadataById = metadata.associateBy { it.id }
-    return map { movie ->
-        val item = metadataById[movie.id] ?: return@map movie
-        movie.copy(
-            studios = item.studios,
-            series = item.series,
-            directors = item.directors,
-            actors = item.actors,
-            genres = item.genres,
-            tags = item.tags
-        )
-    }
+private fun List<PlaybackProgressListItem>.recentlyPlayedMovies(index: PlaybackMovieIndex): List<MovieEntity> {
+    if (isEmpty() || index.isEmpty) return emptyList()
+    return mapNotNull { progress ->
+        index.byUri[progress.mediaKey]
+            ?: progress.mediaKey.parentDocumentKey()?.let { index.byParentDocument[it] }
+    }.distinctBy { it.id }
 }
 
-private fun List<PlaybackProgressEntity>.recentlyPlayedMovies(movies: List<MovieEntity>): List<MovieEntity> {
-    if (isEmpty() || movies.isEmpty()) return emptyList()
-    val movieByUri = movies.associateBy { it.videoUri }
-    val movieByParent = movies
-        .mapNotNull { movie -> movie.videoUri.parentDocumentKey()?.let { it to movie } }
-        .toMap()
-    return mapNotNull { progress ->
-        movieByUri[progress.mediaKey]
-            ?: progress.mediaKey.parentDocumentKey()?.let { movieByParent[it] }
-    }.distinctBy { it.id }
+private fun List<MovieEntity>.toPlaybackMovieIndex(keys: List<MoviePlaybackKeyItem>): PlaybackMovieIndex {
+    if (isEmpty() || keys.isEmpty()) return PlaybackMovieIndex()
+    val moviesById = associateBy { it.id }
+    val keyPairs = keys.mapNotNull { key ->
+        val movie = moviesById[key.id] ?: return@mapNotNull null
+        key.videoUri to movie
+    }
+    return PlaybackMovieIndex(
+        byUri = keyPairs.toMap(),
+        byParentDocument = keyPairs.mapNotNull { (videoUri, movie) ->
+            videoUri.parentDocumentKey()?.let { parent -> parent to movie }
+        }.toMap()
+    )
 }
 
 private fun String.parentDocumentKey(): String? {
@@ -302,6 +331,7 @@ data class HomeUiState(
     val actorAvatarUpdateMessage: String? = null,
     val actorAvatarRefreshVersion: Int = 0,
     val pendingNewCount: Int = 0,
+    val librarySummaries: MovieLibrarySummaries = MovieLibrarySummaries(),
     val stats: LibraryStats = LibraryStats()
 ) {
     val hasPendingMovieUpdates: Boolean get() = pendingNewCount > 0
@@ -317,6 +347,29 @@ data class LibraryStats(
     val watched: Int = 0,
     val favorites: Int = 0
 )
+
+private data class HomeMovieBuckets(
+    val sourceMovies: List<MovieEntity> = emptyList(),
+    val movies: List<MovieEntity> = emptyList(),
+    val recentlyAdded: List<MovieEntity> = emptyList(),
+    val favoriteMovies: List<MovieEntity> = emptyList(),
+    val sortState: HomeSortState = HomeSortState(),
+    val stats: LibraryStats = LibraryStats()
+)
+
+private data class HomeMovieBaseBuckets(
+    val sourceMovies: List<MovieEntity> = emptyList(),
+    val recentlyAdded: List<MovieEntity> = emptyList(),
+    val favoriteMovies: List<MovieEntity> = emptyList(),
+    val stats: LibraryStats = LibraryStats()
+)
+
+private data class PlaybackMovieIndex(
+    val byUri: Map<String, MovieEntity> = emptyMap(),
+    val byParentDocument: Map<String, MovieEntity> = emptyMap()
+) {
+    val isEmpty: Boolean get() = byUri.isEmpty() && byParentDocument.isEmpty()
+}
 
 sealed interface ScanState {
     data object Idle : ScanState

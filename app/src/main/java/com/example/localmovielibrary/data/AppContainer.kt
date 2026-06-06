@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.localmovielibrary.asr.AsrModelManager
 import com.example.localmovielibrary.cloud115.Cloud115ApiClient
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
+import com.example.localmovielibrary.cloud115.Cloud115QrLoginClient
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.Cloud115StrmRepository
 import com.example.localmovielibrary.data.local.AppDatabase
@@ -24,11 +26,23 @@ class AppContainer(context: Context) {
         appContext,
         AppDatabase::class.java,
         "local_movies.db"
-    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build()
+    ).addMigrations(
+        MIGRATION_1_2,
+        MIGRATION_2_3,
+        MIGRATION_3_4,
+        MIGRATION_4_5,
+        MIGRATION_5_6,
+        MIGRATION_6_7,
+        MIGRATION_7_8,
+        MIGRATION_8_9,
+        MIGRATION_9_10
+    ).build()
 
     val scanner = LibraryScanner(appContext)
     val settingsRepository = AppSettingsRepository(appContext)
+    val asrModelManager = AsrModelManager(appContext, settingsRepository)
     val cloud115Client = Cloud115ApiClient(Cloud115CookieProvider(appContext))
+    val cloud115QrLoginClient = Cloud115QrLoginClient(appContext, settingsRepository)
     val cloudStrmRecordRepository = CloudStrmRecordRepository(
         context = appContext,
         dao = database.cloudStrmRecordDao(),
@@ -54,7 +68,8 @@ class AppContainer(context: Context) {
         context = appContext,
         dao = database.domesticMovieDao(),
         sourceDao = database.domesticVideoSourceDao(),
-        cloud115Client = cloud115Client
+        cloud115Client = cloud115Client,
+        settingsRepository = settingsRepository
     )
     val movieRepository = MovieRepository(
         context = appContext,
@@ -191,6 +206,20 @@ class AppContainer(context: Context) {
                     FROM `domestic_movies`
                     """.trimIndent()
                 )
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_sortTitle` ON `movies` (`sortTitle`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_scannedAtMillis` ON `movies` (`scannedAtMillis`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_updatedAt` ON `movies` (`updatedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_year` ON `movies` (`year`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_isFavorite` ON `movies` (`isFavorite`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_isWatched` ON `movies` (`isWatched`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_direct_links_expiresAt` ON `direct_links` (`expiresAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_playback_progress_updatedAt` ON `playback_progress` (`updatedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_strm_records_movieNumber_partLabel_variant_fileName` ON `cloud_strm_records` (`movieNumber`, `partLabel`, `variant`, `fileName`)")
             }
         }
     }

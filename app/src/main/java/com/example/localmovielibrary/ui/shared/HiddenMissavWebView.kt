@@ -1,7 +1,12 @@
 package com.example.localmovielibrary.ui.shared
 
 import android.annotation.SuppressLint
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.size
@@ -18,6 +23,7 @@ import androidx.compose.ui.zIndex
 import com.example.localmovielibrary.scraper.MissavScraper
 import kotlinx.coroutines.delay
 import org.json.JSONArray
+import java.io.ByteArrayInputStream
 
 data class HiddenMissavWebRequest(
     val id: Long,
@@ -34,12 +40,15 @@ fun HiddenMissavWebView(
 ) {
     var completed by remember(request.id) { mutableStateOf(false) }
 
+    fun failOnce(message: String) {
+        if (completed) return
+        completed = true
+        onFailed(request.id, message)
+    }
+
     LaunchedEffect(request.id) {
         delay(25_000)
-        if (!completed) {
-            completed = true
-            onFailed(request.id, "MissAV WebView 抓取超时，可能需要可见页面手动验证")
-        }
+        failOnce("MissAV WebView 抓取超时，可能需要重新获取 Cookie")
     }
 
     AndroidView(
@@ -54,7 +63,33 @@ fun HiddenMissavWebView(
                 settings.domStorageEnabled = true
                 settings.databaseEnabled = true
                 settings.userAgentString = MissavScraper.USER_AGENT
+                settings.mediaPlaybackRequiresUserGesture = true
+                settings.loadsImagesAutomatically = false
+                settings.blockNetworkImage = true
+                settings.javaScriptCanOpenWindowsAutomatically = false
+                settings.setSupportMultipleWindows(false)
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
+                }
                 webViewClient = object : WebViewClient() {
+                    override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                        failOnce("MissAV WebView 渲染进程崩溃，已停止本次抓取")
+                        view?.stopLoading()
+                        view?.destroy()
+                        return true
+                    }
+
+                    override fun shouldInterceptRequest(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): WebResourceResponse? {
+                        val url = request?.url?.toString().orEmpty()
+                        if (url.shouldBlockForHiddenMissav()) {
+                            return emptyWebResponse()
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
                         if (completed || view == null) return
@@ -109,4 +144,54 @@ private fun String.isMissavUsableHtml(number: String): Boolean {
     val compact = normalized.replace("-", "")
     return "missav" in lower &&
         (normalized in lower || compact in lower || "og:title" in lower || "space-y-2" in lower || "text-nord6" in lower)
+}
+
+private fun String.shouldBlockForHiddenMissav(): Boolean {
+    val lower = lowercase()
+    if ("android-webview-video-poster" in lower) return true
+    return blockedHiddenMissavSuffixes.any { lower.endsWith(it) } ||
+        blockedHiddenMissavFragments.any { it in lower }
+}
+
+private val blockedHiddenMissavSuffixes = setOf(
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".svg",
+    ".mp4",
+    ".m3u8",
+    ".ts",
+    ".webm",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".mp3",
+    ".m4a",
+    ".wav",
+    ".ogg",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf"
+)
+
+private val blockedHiddenMissavFragments = setOf(
+    "/widgets/player/",
+    "/widgets/v4/",
+    "creative.",
+    "bluetrafficstream",
+    "myavlive",
+    "xxxvjmp",
+    "tsyndicate"
+)
+
+private fun emptyWebResponse(): WebResourceResponse {
+    return WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        ByteArrayInputStream(ByteArray(0))
+    )
 }

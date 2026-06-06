@@ -8,7 +8,13 @@ import androidx.room.PrimaryKey
     tableName = "movies",
     indices = [
         Index(value = ["videoUri"], unique = true),
-        Index(value = ["libraryRootUri"])
+        Index(value = ["libraryRootUri"]),
+        Index(value = ["sortTitle"]),
+        Index(value = ["scannedAtMillis"]),
+        Index(value = ["updatedAt"]),
+        Index(value = ["year"]),
+        Index(value = ["isFavorite"]),
+        Index(value = ["isWatched"])
     ]
 )
 data class MovieEntity(

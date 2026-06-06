@@ -1,11 +1,9 @@
 package com.example.localmovielibrary.data.local
 
-data class MovieLibraryMetadata(
-    val id: Long,
-    val studios: List<String>,
-    val series: String?,
-    val directors: List<String>,
-    val actors: List<String>,
-    val genres: List<String>,
-    val tags: List<String>
+data class MovieMetadataList(
+    val items: List<String>
+)
+
+data class MovieMetadataText(
+    val value: String?
 )

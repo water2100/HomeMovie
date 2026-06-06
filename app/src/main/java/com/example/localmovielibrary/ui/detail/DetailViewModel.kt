@@ -17,16 +17,19 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 class DetailViewModel(
     movieId: Long,
@@ -46,12 +49,8 @@ class DetailViewModel(
     private val _hiddenMissavRequest = MutableStateFlow<HiddenMissavRequest?>(null)
     val hiddenMissavRequest: StateFlow<HiddenMissavRequest?> = _hiddenMissavRequest
 
-    val similarMovies: StateFlow<List<MovieEntity>> = combine(
-        repository.observeMovies(),
-        movie
-    ) { movies, current ->
-        current?.let { findSimilarMovies(it, movies) } ?: emptyList()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val _similarMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
+    val similarMovies: StateFlow<List<MovieEntity>> = _similarMovies
 
     private val _playbackParts = MutableStateFlow<List<MoviePlaybackPart>>(emptyList())
     val playbackParts: StateFlow<List<MoviePlaybackPart>> = _playbackParts
@@ -69,8 +68,23 @@ class DetailViewModel(
 
     init {
         viewModelScope.launch {
-            movie.collect { current ->
-                _playbackParts.value = current?.let { repository.getPlaybackParts(it.id) }.orEmpty()
+            movie
+                .map { current -> current?.toDetailDerivedDataKey() }
+                .distinctUntilChanged()
+                .collectLatest {
+                    val current = movie.value
+                    if (current == null) {
+                        _playbackParts.value = emptyList()
+                        _similarMovies.value = emptyList()
+                        return@collectLatest
+                    }
+                    val (parts, similar) = coroutineScope {
+                        val partsDeferred = async { repository.getPlaybackParts(current.id) }
+                        val similarDeferred = async { repository.findSimilarMovies(current) }
+                        partsDeferred.await() to similarDeferred.await()
+                    }
+                    _playbackParts.value = parts
+                    _similarMovies.value = similar
             }
         }
     }
@@ -97,8 +111,15 @@ class DetailViewModel(
         val current = movie.value ?: return
         viewModelScope.launch {
             events.send(DetailEvent.Message("正在刷新影片..."))
-            val success = repository.refreshMovie(current.id)
-            events.send(DetailEvent.Message(if (success) "影片已刷新" else "无法刷新此影片"))
+            val refreshed = repository.refreshMovieRecoveringMovedStrm(current.id)
+            if (refreshed != null) {
+                events.send(DetailEvent.Message("影片已刷新"))
+                if (refreshed.id != current.id) {
+                    events.send(DetailEvent.OpenMovie(refreshed.id))
+                }
+            } else {
+                events.send(DetailEvent.Message("无法刷新此影片，可能需要重新扫描影片库"))
+            }
         }
     }
 
@@ -179,12 +200,12 @@ class DetailViewModel(
             runCatching {
                 if (request.rescrape) {
                     scrapeRepository.rescrapeMovieWithMissavHtml(current, html, cookie)
-                    repository.refreshMovie(current.id)
+                    repository.refreshMovieRecoveringMovedStrm(current.id)
                     null
                 } else {
-                    val info = scrapeRepository.scrapeMovieWithMissavHtml(current, html, cookie)
+                    val result = scrapeRepository.scrapeMovieWithMissavHtmlOutput(current, html, cookie)
                     scrapeRepository.appendLog("开始刷新单个影片，刷新 MissAV WebView 刮削结果")
-                    refreshScrapedMovie(current, info.number)
+                    refreshScrapedMovie(current, result.info.number, result.strmUri)
                 }
             }.onSuccess {
                 _isScraping.value = false
@@ -275,7 +296,8 @@ class DetailViewModel(
             return refreshed.id
         }
         scrapeRepository.appendLog("未定位到整理后的 STRM，尝试刷新当前影片记录：$number")
-        return if (repository.refreshMovie(current.id)) current.id else repository.findMovieByNumber(current.libraryRootUri, number)?.id
+        repository.refreshMovieRecoveringMovedStrm(current.id)?.let { return it.id }
+        return repository.findMovieByNumber(current.libraryRootUri, number)?.id
     }
 
     private fun rescrapeCurrent(source: ScrapeSource, allowCookieRefresh: Boolean) {
@@ -286,7 +308,7 @@ class DetailViewModel(
             events.trySend(DetailEvent.Message("开始用 ${source.displayName} 重新刮削..."))
             runCatching {
                 scrapeRepository.rescrapeMovie(current, source)
-                repository.refreshMovie(current.id)
+                repository.refreshMovieRecoveringMovedStrm(current.id)
             }.onSuccess {
                 _isScraping.value = false
                 events.trySend(DetailEvent.Message("重新刮削完成，影片信息已刷新"))
@@ -360,6 +382,27 @@ data class ThumbBackgroundSettings(
     val alphaPercent: Int = 32
 )
 
+private data class DetailDerivedDataKey(
+    val id: Long,
+    val libraryRootUri: String,
+    val videoUri: String,
+    val videoName: String,
+    val title: String,
+    val originalTitle: String?,
+    val actors: List<String>
+)
+
+private fun MovieEntity.toDetailDerivedDataKey(): DetailDerivedDataKey =
+    DetailDerivedDataKey(
+        id = id,
+        libraryRootUri = libraryRootUri,
+        videoUri = videoUri,
+        videoName = videoName,
+        title = title,
+        originalTitle = originalTitle,
+        actors = actors
+    )
+
 private val ScrapeSource.displayName: String
     get() = when (this) {
         ScrapeSource.Dmm -> "DMM"
@@ -367,50 +410,6 @@ private val ScrapeSource.displayName: String
         ScrapeSource.Official -> "Official"
         ScrapeSource.Missav -> "MissAV"
     }
-
-private fun findSimilarMovies(current: MovieEntity, movies: List<MovieEntity>): List<MovieEntity> {
-    val currentCode = current.codeInfo()
-    val currentActors = current.actors.map { it.normalized() }.filter { it.isNotBlank() }.toSet()
-    val candidates = movies.asSequence()
-        .filter { it.id != current.id }
-        .map { movie ->
-            val movieCode = movie.codeInfo()
-            val sameActorScore = movie.actors.count { it.normalized() in currentActors }
-            val samePrefix = currentCode != null && movieCode?.prefix == currentCode.prefix
-            val distance = if (currentCode != null && movieCode != null && samePrefix) {
-                abs(movieCode.number - currentCode.number)
-            } else {
-                Int.MAX_VALUE
-            }
-            val score = sameActorScore * 1000 + if (samePrefix) 250 else 0
-            movie to SimilarRank(score = score, distance = distance)
-        }
-        .filter { (_, rank) -> rank.score > 0 }
-        .sortedWith(
-            compareByDescending<Pair<MovieEntity, SimilarRank>> { it.second.score }
-                .thenBy { it.second.distance }
-                .thenBy { pair -> pair.first.sortTitle.ifBlank { pair.first.title }.lowercase() }
-        )
-        .map { it.first }
-        .toList()
-
-    return candidates.take(12)
-}
-
-private data class SimilarRank(val score: Int, val distance: Int)
-
-private data class CodeInfo(val prefix: String, val number: Int)
-
-private fun MovieEntity.codeInfo(): CodeInfo? {
-    val source = listOf(title, originalTitle.orEmpty(), videoName).joinToString(" ")
-    val match = Regex("""(?i)\b([a-z]{2,10})[-_ ]?(\d{2,6})\b""").find(source) ?: return null
-    return CodeInfo(
-        prefix = match.groupValues[1].uppercase(),
-        number = match.groupValues[2].toIntOrNull() ?: return null
-    )
-}
-
-private fun String.normalized(): String = trim().lowercase()
 
 sealed interface DetailEvent {
     data class Message(val text: String) : DetailEvent

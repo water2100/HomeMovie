@@ -2,7 +2,6 @@ package com.example.localmovielibrary.data.local
 
 data class MovieListItem(
     val id: Long,
-    val libraryRootUri: String,
     val videoUri: String,
     val videoName: String,
     val sortTitle: String,
@@ -24,7 +23,7 @@ data class MovieListItem(
     fun toMovieEntity(): MovieEntity =
         MovieEntity(
             id = id,
-            libraryRootUri = libraryRootUri,
+            libraryRootUri = "",
             videoUri = videoUri,
             videoName = videoName,
             sortTitle = sortTitle,
