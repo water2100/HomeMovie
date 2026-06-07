@@ -408,6 +408,7 @@ fun PlayerScreen(
                 factory = {
                     PlayerView(it).apply {
                         useController = false
+                        setKeepContentOnPlayerReset(true)
                         this.player = player
                         resizeMode = resizeModes[resizeModeIndex]
                         applyExternalSubtitleStyle(uiState.externalSubtitleStyle)
