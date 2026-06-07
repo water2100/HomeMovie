@@ -7,6 +7,7 @@ import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.scraper.ActorAvatarStore
 import com.example.localmovielibrary.scraper.Dmm2Scraper
 import com.example.localmovielibrary.scraper.DmmScraper
+import com.example.localmovielibrary.scraper.JavbusScraper
 import com.example.localmovielibrary.scraper.MissavScraper
 import com.example.localmovielibrary.scraper.MovieNumberExtractor
 import com.example.localmovielibrary.scraper.MovieScraperRegistry
@@ -49,13 +50,14 @@ class StrmScrapeRepository(
     private val dmmScraper: DmmScraper = DmmScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val dmm2Scraper: Dmm2Scraper = Dmm2Scraper(client = httpClient, ioDispatcher = ioDispatcher, logger = logStore::append),
     private val officialScraper: OfficialScraper = OfficialScraper(client = httpClient, ioDispatcher = ioDispatcher),
+    private val javbusScraper: JavbusScraper = JavbusScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val missavScraper: MissavScraper = MissavScraper(
         cookieProvider = settingsRepository::getMissavCookies,
         client = httpClient,
         ioDispatcher = ioDispatcher
     ),
     private val scraperRegistry: MovieScraperRegistry = MovieScraperRegistry(
-        listOf(dmmScraper, dmm2Scraper, officialScraper, missavScraper)
+        listOf(dmmScraper, dmm2Scraper, officialScraper, javbusScraper, missavScraper)
     ),
     private val imageDownloadService: ImageDownloadService = ImageDownloadService(
         httpClient = httpClient,
@@ -549,44 +551,41 @@ class StrmScrapeRepository(
         val strmName = "$baseName${playbackSourceSuffix(partLabel, variant)}.strm"
         val newStrm = copyStrmFile(target.file, movieDirectory, strmName)
         logStore.append("STRM written: $strmName")
-        if (target.file.uri != newStrm.uri) {
-            if (target.file.delete()) {
-                logStore.append("Old STRM deleted: ${target.file.name}")
+
+        try {
+            val nfoName = "$baseName.nfo"
+            logStore.append("Write NFO: $nfoName")
+            writeTextFile(movieDirectory, nfoName, NfoWriter.build(writeInfo))
+            logStore.append("NFO written: $nfoName")
+
+            val imageReferer = info.imageReferer()
+            val poster = info.posterUrl.ifBlank { info.thumbUrl }
+            if (poster.isNotBlank()) {
+                val posterName = "$baseName-poster.jpg"
+                logStore.append("Download poster: $poster")
+                tryDownloadImageToFile(movieDirectory, posterName, poster, imageReferer, "Poster")
             } else {
-                logStore.append("Warning: failed to delete old STRM: ${target.file.name}")
+                logStore.append("Poster URL is blank; skipped")
             }
+
+            if (info.thumbUrl.isNotBlank()) {
+                val thumbName = "$baseName-thumb.jpg"
+                logStore.append("Download thumb: ${info.thumbUrl}")
+                tryDownloadImageToFile(movieDirectory, thumbName, info.thumbUrl, imageReferer, "Thumb")
+
+                val fanartName = "$baseName-fanart.jpg"
+                logStore.append("Copy thumb as fanart: $fanartName")
+                tryDownloadImageToFile(movieDirectory, fanartName, info.thumbUrl, imageReferer, "Fanart")
+            } else {
+                logStore.append("Thumb URL is blank; skipped")
+            }
+            deleteLegacyNfoXml(target)
+            deleteOldStrmIfMoved(target, newStrm)
+            return newStrm.uri.toString()
+        } catch (error: Throwable) {
+            rollbackCopiedStrm(target, newStrm)
+            throw error
         }
-
-        val nfoName = "$baseName.nfo"
-        logStore.append("Write NFO: $nfoName")
-        writeTextFile(movieDirectory, nfoName, NfoWriter.build(writeInfo))
-        logStore.append("NFO written: $nfoName")
-
-        val poster = info.posterUrl.ifBlank { info.thumbUrl }
-        if (poster.isNotBlank()) {
-            val posterName = "$baseName-poster.jpg"
-            logStore.append("Download poster: $poster")
-            downloadImageToFile(movieDirectory, posterName, poster)
-            logStore.append("Poster written: $posterName")
-        } else {
-            logStore.append("Poster URL is blank; skipped")
-        }
-
-        if (info.thumbUrl.isNotBlank()) {
-            val thumbName = "$baseName-thumb.jpg"
-            logStore.append("Download thumb: ${info.thumbUrl}")
-            downloadImageToFile(movieDirectory, thumbName, info.thumbUrl)
-            logStore.append("Thumb written: $thumbName")
-
-            val fanartName = "$baseName-fanart.jpg"
-            logStore.append("Copy thumb as fanart: $fanartName")
-            downloadImageToFile(movieDirectory, fanartName, info.thumbUrl)
-            logStore.append("Fanart written: $fanartName")
-        } else {
-            logStore.append("Thumb URL is blank; skipped")
-        }
-        deleteLegacyNfoXml(target)
-        return newStrm.uri.toString()
     }
 
     private suspend fun rewriteScrapeFilesInPlace(target: StrmTarget, info: ScrapedMovieInfo) {
@@ -611,27 +610,26 @@ class StrmScrapeRepository(
             return
         }
 
+        val imageReferer = info.imageReferer()
         val poster = info.posterUrl.ifBlank { info.thumbUrl }
         if (!hasPoster && poster.isNotBlank()) {
             logStore.append("Poster missing; downloading: $poster")
-            downloadImageToFile(directory, posterName, poster)
-            logStore.append("Poster written: $posterName")
+            tryDownloadImageToFile(directory, posterName, poster, imageReferer, "Poster")
         }
         if (!hasThumb && info.thumbUrl.isNotBlank()) {
             logStore.append("Thumb missing; downloading: ${info.thumbUrl}")
-            downloadImageToFile(directory, thumbName, info.thumbUrl)
-            logStore.append("Thumb written: $thumbName")
+            tryDownloadImageToFile(directory, thumbName, info.thumbUrl, imageReferer, "Thumb")
         }
         if (!hasFanart && info.thumbUrl.isNotBlank()) {
             logStore.append("Fanart missing; using thumb: $fanartName")
-            downloadImageToFile(directory, fanartName, info.thumbUrl)
-            logStore.append("Fanart written: $fanartName")
+            tryDownloadImageToFile(directory, fanartName, info.thumbUrl, imageReferer, "Fanart")
         }
         deleteLegacyNfoXml(target)
     }
 
     private suspend fun downloadActorAvatars(info: ScrapedMovieInfo) {
         if (info.actorImageUrls.isEmpty()) return
+        val imageReferer = info.imageReferer()
         info.actorImageUrls.forEach { (actorName, imageUrl) ->
             if (actorName.isBlank() || imageUrl.isBlank()) return@forEach
             if (actorAvatarStore.hasAvatar(actorName)) {
@@ -640,7 +638,7 @@ class StrmScrapeRepository(
             }
             runCatching {
                 logStore.append("Download actor avatar: $actorName -> $imageUrl")
-                actorAvatarStore.saveAvatar(actorName, imageDownloadService.downloadImageBytes(imageUrl))
+                actorAvatarStore.saveAvatar(actorName, imageDownloadService.downloadImageBytes(imageUrl, imageReferer))
                 logStore.append("Actor avatar downloaded: $actorName")
             }.onFailure { error ->
                 logStore.append("Actor avatar download failed: $actorName, ${error.message ?: error::class.java.simpleName}")
@@ -700,6 +698,24 @@ class StrmScrapeRepository(
         val content = context.contentResolver.openInputStream(source.uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
             ?: error("无法读取源 STRM 文件：${source.name}")
         return writeTextFile(directory, fileName, content)
+    }
+
+    private fun deleteOldStrmIfMoved(target: StrmTarget, newStrm: DocumentFile) {
+        if (target.file.uri == newStrm.uri) return
+        if (target.file.delete()) {
+            logStore.append("Old STRM deleted: ${target.file.name}")
+        } else {
+            logStore.append("Warning: failed to delete old STRM: ${target.file.name}")
+        }
+    }
+
+    private fun rollbackCopiedStrm(target: StrmTarget, newStrm: DocumentFile) {
+        if (target.file.uri == newStrm.uri) return
+        if (newStrm.delete()) {
+            logStore.append("Rollback copied STRM after scrape file write failure: ${newStrm.name}")
+        } else {
+            logStore.append("Warning: failed to rollback copied STRM: ${newStrm.name}")
+        }
     }
 
     private fun deleteLegacyNfoXml(target: StrmTarget) {
@@ -787,14 +803,30 @@ class StrmScrapeRepository(
         return file
     }
 
-    private suspend fun downloadImageToFile(directory: DocumentFile, fileName: String, url: String) {
+    private suspend fun downloadImageToFile(directory: DocumentFile, fileName: String, url: String, referer: String? = null) {
+        val bytes = imageDownloadService.downloadImageBytes(url, referer)
         directory.findFile(fileName)?.delete()
-        val bytes = imageDownloadService.downloadImageBytes(url)
         val file = directory.createFile("image/jpeg", fileName)
             ?: error("无法创建图片：$fileName")
         context.contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
             output.write(bytes)
         } ?: error("无法写入图片：$fileName")
+    }
+
+    private suspend fun tryDownloadImageToFile(
+        directory: DocumentFile,
+        fileName: String,
+        url: String,
+        referer: String?,
+        label: String
+    ): Boolean {
+        return runCatching {
+            downloadImageToFile(directory, fileName, url, referer)
+        }.onSuccess {
+            logStore.append("$label written: $fileName")
+        }.onFailure { error ->
+            logStore.append("$label download failed; skipped image: ${error.message ?: error::class.java.simpleName}")
+        }.isSuccess
     }
 
     private fun deleteMetadataFiles(directory: DocumentFile, baseName: String) {
@@ -846,6 +878,12 @@ class StrmScrapeRepository(
     private fun String.sameActor(other: String): Boolean =
         normalizedActorName() == other.normalizedActorName()
 
+    private fun ScrapedMovieInfo.imageReferer(): String? {
+        return website
+            .takeIf { source.equals("javbus", ignoreCase = true) }
+            ?.takeIf { it.startsWith(JAVBUS_BASE_URL, ignoreCase = true) }
+    }
+
     private fun DocumentFile.isExcludedAssetDirectory(): Boolean {
         val normalized = name.orEmpty().trim().lowercase().replace('_', ' ').replace('-', ' ')
         return normalized == "extrafanart" || normalized == "behind the scenes"
@@ -863,6 +901,7 @@ class StrmScrapeRepository(
             ScrapeSource.Dmm -> "DMM"
             ScrapeSource.Dmm2 -> "DMM2"
             ScrapeSource.Official -> "Official"
+            ScrapeSource.Javbus -> "JavBus"
             ScrapeSource.Missav -> "MissAV"
         }
 
@@ -871,6 +910,7 @@ class StrmScrapeRepository(
 
     private companion object {
         const val GENERIC_FILE_MIME_TYPE = "application/octet-stream"
+        const val JAVBUS_BASE_URL = "https://www.javbus.com/"
         const val SCRAPE_QUEUE_POLL_INTERVAL_MS = 250L
     }
 }

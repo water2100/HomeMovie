@@ -4,6 +4,7 @@ enum class ScrapeSource {
     Dmm,
     Dmm2,
     Official,
+    Javbus,
     Missav
 }
 

@@ -161,6 +161,10 @@ class DetailViewModel(
         scrapeCurrent(ScrapeSource.Official, allowCookieRefresh = false)
     }
 
+    fun scrapeWithJavbus() {
+        scrapeCurrent(ScrapeSource.Javbus, allowCookieRefresh = false)
+    }
+
     fun scrapeWithMissav() {
         scrapeCurrent(ScrapeSource.Missav, allowCookieRefresh = true)
     }
@@ -179,6 +183,10 @@ class DetailViewModel(
 
     fun rescrapeWithOfficial() {
         rescrapeCurrent(ScrapeSource.Official, allowCookieRefresh = false)
+    }
+
+    fun rescrapeWithJavbus() {
+        rescrapeCurrent(ScrapeSource.Javbus, allowCookieRefresh = false)
     }
 
     fun rescrapeWithMissav() {
@@ -408,6 +416,7 @@ private val ScrapeSource.displayName: String
         ScrapeSource.Dmm -> "DMM"
         ScrapeSource.Dmm2 -> "DMM2"
         ScrapeSource.Official -> "Official"
+        ScrapeSource.Javbus -> "JavBus"
         ScrapeSource.Missav -> "MissAV"
     }
 

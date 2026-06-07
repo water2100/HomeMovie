@@ -108,6 +108,30 @@ class CloudStrmRecordRepository(
         dao.getByMovieNumber(movieNumber)
     }
 
+    suspend fun findSubtitleStorageRecord(
+        pickcode: String?,
+        fileName: String,
+        title: String
+    ): CloudStrmRecordEntity? = withContext(Dispatchers.IO) {
+        pickcode
+            ?.takeIf { it.isNotBlank() }
+            ?.let { dao.get(it) }
+            ?.takeIf { it.strmUri.isNotBlank() }
+            ?.takeIf { canOpenUri(it.strmUri) }
+            ?.let { return@withContext it }
+
+        val number = extractMovieNumberInfo(fileName)?.number
+            ?: extractMovieNumberInfo(title)?.number
+            ?: return@withContext null
+        dao.getByMovieNumber(number)
+            .firstOrNull { it.strmUri.isNotBlank() && canOpenUri(it.strmUri) }
+    }
+
+    private fun canOpenUri(uriString: String): Boolean =
+        runCatching {
+            context.contentResolver.openInputStream(Uri.parse(uriString))?.use { true } == true
+        }.getOrDefault(false)
+
     suspend fun findStandardSameNumberCandidate(fileName: String, newPickcode: String): CloudStrmRecordEntity? = withContext(Dispatchers.IO) {
         val info = extractMovieNumberInfo(fileName) ?: return@withContext null
         if (info.partLabel != null) return@withContext null

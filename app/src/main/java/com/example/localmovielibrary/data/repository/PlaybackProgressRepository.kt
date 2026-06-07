@@ -20,10 +20,6 @@ class PlaybackProgressRepository(
     suspend fun save(mediaKey: String, positionMs: Long, durationMs: Long) {
         val safePosition = positionMs.coerceAtLeast(0L)
         val safeDuration = durationMs.coerceAtLeast(0L)
-        if (safePosition < MIN_RESUME_POSITION_MS) {
-            playbackProgressDao.delete(mediaKey)
-            return
-        }
         if (isNearEnd(safePosition, safeDuration)) {
             playbackProgressDao.delete(mediaKey)
             return

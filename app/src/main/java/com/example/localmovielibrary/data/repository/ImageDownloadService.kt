@@ -14,11 +14,11 @@ class ImageDownloadService(
     private val logger: (String) -> Unit = {},
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
-    suspend fun downloadImageBytes(url: String): ByteArray = withContext(ioDispatcher) {
+    suspend fun downloadImageBytes(url: String, referer: String? = null): ByteArray = withContext(ioDispatcher) {
         var lastError: Throwable? = null
         val retryCount = retryCountProvider().coerceAtLeast(1)
         repeat(retryCount) { attempt ->
-            val request = buildRequest(url)
+            val request = buildRequest(url, referer)
             runCatching {
                 httpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) error("图片下载失败 HTTP ${response.code}: $url")
@@ -37,12 +37,15 @@ class ImageDownloadService(
         throw lastError ?: IllegalStateException("图片下载失败：$url")
     }
 
-    private fun buildRequest(url: String): Request {
+    private fun buildRequest(url: String, referer: String?): Request {
         val builder = Request.Builder().url(url)
         if ("awsimgsrc.dmm.co.jp" !in url) {
             builder
                 .header("User-Agent", IMAGE_USER_AGENT)
                 .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+        }
+        if (!referer.isNullOrBlank()) {
+            builder.header("Referer", referer)
         }
         return builder.build()
     }

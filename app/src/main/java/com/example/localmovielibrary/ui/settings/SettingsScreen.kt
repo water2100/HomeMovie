@@ -42,6 +42,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -74,6 +76,7 @@ import com.example.localmovielibrary.cloud115.SavedCloud115Account
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplate
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
 import com.example.localmovielibrary.translate.TranslateProvider
@@ -89,7 +92,9 @@ private enum class SettingsPage {
     Directory,
     Cloud,
     Scrape,
-    Translate
+    Subtitle,
+    Translate,
+    Player
 }
 
 @Composable
@@ -189,7 +194,6 @@ fun SettingsScreen(
                         onStartCloud115QrLogin = viewModel::startCloud115QrLogin,
                         onCancelCloud115QrLogin = viewModel::cancelCloud115QrLogin,
                         onOpenStrmBaseUrlDialog = { showStrmBaseUrlDialog = true },
-                        onOpenMissavWeb = onOpenMissavWeb,
                         onCloudAddButtonMessageEnabledChange = viewModel::updateCloudAddButtonMessageEnabled,
                         onExcludedVideoNameDraftChange = viewModel::updateNewExcludedVideoName,
                         onAddExcludedVideoName = viewModel::addExcludedVideoName,
@@ -208,6 +212,12 @@ fun SettingsScreen(
                         onClearLogs = viewModel::clearScrapeLog
                     )
 
+                    SettingsPage.Subtitle -> SubtitleSettingsPage(
+                        uiState = uiState,
+                        onOpenRealtimeSubtitle = { currentPage = SettingsPage.Translate },
+                        onProviderSelected = viewModel::updateSubtitleSearchProvider
+                    )
+
                     SettingsPage.Translate -> TranslateSettingsSummaryPage(
                         uiState = uiState,
                         onProviderSelected = viewModel::updateTranslateProvider,
@@ -215,6 +225,14 @@ fun SettingsScreen(
                         onAsrModelBaseUrlChange = viewModel::updateAsrModelBaseUrl,
                         onDownloadAsrModel = viewModel::downloadAsrModel,
                         onOpenTranslateDialog = { showTranslateDialog = true }
+                    )
+
+                    SettingsPage.Player -> PlayerSettingsPage(
+                        uiState = uiState,
+                        onLiveSubtitleEnabledChange = viewModel::updatePlayerLiveSubtitleEnabled,
+                        onExternalSubtitleFontSizeChange = viewModel::updateExternalSubtitleFontSizeSp,
+                        onExternalSubtitleBottomPaddingChange = viewModel::updateExternalSubtitleBottomPaddingPercent,
+                        onExternalSubtitleBackgroundAlphaChange = viewModel::updateExternalSubtitleBackgroundAlphaPercent
                     )
                 }
                 if (currentPage != null) {
@@ -302,7 +320,9 @@ private fun SettingsPage.titleText(): String = when (this) {
     SettingsPage.Directory -> "目录设置"
     SettingsPage.Cloud -> "网盘设置"
     SettingsPage.Scrape -> "刮削设置"
+    SettingsPage.Subtitle -> "字幕设置"
     SettingsPage.Translate -> "实时字幕翻译"
+    SettingsPage.Player -> "播放器设置"
 }
 
 @Composable
@@ -341,9 +361,20 @@ private fun SettingsOverviewPage(
     }
     SettingsGroupCard(title = "字幕") {
         SettingsEntryRow(
-            title = "实时字幕翻译",
-            subtitle = "当前：${uiState.translateProvider.label}",
-            onClick = { onOpenPage(SettingsPage.Translate) }
+            title = "字幕设置",
+            subtitle = "实时字幕 · 在线字幕：${uiState.subtitleSearchProvider.label}",
+            onClick = { onOpenPage(SettingsPage.Subtitle) }
+        )
+    }
+    SettingsGroupCard(title = "播放器") {
+        SettingsEntryRow(
+            title = "播放器设置",
+            subtitle = if (uiState.playerLiveSubtitleEnabled) {
+                "实时字幕：已开启"
+            } else {
+                "实时字幕：未开启"
+            },
+            onClick = { onOpenPage(SettingsPage.Player) }
         )
     }
     Button(
@@ -354,6 +385,241 @@ private fun SettingsOverviewPage(
     ) {
         Icon(Icons.Rounded.Save, contentDescription = null)
         Text("保存设置", modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
+@Composable
+private fun PlayerSettingsPage(
+    uiState: SettingsUiState,
+    onLiveSubtitleEnabledChange: (Boolean) -> Unit,
+    onExternalSubtitleFontSizeChange: (Int) -> Unit,
+    onExternalSubtitleBottomPaddingChange: (Int) -> Unit,
+    onExternalSubtitleBackgroundAlphaChange: (Int) -> Unit
+) {
+    SettingsSectionTitle("实时字幕")
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "开启实时字幕",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "关闭后，播放器里的实时字幕按钮不会启动 ASR；本地字幕和在线字幕不受影响。",
+                color = Color.White.copy(alpha = 0.62f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(
+            checked = uiState.playerLiveSubtitleEnabled,
+            onCheckedChange = onLiveSubtitleEnabledChange
+        )
+    }
+
+    SettingsSectionTitle("外挂字幕样式")
+    SettingsGroupCard(title = "字幕显示") {
+        SubtitleStyleSliderRow(
+            title = "字号",
+            value = uiState.externalSubtitleFontSizeSp,
+            range = AppSettingsRepository.MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP..AppSettingsRepository.MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP,
+            valueText = "${uiState.externalSubtitleFontSizeSp}sp",
+            onValueChange = onExternalSubtitleFontSizeChange
+        )
+        SubtitleStyleSliderRow(
+            title = "底部位置",
+            value = uiState.externalSubtitleBottomPaddingPercent,
+            range = AppSettingsRepository.MIN_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT..AppSettingsRepository.MAX_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT,
+            valueText = "${uiState.externalSubtitleBottomPaddingPercent}%",
+            onValueChange = onExternalSubtitleBottomPaddingChange
+        )
+        SubtitleStyleSliderRow(
+            title = "背景不透明度",
+            value = uiState.externalSubtitleBackgroundAlphaPercent,
+            range = AppSettingsRepository.MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT..AppSettingsRepository.MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT,
+            valueText = "${uiState.externalSubtitleBackgroundAlphaPercent}%",
+            onValueChange = onExternalSubtitleBackgroundAlphaChange
+        )
+    }
+}
+
+@Composable
+private fun SubtitleStyleSliderRow(
+    title: String,
+    value: Int,
+    range: IntRange,
+    valueText: String,
+    onValueChange: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = valueText,
+                color = Color.White.copy(alpha = 0.68f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { next -> onValueChange(next.toInt().coerceIn(range.first, range.last)) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            steps = (range.last - range.first - 1).coerceAtLeast(0),
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+            )
+        )
+    }
+}
+
+@Composable
+private fun SubtitleSettingsPage(
+    uiState: SettingsUiState,
+    onOpenRealtimeSubtitle: () -> Unit,
+    onProviderSelected: (SubtitleSearchProvider) -> Unit
+) {
+    SettingsSectionTitle("字幕功能")
+    SettingsGroupCard(title = "实时字幕") {
+        SettingsEntryRow(
+            title = "实时字幕翻译",
+            subtitle = "播放器按钮：${if (uiState.playerLiveSubtitleEnabled) "已开启" else "未开启"} · 翻译：${uiState.translateProvider.label}",
+            onClick = onOpenRealtimeSubtitle
+        )
+    }
+
+    SettingsSectionTitle("在线字幕来源")
+    SubtitleProviderRow(
+        selected = uiState.subtitleSearchProvider,
+        options = uiState.subtitleSearchProviderOptions,
+        onSelected = onProviderSelected
+    )
+    Text(
+        text = "播放器字幕按钮会先显示本地字幕；点击搜索时才使用这里选择的在线字幕来源。",
+        color = Color.White.copy(alpha = 0.58f),
+        style = MaterialTheme.typography.bodySmall
+    )
+
+    SettingsGroupCard(title = "Javzimu.com") {
+        SubtitleSourceInfoRow(
+            selected = uiState.subtitleSearchProvider == SubtitleSearchProvider.Javzimu,
+            title = "Javzimu.com",
+            subtitle = "使用 javzimu.com/search/番号 搜索并下载字幕。遇到验证时会沿用现有 WebView Cookie 流程。",
+            onClick = { onProviderSelected(SubtitleSearchProvider.Javzimu) }
+        )
+    }
+    SettingsGroupCard(title = "AVSubtitles") {
+        SubtitleSourceInfoRow(
+            selected = uiState.subtitleSearchProvider == SubtitleSearchProvider.Avsubtitles,
+            title = "AVSubtitles",
+            subtitle = "使用 avsubtitles.com 搜索影片详情页，再解析 subid/revid 下载 zip 字幕。",
+            onClick = { onProviderSelected(SubtitleSearchProvider.Avsubtitles) }
+        )
+    }
+    SettingsGroupCard(title = "迅雷字幕") {
+        SubtitleSourceInfoRow(
+            selected = uiState.subtitleSearchProvider == SubtitleSearchProvider.Xunlei,
+            title = "迅雷字幕",
+            subtitle = "使用迅雷字幕接口按番号搜索，返回的 srt/ass 字幕可直接下载并加载。",
+            onClick = { onProviderSelected(SubtitleSearchProvider.Xunlei) }
+        )
+    }
+}
+
+@Composable
+private fun SubtitleProviderRow(
+    selected: SubtitleSearchProvider,
+    options: List<SubtitleSearchProvider>,
+    onSelected: (SubtitleSearchProvider) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Text(
+                text = selected.label,
+                modifier = Modifier.weight(1f),
+                color = Color.White
+            )
+            Text(text = "选择", color = Color.White.copy(alpha = 0.62f))
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { provider ->
+                DropdownMenuItem(
+                    text = { Text(provider.label) },
+                    onClick = {
+                        expanded = false
+                        onSelected(provider)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleSourceInfoRow(
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = subtitle,
+                color = Color.White.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (selected) {
+            Icon(
+                imageVector = Icons.Rounded.CheckCircle,
+                contentDescription = null,
+                tint = Color(0xFF76D48A)
+            )
+        }
     }
 }
 
@@ -480,7 +746,6 @@ private fun CloudSettingsPage(
     onStartCloud115QrLogin: () -> Unit,
     onCancelCloud115QrLogin: () -> Unit,
     onOpenStrmBaseUrlDialog: () -> Unit,
-    onOpenMissavWeb: () -> Unit,
     onCloudAddButtonMessageEnabledChange: (Boolean) -> Unit,
     onExcludedVideoNameDraftChange: (String) -> Unit,
     onAddExcludedVideoName: () -> Unit,
@@ -538,11 +803,6 @@ private fun CloudSettingsPage(
         onDraftChange = onExcludedVideoNameDraftChange,
         onAdd = onAddExcludedVideoName,
         onRemove = onRemoveExcludedVideoName
-    )
-    SettingsSectionTitle("MissAV Cookie")
-    MissavCookieStatusCard(
-        hasCookie = uiState.hasMissavCookie,
-        onOpenMissavWeb = onOpenMissavWeb
     )
 }
 
@@ -1947,5 +2207,6 @@ private val ScrapeSource.label: String
         ScrapeSource.Dmm -> "DMM"
         ScrapeSource.Dmm2 -> "DMM2"
         ScrapeSource.Official -> "Official"
+        ScrapeSource.Javbus -> "JavBus"
         ScrapeSource.Missav -> "MissAV"
     }

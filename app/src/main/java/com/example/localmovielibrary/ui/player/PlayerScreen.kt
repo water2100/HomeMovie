@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.graphics.Typeface
+import android.util.TypedValue
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,6 +37,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AspectRatio
@@ -54,13 +57,18 @@ import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -94,16 +102,24 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.example.localmovielibrary.playback.vr.VrControlMode
 import com.example.localmovielibrary.playback.vr.VrMode
+import com.example.localmovielibrary.subtitle.JavzimuSubtitleResult
+import com.example.localmovielibrary.subtitle.LocalSubtitleFile
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import android.graphics.Color as AndroidColor
 
 @OptIn(UnstableApi::class)
 @Composable
-fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
+fun PlayerScreen(
+    viewModel: PlayerViewModel,
+    onBack: () -> Unit,
+    onOpenJavzimuCookie: (String) -> Unit = {}
+) {
     val context = LocalContext.current
     val activity = context.findActivity()
     val view = LocalView.current
@@ -271,6 +287,13 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
         }
     }
 
+    LaunchedEffect(uiState.javzimuWebUrl) {
+        uiState.javzimuWebUrl?.let { url ->
+            viewModel.consumeJavzimuWebUrl()
+            onOpenJavzimuCookie(url)
+        }
+    }
+
     fun setBrightness(value: Float) {
         val window = activity?.window ?: return
         brightnessValue = value.coerceIn(0.02f, 1f)
@@ -387,11 +410,13 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                         useController = false
                         this.player = player
                         resizeMode = resizeModes[resizeModeIndex]
+                        applyExternalSubtitleStyle(uiState.externalSubtitleStyle)
                     }
                 },
                 update = {
                     it.player = player
                     it.resizeMode = resizeModes[resizeModeIndex]
+                    it.applyExternalSubtitleStyle(uiState.externalSubtitleStyle)
                 }
             )
         }
@@ -441,7 +466,12 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                 vrMode = vrMode,
                 vrControlMode = vrControlMode,
                 liveSubtitleEnabled = uiState.liveSubtitleEnabled,
+                showLiveSubtitleControl = viewModel.isPlayerLiveSubtitleEnabled() || uiState.liveSubtitleEnabled,
                 onBack = leavePlayer,
+                onExternalSubtitle = {
+                    viewModel.openExternalSubtitlePanel(durationMs)
+                    controlsVisible = true
+                },
                 onVrMode = { mode ->
                     viewModel.setVrMode(mode)
                     controlsVisible = true
@@ -476,6 +506,11 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                     if (uiState.liveSubtitleEnabled) {
                         viewModel.stopLiveSubtitleRecognition()
                     } else {
+                        if (!viewModel.isPlayerLiveSubtitleEnabled()) {
+                            subtitleModelHint = "\u8BF7\u5148\u5728\u8BBE\u7F6E\u64AD\u653E\u5668\u9875\u9762\u4E2D\u5F00\u542F\u5B9E\u65F6\u5B57\u5E55"
+                            controlsVisible = true
+                            return@PlayerOverlay
+                        }
                         if (!viewModel.hasLiveSubtitleModel()) {
                             subtitleModelHint = "\u8BF7\u5148\u5728\u8BBE\u7F6E\u7FFB\u8BD1\u9875\u9762\u4E2D\u4E0B\u8F7D\u6A21\u578B"
                             controlsVisible = true
@@ -500,6 +535,23 @@ fun PlayerScreen(viewModel: PlayerViewModel, onBack: () -> Unit) {
                 }
             )
         }
+
+        ExternalSubtitleDialog(
+            visible = uiState.externalSubtitlePanelVisible,
+            queryNumber = uiState.externalSubtitleQueryNumber,
+            providerLabel = uiState.externalSubtitleProviderLabel,
+            localSubtitles = uiState.localSubtitles,
+            onlineSubtitles = uiState.onlineSubtitles,
+            activeSubtitleName = uiState.activeExternalSubtitleName,
+            isSearching = uiState.externalSubtitleSearching,
+            isDownloading = uiState.externalSubtitleDownloading,
+            message = uiState.externalSubtitleMessage,
+            error = uiState.externalSubtitleError,
+            onDismiss = viewModel::dismissExternalSubtitlePanel,
+            onSearchOnline = { viewModel.searchExternalSubtitles(durationMs) },
+            onLocalSelected = viewModel::loadLocalSubtitle,
+            onOnlineSelected = viewModel::downloadAndLoadSubtitle
+        )
 
         PlayerLockButton(
             locked = controlsLocked,
@@ -858,6 +910,171 @@ private fun ManualControlOverlay(
 }
 
 @Composable
+private fun ExternalSubtitleDialog(
+    visible: Boolean,
+    queryNumber: String,
+    providerLabel: String,
+    localSubtitles: List<LocalSubtitleFile>,
+    onlineSubtitles: List<JavzimuSubtitleResult>,
+    activeSubtitleName: String?,
+    isSearching: Boolean,
+    isDownloading: Boolean,
+    message: String?,
+    error: String?,
+    onDismiss: () -> Unit,
+    onSearchOnline: () -> Unit,
+    onLocalSelected: (LocalSubtitleFile) -> Unit,
+    onOnlineSelected: (JavzimuSubtitleResult) -> Unit
+) {
+    if (!visible) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xF21A1C20),
+        title = {
+            Text(
+                text = if (queryNumber.isBlank()) "字幕" else "字幕 · $queryNumber",
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (isSearching || isDownloading) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = if (isDownloading) "正在下载字幕..." else "正在搜索字幕...",
+                            color = Color.White.copy(alpha = 0.82f),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+                message?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.bodyMedium)
+                }
+                error?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                }
+
+                Text("本地字幕", color = Color.White, fontWeight = FontWeight.Bold)
+                if (localSubtitles.isEmpty()) {
+                    Text("当前目录没有可加载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
+                } else {
+                    localSubtitles.forEach { subtitle ->
+                        SubtitleOptionRow(
+                            title = subtitle.name,
+                            subtitle = if (subtitle.name == activeSubtitleName) "当前加载" else "点击加载",
+                            enabled = !isDownloading,
+                            onClick = { onLocalSelected(subtitle) }
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
+
+                Text("在线字幕 · $providerLabel", color = Color.White, fontWeight = FontWeight.Bold)
+                OutlinedButton(
+                    onClick = onSearchOnline,
+                    enabled = !isSearching && !isDownloading && queryNumber.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text("搜索 $providerLabel")
+                }
+                if (!isSearching && onlineSubtitles.isEmpty()) {
+                    Text("没有可下载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
+                } else {
+                    onlineSubtitles.forEach { result ->
+                        SubtitleOptionRow(
+                            title = result.name,
+                            subtitle = result.displayName
+                                .removePrefix(result.name)
+                                .trim()
+                                .trimStart('·')
+                                .trim()
+                                .ifBlank { "${result.provider.label} · 点击下载并加载" },
+                            enabled = !isDownloading,
+                            onClick = { onOnlineSelected(result) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = Color.White)
+            }
+        }
+    )
+}
+
+@Composable
+private fun SubtitleOptionRow(
+    title: String,
+    subtitle: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = if (enabled) 0.08f else 0.04f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(
+            text = title,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = subtitle,
+            color = Color.White.copy(alpha = 0.62f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@OptIn(UnstableApi::class)
+private fun PlayerView.applyExternalSubtitleStyle(style: ExternalSubtitleStyleSettings) {
+    val backgroundAlpha = (style.backgroundAlphaPercent.coerceIn(0, 100) * 255 / 100).coerceIn(0, 255)
+    subtitleView?.setApplyEmbeddedStyles(false)
+    subtitleView?.setApplyEmbeddedFontSizes(false)
+    subtitleView?.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, style.fontSizeSp.toFloat())
+    subtitleView?.setBottomPaddingFraction(style.bottomPaddingPercent.coerceIn(0, 100) / 100f)
+    subtitleView?.setStyle(
+        CaptionStyleCompat(
+            AndroidColor.WHITE,
+            AndroidColor.argb(backgroundAlpha, 0, 0, 0),
+            AndroidColor.TRANSPARENT,
+            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+            AndroidColor.BLACK,
+            Typeface.DEFAULT_BOLD
+        )
+    )
+}
+
+@Composable
 private fun PlayerOverlay(
     title: String,
     isPlaying: Boolean,
@@ -870,7 +1087,9 @@ private fun PlayerOverlay(
     vrMode: VrMode,
     vrControlMode: VrControlMode,
     liveSubtitleEnabled: Boolean,
+    showLiveSubtitleControl: Boolean,
     onBack: () -> Unit,
+    onExternalSubtitle: () -> Unit,
     onVrMode: (VrMode) -> Unit,
     onVrControlMode: (VrControlMode) -> Unit,
     onTogglePlay: () -> Unit,
@@ -889,7 +1108,7 @@ private fun PlayerOverlay(
             vrMode = vrMode,
             vrControlMode = vrControlMode,
             onBack = onBack,
-            onOrientation = onOrientation,
+            onExternalSubtitle = onExternalSubtitle,
             onVrMode = onVrMode,
             onVrControlMode = onVrControlMode,
             modifier = Modifier.align(Alignment.TopCenter)
@@ -902,6 +1121,7 @@ private fun PlayerOverlay(
             aspectLabel = aspectLabel,
                 errorMessage = errorMessage,
                 liveSubtitleEnabled = liveSubtitleEnabled,
+                showLiveSubtitleControl = showLiveSubtitleControl,
                 isPlaying = isPlaying,
                 isLandscape = isLandscape,
                 onSeekBack = onSeekBack,
@@ -924,7 +1144,7 @@ private fun TopGradientBar(
     vrMode: VrMode,
     vrControlMode: VrControlMode,
     onBack: () -> Unit,
-    onOrientation: () -> Unit,
+    onExternalSubtitle: () -> Unit,
     onVrMode: (VrMode) -> Unit,
     onVrControlMode: (VrControlMode) -> Unit,
     modifier: Modifier = Modifier
@@ -956,9 +1176,9 @@ private fun TopGradientBar(
                 .padding(horizontal = 14.dp, vertical = 12.dp)
         )
         GlassIconButton(
-            icon = if (isLandscape) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-            contentDescription = "Fullscreen",
-            onClick = onOrientation
+            icon = Icons.Rounded.ClosedCaption,
+            contentDescription = "字幕",
+            onClick = onExternalSubtitle
         )
         Box {
             GlassIconButton(
@@ -1086,6 +1306,7 @@ private fun BottomGradientControls(
     aspectLabel: String,
     errorMessage: String?,
     liveSubtitleEnabled: Boolean,
+    showLiveSubtitleControl: Boolean,
     isPlaying: Boolean,
     isLandscape: Boolean,
     onSeekBack: () -> Unit,
@@ -1150,6 +1371,7 @@ private fun BottomGradientControls(
                 PlayerToolRow(
                     speed = speed,
                     liveSubtitleEnabled = liveSubtitleEnabled,
+                    showLiveSubtitleControl = showLiveSubtitleControl,
                     isLandscape = isLandscape,
                     onSpeed = onSpeed,
                     onSubtitle = onSubtitle,
@@ -1170,6 +1392,7 @@ private fun BottomGradientControls(
             PlayerToolRow(
                 speed = speed,
                 liveSubtitleEnabled = liveSubtitleEnabled,
+                showLiveSubtitleControl = showLiveSubtitleControl,
                 isLandscape = isLandscape,
                 onSpeed = onSpeed,
                 onSubtitle = onSubtitle,
@@ -1184,6 +1407,7 @@ private fun BottomGradientControls(
 private fun PlayerToolRow(
     speed: Float,
     liveSubtitleEnabled: Boolean,
+    showLiveSubtitleControl: Boolean,
     isLandscape: Boolean,
     onSpeed: () -> Unit,
     onSubtitle: () -> Unit,
@@ -1196,11 +1420,13 @@ private fun PlayerToolRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         GlassToolButton(icon = Icons.Rounded.Speed, label = "${speed.formatSpeed()}x", onClick = onSpeed)
-        GlassToolButton(
-            icon = Icons.Rounded.ClosedCaption,
-            label = if (liveSubtitleEnabled) "字幕开" else "实时字幕",
-            onClick = onSubtitle
-        )
+        if (showLiveSubtitleControl) {
+            GlassToolButton(
+                icon = Icons.Rounded.ClosedCaption,
+                label = if (liveSubtitleEnabled) "字幕开" else "实时字幕",
+                onClick = onSubtitle
+            )
+        }
         GlassToolButton(
             icon = if (isLandscape) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
             label = if (isLandscape) "\u7AD6\u5C4F" else "\u6A2A\u5C4F",

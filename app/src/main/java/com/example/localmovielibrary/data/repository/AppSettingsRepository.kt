@@ -6,6 +6,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
 import com.example.localmovielibrary.translate.TranslateProvider
 
@@ -33,6 +34,25 @@ class AppSettingsRepository(context: Context) {
 
     fun saveMissavCookies(value: String) {
         prefs.edit().putString(KEY_MISSAV_COOKIES, value.trim()).commit()
+    }
+
+    fun getJavzimuCookies(): String = prefs.getString(KEY_JAVZIMU_COOKIES, null).orEmpty()
+
+    fun saveJavzimuCookies(value: String) {
+        prefs.edit().putString(KEY_JAVZIMU_COOKIES, value.trim()).commit()
+    }
+
+    fun getAvsubtitlesCookies(): String = prefs.getString(KEY_AVSUBTITLES_COOKIES, null).orEmpty()
+
+    fun saveAvsubtitlesCookies(value: String) {
+        prefs.edit().putString(KEY_AVSUBTITLES_COOKIES, value.trim()).commit()
+    }
+
+    fun getSubtitleSearchProvider(): SubtitleSearchProvider =
+        SubtitleSearchProvider.fromId(prefs.getString(KEY_SUBTITLE_SEARCH_PROVIDER, null))
+
+    fun saveSubtitleSearchProvider(provider: SubtitleSearchProvider) {
+        prefs.edit().putString(KEY_SUBTITLE_SEARCH_PROVIDER, provider.id).apply()
     }
 
     fun getStrmTreeUri(): String? = prefs.getString(KEY_STRM_TREE_URI, null)
@@ -369,6 +389,43 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putInt(KEY_DETAIL_THUMB_BACKGROUND_ALPHA, percent.coerceIn(0, 100)).apply()
     }
 
+    fun isPlayerLiveSubtitleEnabled(): Boolean =
+        prefs.getBoolean(KEY_PLAYER_LIVE_SUBTITLE_ENABLED, false)
+
+    fun savePlayerLiveSubtitleEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_PLAYER_LIVE_SUBTITLE_ENABLED, enabled).apply()
+    }
+
+    fun getExternalSubtitleFontSizeSp(): Int =
+        prefs.getInt(KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP, DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP)
+            .coerceIn(MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP, MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP)
+
+    fun saveExternalSubtitleFontSizeSp(value: Int) {
+        prefs.edit()
+            .putInt(KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP, value.coerceIn(MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP, MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP))
+            .apply()
+    }
+
+    fun getExternalSubtitleBottomPaddingPercent(): Int =
+        prefs.getInt(KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT, DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT)
+            .coerceIn(MIN_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT, MAX_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT)
+
+    fun saveExternalSubtitleBottomPaddingPercent(value: Int) {
+        prefs.edit()
+            .putInt(KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT, value.coerceIn(MIN_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT, MAX_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT))
+            .apply()
+    }
+
+    fun getExternalSubtitleBackgroundAlphaPercent(): Int =
+        prefs.getInt(KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT, DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT)
+            .coerceIn(MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT, MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT)
+
+    fun saveExternalSubtitleBackgroundAlphaPercent(value: Int) {
+        prefs.edit()
+            .putInt(KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT, value.coerceIn(MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT, MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT))
+            .apply()
+    }
+
     private fun getTreeDisplayName(uriString: String?): String? {
         val uri = uriString?.let { Uri.parse(it) } ?: return null
         DocumentFile.fromTreeUri(appContext, uri)?.name?.takeIf { it.isNotBlank() }?.let { return it }
@@ -387,6 +444,9 @@ class AppSettingsRepository(context: Context) {
         const val KEY_LIBRARY_ROOT_URI = "library_root_uri"
         const val KEY_LIBRARY_ROOT_URI_HISTORY = "library_root_uri_history"
         const val KEY_MISSAV_COOKIES = "missav_cookies"
+        const val KEY_JAVZIMU_COOKIES = "javzimu_cookies"
+        const val KEY_AVSUBTITLES_COOKIES = "avsubtitles_cookies"
+        const val KEY_SUBTITLE_SEARCH_PROVIDER = "subtitle_search_provider"
         const val KEY_CLOUD115_LOGIN_APP = "cloud115_login_app"
         const val KEY_DEFAULT_SCRAPE_SOURCE = "default_scrape_source"
         const val KEY_IMAGE_DOWNLOAD_RETRY_COUNT = "image_download_retry_count"
@@ -412,10 +472,23 @@ class AppSettingsRepository(context: Context) {
         const val KEY_ASR_MODEL_BASE_URL = "asr_model_base_url"
         const val KEY_DETAIL_THUMB_BACKGROUND_ENABLED = "detail_thumb_background_enabled"
         const val KEY_DETAIL_THUMB_BACKGROUND_ALPHA = "detail_thumb_background_alpha"
+        const val KEY_PLAYER_LIVE_SUBTITLE_ENABLED = "player_live_subtitle_enabled"
+        const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
+        const val KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = "external_subtitle_bottom_padding_percent"
+        const val KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = "external_subtitle_background_alpha_percent"
         const val DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT = 5
         const val DEFAULT_SCRAPE_CONCURRENCY_LIMIT = 2
         const val MAX_SCRAPE_CONCURRENCY_LIMIT = 4
         const val DEFAULT_DETAIL_THUMB_BACKGROUND_ALPHA = 32
+        const val DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 22
+        const val MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 14
+        const val MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 40
+        const val DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = 8
+        const val MIN_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = 0
+        const val MAX_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = 30
+        const val DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
+        const val MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
+        const val MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 80
         const val DEFAULT_BAIDU_TRANSLATE_APP_ID = ""
         const val DEFAULT_BAIDU_TRANSLATE_SECRET_KEY = ""
         const val DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"

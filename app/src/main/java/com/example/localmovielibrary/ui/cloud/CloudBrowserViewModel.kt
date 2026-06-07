@@ -127,10 +127,33 @@ class CloudBrowserViewModel(
         }
         viewModelScope.launch {
             val sortedItems = withContext(Dispatchers.Default) {
-                current.items.sortedByModifiedTime(nextAscending)
+                current.items.sortedByCloudOption(current.sortOption, nextAscending)
             }
             _uiState.update {
                 if (it.sortAscending == nextAscending) {
+                    it.copy(
+                        items = sortedItems,
+                        scrollResetVersion = it.scrollResetVersion + 1
+                    )
+                } else {
+                    it
+                }
+            }
+        }
+    }
+
+    fun setSortOption(option: CloudSortOption) {
+        val current = _uiState.value
+        if (current.sortOption == option) return
+        val currentFolderCid = current.path.lastOrNull()?.cid ?: 0L
+        scrollPositions[currentFolderCid] = CloudScrollPosition()
+        _uiState.update { it.copy(sortOption = option) }
+        viewModelScope.launch {
+            val sortedItems = withContext(Dispatchers.Default) {
+                current.items.sortedByCloudOption(option, current.sortAscending)
+            }
+            _uiState.update {
+                if (it.sortOption == option) {
                     it.copy(
                         items = sortedItems,
                         scrollResetVersion = it.scrollResetVersion + 1
@@ -592,13 +615,14 @@ class CloudBrowserViewModel(
                 )
             }
             runCatching {
+                val sortOption = _uiState.value.sortOption
                 val sortAscending = _uiState.value.sortAscending
                 val items = strmRepository.listFiles(current.cid)
                 coroutineScope {
                     val addedPickcodes = async { strmRepository.existingPickcodesForVisibleItems(items) }
                     val addedDomesticFolderCids = async { domesticMovieRepository.addedFolderCidsForVisibleItems(items) }
                     CloudDirectoryLoadResult(
-                        items = withContext(Dispatchers.Default) { items.sortedByModifiedTime(sortAscending) },
+                        items = withContext(Dispatchers.Default) { items.sortedByCloudOption(sortOption, sortAscending) },
                         addedPickcodes = addedPickcodes.await(),
                         addedDomesticFolderCids = addedDomesticFolderCids.await()
                     )
@@ -645,18 +669,35 @@ class CloudBrowserViewModel(
     }
 }
 
-private fun List<Cloud115FileItem>.sortedByModifiedTime(ascending: Boolean): List<Cloud115FileItem> {
-    return if (ascending) {
-        sortedWith(compareBy<Cloud115FileItem> { it.modifiedAt ?: Long.MAX_VALUE }.thenBy { it.name.lowercase() })
-    } else {
-        sortedWith(compareByDescending<Cloud115FileItem> { it.modifiedAt ?: Long.MIN_VALUE }.thenBy { it.name.lowercase() })
+enum class CloudSortOption {
+    ModifiedTime,
+    Size
+}
+
+private fun List<Cloud115FileItem>.sortedByCloudOption(
+    option: CloudSortOption,
+    ascending: Boolean
+): List<Cloud115FileItem> {
+    val comparator = when (option) {
+        CloudSortOption.ModifiedTime -> if (ascending) {
+            compareBy<Cloud115FileItem> { it.modifiedAt ?: Long.MAX_VALUE }
+        } else {
+            compareByDescending { it.modifiedAt ?: Long.MIN_VALUE }
+        }
+        CloudSortOption.Size -> if (ascending) {
+            compareBy { it.size ?: Long.MAX_VALUE }
+        } else {
+            compareByDescending { it.size ?: Long.MIN_VALUE }
+        }
     }
+    return sortedWith(comparator.thenBy { it.name.lowercase() })
 }
 
 data class CloudBrowserUiState(
     val items: List<Cloud115FileItem> = emptyList(),
     val path: List<CloudPathItem> = emptyList(),
     val isLoading: Boolean = false,
+    val sortOption: CloudSortOption = CloudSortOption.ModifiedTime,
     val sortAscending: Boolean = false,
     val addingPickcodes: Set<String> = emptySet(),
     val addedPickcodes: Set<String> = emptySet(),

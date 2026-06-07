@@ -192,12 +192,6 @@ class HomeViewModel(
         settingsRepository.saveHomeImageModeName(mode.name)
     }
 
-    fun updateMissingActorAvatars() {
-        viewModelScope.launch {
-            scrapeRepository.startUpdateMissingActorAvatars(repository.getMoviesForActorAvatarUpdate())
-        }
-    }
-
     fun refreshLibrarySummaries() {
         viewModelScope.launch {
             runCatching { repository.getLibrarySummaries() }

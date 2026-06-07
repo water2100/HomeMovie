@@ -53,6 +53,7 @@ import com.example.localmovielibrary.ui.player.PlayerScreen
 import com.example.localmovielibrary.ui.player.PlayerViewModel
 import com.example.localmovielibrary.ui.search.SearchScreen
 import com.example.localmovielibrary.ui.search.SearchViewModel
+import com.example.localmovielibrary.ui.settings.JavzimuCookieWebViewScreen
 import com.example.localmovielibrary.ui.settings.SettingsScreen
 import com.example.localmovielibrary.ui.settings.SettingsViewModel
 import com.example.localmovielibrary.ui.settings.MissavCookieWebViewScreen
@@ -211,6 +212,23 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                         }
                     )
                 }
+                composable(
+                    route = Route.JavzimuCookieWeb,
+                    arguments = listOf(navArgument("url") { type = NavType.StringType })
+                ) { entry ->
+                    val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
+                    JavzimuCookieWebViewScreen(
+                        url = url,
+                        onBack = { navController.popBackStack() },
+                        onSaveCookie = { cookie ->
+                            appContainer.settingsRepository.saveJavzimuCookies(cookie)
+                            navController.previousBackStackEntry
+                                ?.savedStateHandle
+                                ?.set("javzimuCookieSaved", true)
+                            navController.popBackStack()
+                        }
+                    )
+                }
                 composable(Route.ScrapeLogs) {
                     val viewModel: ScrapeLogViewModel = viewModel(
                         factory = ScrapeLogViewModel.factory(appContainer.strmScrapeRepository)
@@ -316,11 +334,26 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             title = title,
                             fileName = fileName,
                             directLinkRepository = appContainer.directLinkRepository,
+                            cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
                             settingsRepository = appContainer.settingsRepository,
                             playbackProgressRepository = appContainer.playbackProgressRepository
                         )
                     )
-                    PlayerScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    val javzimuCookieSaved by entry.savedStateHandle
+                        .getStateFlow("javzimuCookieSaved", false)
+                        .collectAsState()
+                    LaunchedEffect(javzimuCookieSaved) {
+                        if (javzimuCookieSaved) {
+                            entry.savedStateHandle["javzimuCookieSaved"] = false
+                            val cookie = appContainer.settingsRepository.getJavzimuCookies()
+                            if (cookie.isNotBlank()) viewModel.onJavzimuCookieReady(cookie)
+                        }
+                    }
+                    PlayerScreen(
+                        viewModel = viewModel,
+                        onBack = { navController.popBackStack() },
+                        onOpenJavzimuCookie = { url -> navController.navigate(Route.javzimuCookieWeb(url)) }
+                    )
                 }
             }
         }
@@ -407,6 +440,7 @@ private object Route {
     const val Settings = "settings"
     const val ScrapeLogs = "scrapeLogs"
     const val MissavCookieWeb = "missavCookieWeb/{number}"
+    const val JavzimuCookieWeb = "javzimuCookieWeb/{url}"
     const val Detail = "movieDetail/{movieId}"
     const val FilterResult = "filterResult/{filterType}/{filterValue}"
     const val Player = "player/{videoUri}?title={title}&fileName={fileName}"
@@ -414,6 +448,7 @@ private object Route {
     fun detail(movieId: Long) = "movieDetail/$movieId"
 
     fun missavCookieWeb(number: String) = "missavCookieWeb/${Uri.encode(number)}"
+    fun javzimuCookieWeb(url: String) = "javzimuCookieWeb/${Uri.encode(url)}"
 
     fun filterResult(filterType: String, filterValue: String) =
         "filterResult/${Uri.encode(filterType)}/${Uri.encode(filterValue)}"

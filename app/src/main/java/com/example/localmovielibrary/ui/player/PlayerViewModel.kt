@@ -1,4 +1,4 @@
-package com.example.localmovielibrary.ui.player
+﻿package com.example.localmovielibrary.ui.player
 
 import android.app.Application
 import android.net.Uri
@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
@@ -17,20 +18,36 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.example.localmovielibrary.asr.SherpaOnnxSubtitleRecognizer
+import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.DirectLinkRepository
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.PlaybackProgressRepository
+import com.example.localmovielibrary.diagnostics.RuntimeErrorLog
 import com.example.localmovielibrary.playback.DEFAULT_USER_AGENT
+import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.playback.PlaybackRequest
 import com.example.localmovielibrary.playback.PlaybackResolver
 import com.example.localmovielibrary.playback.SubtitleRenderersFactory
 import com.example.localmovielibrary.playback.vr.VrControlMode
 import com.example.localmovielibrary.playback.vr.VrMode
 import com.example.localmovielibrary.playback.vr.VrModeSettings
+import com.example.localmovielibrary.subtitle.AvsubtitlesCloudflareException
+import com.example.localmovielibrary.subtitle.AvsubtitlesSubtitleRepository
+import com.example.localmovielibrary.subtitle.JavzimuSubtitleRepository
+import com.example.localmovielibrary.subtitle.JavzimuCloudflareException
+import com.example.localmovielibrary.subtitle.JavzimuSubtitleResult
+import com.example.localmovielibrary.subtitle.LocalSubtitleFile
 import com.example.localmovielibrary.subtitle.SavedSubtitleCue
 import com.example.localmovielibrary.subtitle.LiveSubtitleStore
+import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
+import com.example.localmovielibrary.subtitle.XunleiSubtitleRepository
+import com.example.localmovielibrary.subtitle.normalizeJavzimuSubtitleNumber
 import com.example.localmovielibrary.translate.TranslationClient
+import com.example.localmovielibrary.util.normalizeMovieNumber
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +62,7 @@ class PlayerViewModel(
     title: String,
     private val fileName: String,
     directLinkRepository: DirectLinkRepository,
+    private val cloudStrmRecordRepository: CloudStrmRecordRepository,
     private val settingsRepository: AppSettingsRepository,
     private val playbackProgressRepository: PlaybackProgressRepository
 ) : AndroidViewModel(application) {
@@ -53,11 +71,18 @@ class PlayerViewModel(
     private val resolver = PlaybackResolver(application.contentResolver, directLinkRepository)
     private val translateClient = TranslationClient(settingsRepository)
     private val liveSubtitleStore = LiveSubtitleStore(application, settingsRepository)
+    private val javzimuSubtitleRepository = JavzimuSubtitleRepository(application, settingsRepository)
+    private val avsubtitlesSubtitleRepository = AvsubtitlesSubtitleRepository(application, settingsRepository)
+    private val xunleiSubtitleRepository = XunleiSubtitleRepository(application, settingsRepository)
+    private val errorLog = RuntimeErrorLog(application)
     private val subtitleRecognizer = SherpaOnnxSubtitleRecognizer(application, settingsRepository)
-    private val mediaKey = videoUri.toString()
+    private var mediaKey = videoUri.toString()
+    private var subtitleStorageSourceUri: Uri? = null
+    private val progressPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var progressJob: Job? = null
     private var savedSubtitleJob: Job? = null
     private var liveSubtitleClearJob: Job? = null
+    private var pendingJavzimuAction: PendingJavzimuAction? = null
     private var lastTranslatedSource = ""
     private var lastTranslationStartedAtMs = 0L
     private var lastPersistedPositionMs = Long.MIN_VALUE
@@ -71,6 +96,7 @@ class PlayerViewModel(
     private val _uiState = MutableStateFlow(
         PlayerUiState(
             isLoading = true,
+            externalSubtitleStyle = externalSubtitleStyleSettings(),
             vrMode = vrModeSettings.getMode(mediaKey),
             vrControlMode = vrModeSettings.getControlMode(mediaKey)
         )
@@ -84,12 +110,16 @@ class PlayerViewModel(
         viewModelScope.launch {
             resolver.resolve(videoUri.toString(), this@PlayerViewModel.title, fileName)
                 .onSuccess { request ->
+                    val resolvedStorageUri = resolveSubtitleStorageSourceUri(request)
+                    subtitleStorageSourceUri = resolvedStorageUri
+                    mediaKey = resolvedStorageUri?.toString() ?: videoUri.toString()
                     val resumePositionMs = playbackProgressRepository.getResumePosition(mediaKey)
                     val player = createPlayer(request, resumePositionMs)
                     _uiState.value = PlayerUiState(
                         playbackRequest = request,
                         player = player,
                         isLoading = false,
+                        externalSubtitleStyle = externalSubtitleStyleSettings(),
                         vrMode = vrModeSettings.getMode(mediaKey),
                         vrControlMode = vrModeSettings.getControlMode(mediaKey)
                     )
@@ -97,6 +127,7 @@ class PlayerViewModel(
                 .onFailure { error ->
                     _uiState.value = PlayerUiState(
                         isLoading = false,
+                        externalSubtitleStyle = externalSubtitleStyleSettings(),
                         errorMessage = error.message ?: "Unable to fetch playback address"
                     )
                 }
@@ -132,7 +163,7 @@ class PlayerViewModel(
                         .build(),
                     true
                 )
-                setMediaItem(MediaItem.fromUri(request.mediaUri), resumePositionMs.coerceAtLeast(0L))
+                setMediaItem(createMediaItem(request, null), resumePositionMs.coerceAtLeast(0L))
                 prepare()
                 playWhenReady = true
                 addListener(
@@ -163,6 +194,29 @@ class PlayerViewModel(
             }
     }
 
+    private fun createMediaItem(request: PlaybackRequest, subtitle: LocalSubtitleFile?): MediaItem {
+        val builder = MediaItem.Builder().setUri(request.mediaUri)
+        if (subtitle != null) {
+            builder.setSubtitleConfigurations(
+                listOf(
+                    MediaItem.SubtitleConfiguration.Builder(subtitle.uri)
+                        .setMimeType(subtitle.mimeType())
+                        .setLanguage("zh")
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build()
+                )
+            )
+        }
+        return builder.build()
+    }
+
+    private fun externalSubtitleStyleSettings(): ExternalSubtitleStyleSettings =
+        ExternalSubtitleStyleSettings(
+            fontSizeSp = settingsRepository.getExternalSubtitleFontSizeSp(),
+            bottomPaddingPercent = settingsRepository.getExternalSubtitleBottomPaddingPercent(),
+            backgroundAlphaPercent = settingsRepository.getExternalSubtitleBackgroundAlphaPercent()
+        )
+
     private fun retryAfterForbidden(pickcode: String) {
         retriedAfterForbidden = true
         viewModelScope.launch {
@@ -176,11 +230,15 @@ class PlayerViewModel(
             resolver.invalidatePickcode(pickcode)
             resolver.resolve(videoUri.toString(), title, fileName, forceRefresh = true)
                 .onSuccess { request ->
+                    val resolvedStorageUri = resolveSubtitleStorageSourceUri(request)
+                    subtitleStorageSourceUri = resolvedStorageUri
+                    mediaKey = resolvedStorageUri?.toString() ?: mediaKey
                     val player = createPlayer(request, resumePositionMs)
                     _uiState.value = PlayerUiState(
                         playbackRequest = request,
                         player = player,
                         isLoading = false,
+                        externalSubtitleStyle = externalSubtitleStyleSettings(),
                         vrMode = vrModeSettings.getMode(mediaKey),
                         vrControlMode = vrModeSettings.getControlMode(mediaKey)
                     )
@@ -188,6 +246,7 @@ class PlayerViewModel(
                 .onFailure { error ->
                     _uiState.value = PlayerUiState(
                         isLoading = false,
+                        externalSubtitleStyle = externalSubtitleStyleSettings(),
                         errorMessage = error.message ?: "Unable to refresh 115 playback address"
                     )
                 }
@@ -253,6 +312,321 @@ class PlayerViewModel(
 
     fun hasLiveSubtitleModel(): Boolean = subtitleRecognizer.hasModelAssets()
 
+    fun isPlayerLiveSubtitleEnabled(): Boolean = settingsRepository.isPlayerLiveSubtitleEnabled()
+
+    fun openExternalSubtitlePanel(videoDurationMs: Long) {
+        val number = normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title)
+        val subtitleNumber = number?.let { normalizeJavzimuSubtitleNumber(it) }
+        _uiState.update {
+            it.copy(
+                externalSubtitlePanelVisible = true,
+                externalSubtitleQueryNumber = subtitleNumber.orEmpty(),
+                externalSubtitleProviderLabel = settingsRepository.getSubtitleSearchProvider().label,
+                externalSubtitleMessage = null,
+                externalSubtitleError = null,
+                externalSubtitleSearching = false,
+                externalSubtitleDownloading = false,
+                onlineSubtitles = emptyList()
+            )
+        }
+        viewModelScope.launch {
+            val storageSourceUri = resolveSubtitleStorageSourceUri()
+            val localFiles = runCatching {
+                javzimuSubtitleRepository.listLocalSubtitles(videoUri, fileName, storageSourceUri)
+            }.getOrElse { emptyList() }
+            _uiState.update { it.copy(localSubtitles = localFiles) }
+            if (number == null) {
+                _uiState.update {
+                    it.copy(
+                        externalSubtitleSearching = false,
+                        externalSubtitleError = "\u6CA1\u6709\u8BC6\u522B\u5230\u5F71\u7247\u756A\u53F7\uFF0C\u65E0\u6CD5\u641C\u7D22\u5B57\u5E55"
+                    )
+                }
+                return@launch
+            }
+            _uiState.update {
+                it.copy(
+                    externalSubtitleMessage = if (localFiles.isNotEmpty()) {
+                        "\u5DF2\u627E\u5230\u672C\u5730\u5B57\u5E55\uFF0C\u53EF\u76F4\u63A5\u52A0\u8F7D\uFF1B\u4E5F\u53EF\u4EE5\u624B\u52A8\u641C\u7D22\u5728\u7EBF\u5B57\u5E55"
+                    } else {
+                        "\u5F53\u524D\u76EE\u5F55\u6CA1\u6709\u672C\u5730\u5B57\u5E55\uFF0C\u53EF\u624B\u52A8\u641C\u7D22\u5728\u7EBF\u5B57\u5E55"
+                    },
+                    externalSubtitleError = null
+                )
+            }
+        }
+    }
+
+    fun searchExternalSubtitles(videoDurationMs: Long) {
+        val number = _uiState.value.externalSubtitleQueryNumber.ifBlank {
+            (normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title))
+                ?.let { normalizeJavzimuSubtitleNumber(it) }
+                .orEmpty()
+        }
+        if (number.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    externalSubtitleSearching = false,
+                    externalSubtitleError = "\u6CA1\u6709\u8BC6\u522B\u5230\u5F71\u7247\u756A\u53F7\uFF0C\u65E0\u6CD5\u641C\u7D22\u5B57\u5E55"
+                )
+            }
+            return
+        }
+        if (_uiState.value.externalSubtitleSearching) return
+        _uiState.update {
+            it.copy(
+                externalSubtitleSearching = true,
+                externalSubtitleMessage = null,
+                externalSubtitleError = null,
+                onlineSubtitles = emptyList()
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                when (settingsRepository.getSubtitleSearchProvider()) {
+                    SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.search(number, videoDurationMs)
+                    SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.search(number, videoDurationMs)
+                    SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.search(number, videoDurationMs)
+                }
+            }.onSuccess { results ->
+                _uiState.update {
+                    it.copy(
+                        onlineSubtitles = results,
+                        externalSubtitleSearching = false,
+                        externalSubtitleMessage = if (results.isEmpty()) "\u6CA1\u6709\u627E\u5230\u65F6\u957F\u5339\u914D\u7684\u5B57\u5E55" else null,
+                        externalSubtitleError = null
+                    )
+                }
+            }.onFailure { error ->
+                when (error) {
+                    is JavzimuCloudflareException -> {
+                        startJavzimuCookieRefresh(
+                            action = PendingJavzimuAction.Search(videoDurationMs),
+                            number = number
+                        )
+                        return@onFailure
+                    }
+
+                    is AvsubtitlesCloudflareException -> {
+                        errorLog.append(
+                            event = "player.avsubtitles.search.cloudflare",
+                            details = mapOf("number" to number),
+                            error = error
+                        )
+                    }
+                }
+                _uiState.update {
+                    it.copy(
+                        externalSubtitleSearching = false,
+                        externalSubtitleError = error.message ?: "\u5B57\u5E55\u641C\u7D22\u5931\u8D25"
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissExternalSubtitlePanel() {
+        _uiState.update { it.copy(externalSubtitlePanelVisible = false) }
+    }
+
+    fun loadLocalSubtitle(subtitle: LocalSubtitleFile) {
+        applyExternalSubtitle(subtitle)
+    }
+
+    fun downloadAndLoadSubtitle(result: JavzimuSubtitleResult) {
+        if (_uiState.value.externalSubtitleDownloading) return
+        _uiState.update {
+            it.copy(
+                externalSubtitleDownloading = true,
+                externalSubtitleMessage = "\u6B63\u5728\u4E0B\u8F7D\u5B57\u5E55...",
+                externalSubtitleError = null
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                val storageSourceUri = resolveSubtitleStorageSourceUri()
+                when (result.provider) {
+                    SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
+                    SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
+                    SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
+                }
+            }.onSuccess { subtitle ->
+                val localFiles = runCatching {
+                    javzimuSubtitleRepository.listLocalSubtitles(videoUri, fileName, resolveSubtitleStorageSourceUri())
+                }.getOrElse { _uiState.value.localSubtitles + subtitle }
+                _uiState.update {
+                    it.copy(
+                        localSubtitles = localFiles.distinctBy { file -> file.uri.toString() },
+                        externalSubtitleDownloading = false,
+                        externalSubtitleMessage = "\u5B57\u5E55\u5DF2\u4E0B\u8F7D\u5E76\u52A0\u8F7D\uFF1A${subtitle.name}",
+                        externalSubtitleError = null
+                    )
+                }
+                applyExternalSubtitle(subtitle)
+            }.onFailure { error ->
+                when (error) {
+                    is JavzimuCloudflareException -> {
+                        errorLog.append(
+                            event = "player.javzimu.download.cloudflare",
+                            details = subtitleLogDetails(result),
+                            error = error
+                        )
+                        startJavzimuCookieRefresh(
+                            action = PendingJavzimuAction.Download(result),
+                            number = _uiState.value.externalSubtitleQueryNumber
+                        )
+                        return@onFailure
+                    }
+
+                    is AvsubtitlesCloudflareException -> {
+                        errorLog.append(
+                            event = "player.avsubtitles.download.cloudflare",
+                            details = subtitleLogDetails(result),
+                            error = error
+                        )
+                    }
+                }
+                errorLog.append(
+                    event = "player.${result.provider.id}.download.failed",
+                    details = subtitleLogDetails(result),
+                    error = error
+                )
+                _uiState.update {
+                    it.copy(
+                        externalSubtitleDownloading = false,
+                        externalSubtitleMessage = null,
+                        externalSubtitleError = error.message ?: "\u5B57\u5E55\u4E0B\u8F7D\u5931\u8D25"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun subtitleLogDetails(result: JavzimuSubtitleResult): Map<String, String?> =
+        mapOf(
+            "videoUri" to videoUri.toString(),
+            "fileName" to fileName,
+            "title" to title,
+            "subtitleStorageSourceUri" to subtitleStorageSourceUri?.toString(),
+            "queryNumber" to _uiState.value.externalSubtitleQueryNumber,
+            "resultName" to result.name,
+            "resultExt" to result.ext,
+            "provider" to result.provider.id,
+            "hasJavzimuCookie" to settingsRepository.getJavzimuCookies().isNotBlank().toString(),
+            "javzimuCookieLength" to settingsRepository.getJavzimuCookies().length.toString(),
+            "hasAvsubtitlesCookie" to settingsRepository.getAvsubtitlesCookies().isNotBlank().toString(),
+            "avsubtitlesCookieLength" to settingsRepository.getAvsubtitlesCookies().length.toString()
+        )
+    private suspend fun resolveSubtitleStorageSourceUri(): Uri? =
+        subtitleStorageSourceUri ?: resolveSubtitleStorageSourceUri(_uiState.value.playbackRequest).also {
+            if (it != null) subtitleStorageSourceUri = it
+        }
+
+    private suspend fun resolveSubtitleStorageSourceUri(request: PlaybackRequest?): Uri? {
+        if (isStrmSource(videoUri, fileName)) return videoUri
+        val pickcode = request?.pickcode
+            ?: PickcodeExtractor.extract(videoUri.toString())
+            ?: return null
+        val strmUri = cloudStrmRecordRepository.findSubtitleStorageRecord(pickcode, fileName, title)?.strmUri
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return runCatching { Uri.parse(strmUri) }.getOrNull()
+    }
+
+    private fun isStrmSource(uri: Uri, name: String): Boolean =
+        name.substringAfterLast('.', "").equals("strm", ignoreCase = true) ||
+            uri.toString().substringBefore('?').endsWith(".strm", ignoreCase = true)
+
+    fun onJavzimuCookieReady(cookie: String) {
+        settingsRepository.saveJavzimuCookies(cookie)
+        val action = pendingJavzimuAction
+        pendingJavzimuAction = null
+        _uiState.update {
+            it.copy(
+                externalSubtitleMessage = "\u5DF2\u83B7\u53D6 Javzimu Cookie\uFF0C\u6B63\u5728\u91CD\u8BD5",
+                externalSubtitleSearching = false,
+                externalSubtitleDownloading = false,
+                externalSubtitleError = null
+            )
+        }
+        when (action) {
+            is PendingJavzimuAction.Search -> searchExternalSubtitles(action.videoDurationMs)
+            is PendingJavzimuAction.Download -> downloadAndLoadSubtitle(action.result)
+            null -> Unit
+        }
+    }
+
+    fun onJavzimuCookieFailed(message: String) {
+        pendingJavzimuAction = null
+        _uiState.update {
+            it.copy(
+                externalSubtitleSearching = false,
+                externalSubtitleDownloading = false,
+                externalSubtitleError = message
+            )
+        }
+    }
+
+    private fun startJavzimuCookieRefresh(action: PendingJavzimuAction, number: String) {
+        pendingJavzimuAction = action
+        val normalized = normalizeJavzimuSubtitleNumber(number)
+        _uiState.update {
+            it.copy(
+                javzimuWebUrl = "https://javzimu.com/search/$normalized",
+                externalSubtitleSearching = false,
+                externalSubtitleDownloading = false,
+                externalSubtitleMessage = "\u8BF7\u5728 Javzimu WebView \u4E2D\u5B8C\u6210\u9A8C\u8BC1\u540E\u8FD4\u56DE\uFF0C\u4F1A\u81EA\u52A8\u91CD\u8BD5",
+                externalSubtitleError = null
+            )
+        }
+    }
+
+    fun consumeJavzimuWebUrl(): String? {
+        val url = _uiState.value.javzimuWebUrl
+        if (url != null) {
+            _uiState.update { it.copy(javzimuWebUrl = null) }
+        }
+        return url
+    }
+
+    private fun applyExternalSubtitle(subtitle: LocalSubtitleFile) {
+        stopLiveSubtitleRecognition()
+        val request = _uiState.value.playbackRequest ?: return
+        val player = _uiState.value.player ?: return
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = player.playWhenReady
+        player.setMediaItem(createMediaItem(request, subtitle), position)
+        player.prepare()
+        player.playWhenReady = wasPlaying
+        _uiState.update {
+            it.copy(
+                activeExternalSubtitleName = subtitle.name,
+                externalSubtitlePanelVisible = false,
+                externalSubtitleMessage = null,
+                externalSubtitleError = null
+            )
+        }
+    }
+
+    private fun clearExternalSubtitleTrack() {
+        if (_uiState.value.activeExternalSubtitleName == null) return
+        val request = _uiState.value.playbackRequest ?: return
+        val player = _uiState.value.player ?: return
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = player.playWhenReady
+        player.setMediaItem(createMediaItem(request, null), position)
+        player.prepare()
+        player.playWhenReady = wasPlaying
+        _uiState.update {
+            it.copy(
+                activeExternalSubtitleName = null,
+                externalSubtitlePanelVisible = false,
+                externalSubtitleMessage = null,
+                externalSubtitleError = null
+            )
+        }
+    }
+
     fun setVrMode(mode: VrMode) {
         vrModeSettings.saveMode(mediaKey, mode)
         _uiState.update { it.copy(vrMode = mode) }
@@ -267,18 +641,18 @@ class PlayerViewModel(
         _uiState.update {
             it.copy(
                 liveSubtitleEnabled = true,
-                liveSubtitleSourceText = "これはリアルタイム字幕翻訳のテストです。",
-                liveSubtitleTranslatedText = "正在调用百度翻译...",
+                liveSubtitleSourceText = "\u3053\u308C\u306F\u30EA\u30A2\u30EB\u30BF\u30A4\u30E0\u5B57\u5E55\u7FFB\u8A33\u306E\u30C6\u30B9\u30C8\u3067\u3059\u3002",
+                liveSubtitleTranslatedText = "\u6B63\u5728\u8C03\u7528\u7FFB\u8BD1...",
                 liveSubtitleError = null
             )
         }
         viewModelScope.launch {
             runCatching {
-                translateClient.translate("これはリアルタイム字幕翻訳のテストです。", from = "jp", to = "zh")
+                translateClient.translate("\u3053\u308C\u306F\u30EA\u30A2\u30EB\u30BF\u30A4\u30E0\u5B57\u5E55\u7FFB\u8A33\u306E\u30C6\u30B9\u30C8\u3067\u3059\u3002", from = "jp", to = "zh")
             }.onSuccess { translated ->
                 _uiState.update {
                     it.copy(
-                        liveSubtitleTranslatedText = translated.ifBlank { "百度翻译返回为空" },
+                        liveSubtitleTranslatedText = translated.ifBlank { "\u7FFB\u8BD1\u7ED3\u679C\u4E3A\u7A7A" },
                         liveSubtitleError = null
                     )
                 }
@@ -286,7 +660,7 @@ class PlayerViewModel(
                 _uiState.update {
                     it.copy(
                         liveSubtitleTranslatedText = "",
-                        liveSubtitleError = error.message ?: "百度翻译失败"
+                        liveSubtitleError = error.message ?: "\u7FFB\u8BD1\u5931\u8D25"
                     )
                 }
             }
@@ -312,18 +686,19 @@ class PlayerViewModel(
                 it.copy(
                     liveSubtitleEnabled = true,
                     liveSubtitleListening = false,
-                    liveSubtitleSourceText = "实时字幕未启动",
+                    liveSubtitleSourceText = "\u5B9E\u65F6\u5B57\u5E55\u672A\u542F\u52A8",
                     liveSubtitleTranslatedText = "",
-                    liveSubtitleError = "缺少 sherpa-onnx SenseVoice 模型文件"
+                    liveSubtitleError = "\u672A\u627E\u5230 sherpa-onnx SenseVoice \u6A21\u578B"
                 )
             }
             return
         }
+        clearExternalSubtitleTrack()
         _uiState.update { state ->
             state.copy(
                 liveSubtitleEnabled = true,
                 liveSubtitleListening = true,
-                liveSubtitleSourceText = "本地 ASR 正在启动...",
+                liveSubtitleSourceText = "\u6B63\u5728\u542F\u52A8 ASR...",
                 liveSubtitleTranslatedText = state.liveSubtitleTranslatedText,
                 liveSubtitleError = null
             )
@@ -356,6 +731,7 @@ class PlayerViewModel(
 
     fun startLiveSubtitleFromPlayerAudio() {
         if (_uiState.value.liveSubtitleListening) return
+        clearExternalSubtitleTrack()
         savedSubtitleJob?.cancel()
         viewModelScope.launch {
             val savedCues = liveSubtitleStore.load(videoUri, fileName)
@@ -374,9 +750,9 @@ class PlayerViewModel(
                 it.copy(
                     liveSubtitleEnabled = true,
                     liveSubtitleListening = false,
-                    liveSubtitleSourceText = "实时字幕未启动",
+                    liveSubtitleSourceText = "\u5B9E\u65F6\u5B57\u5E55\u672A\u542F\u52A8",
                     liveSubtitleTranslatedText = "",
-                    liveSubtitleError = "缺少 sherpa-onnx SenseVoice 模型文件"
+                    liveSubtitleError = "\u672A\u627E\u5230 sherpa-onnx SenseVoice \u6A21\u578B"
                 )
             }
             return
@@ -470,7 +846,7 @@ class PlayerViewModel(
             it.copy(
                 liveSubtitleEnabled = true,
                 liveSubtitleListening = false,
-                liveSubtitleError = "需要麦克风权限才能使用 sherpa-onnx 本地实时字幕"
+                liveSubtitleError = "\u5F53\u524D\u8BBE\u5907\u4E0D\u652F\u6301\u7CFB\u7EDF\u5185\u5F55\u6743\u9650\uFF0C\u8BF7\u4F7F\u7528 sherpa-onnx \u6A21\u578B\u540E\u518D\u8BD5"
             )
         }
     }
@@ -508,7 +884,7 @@ class PlayerViewModel(
             runCatching {
                 translateClient.translate(cleanText, from = "jp", to = "zh")
             }.onSuccess { translated ->
-                val finalTranslated = translated.trim().ifBlank { "翻译返回为空" }
+                val finalTranslated = translated.trim().ifBlank { "\u672A\u8BC6\u522B\u5230\u6709\u6548\u7FFB\u8BD1" }
                 _uiState.update {
                     it.copy(
                         liveSubtitleTranslatedText = finalTranslated,
@@ -527,7 +903,7 @@ class PlayerViewModel(
                 _uiState.update {
                     it.copy(
                         liveSubtitleTranslatedText = "",
-                        liveSubtitleError = error.message ?: "翻译失败"
+                        liveSubtitleError = error.message ?: "\u7FFB\u8BD1\u5931\u8D25"
                     )
                 }
             }
@@ -567,7 +943,7 @@ class PlayerViewModel(
             }.onSuccess { translated ->
                 _uiState.update {
                     it.copy(
-                        liveSubtitleTranslatedText = translated.ifBlank { "百度翻译返回为空" },
+                        liveSubtitleTranslatedText = translated.ifBlank { "\u7FFB\u8BD1\u7ED3\u679C\u4E3A\u7A7A" },
                         liveSubtitleError = null
                     )
                 }
@@ -575,7 +951,7 @@ class PlayerViewModel(
                 _uiState.update {
                     it.copy(
                         liveSubtitleTranslatedText = "",
-                        liveSubtitleError = error.message ?: "百度翻译失败"
+                        liveSubtitleError = error.message ?: "\u7FFB\u8BD1\u5931\u8D25"
                     )
                 }
             }
@@ -613,21 +989,36 @@ class PlayerViewModel(
     }
 
     private fun saveProgress(player: Player) {
-        viewModelScope.launch {
-            persistProgress(player, force = true)
+        val playbackState = player.playbackState
+        val positionMs = player.currentPosition.coerceAtLeast(0L)
+        val durationMs = player.duration.takeIf { it > 0L } ?: 0L
+        progressPersistenceScope.launch {
+            persistProgressValues(playbackState, positionMs, durationMs, force = true)
         }
     }
 
     private suspend fun persistProgress(player: Player, force: Boolean) {
-        if (player.playbackState == Player.STATE_ENDED) {
+        persistProgressValues(
+            playbackState = player.playbackState,
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+            durationMs = player.duration.takeIf { it > 0L } ?: 0L,
+            force = force
+        )
+    }
+
+    private suspend fun persistProgressValues(
+        playbackState: Int,
+        positionMs: Long,
+        durationMs: Long,
+        force: Boolean
+    ) {
+        if (playbackState == Player.STATE_ENDED) {
             playbackProgressRepository.clear(mediaKey)
             lastPersistedPositionMs = Long.MIN_VALUE
             lastPersistedDurationMs = 0L
             lastPersistedAtMs = 0L
             return
         }
-        val positionMs = player.currentPosition.coerceAtLeast(0L)
-        val durationMs = player.duration.takeIf { it > 0L } ?: 0L
         val now = System.currentTimeMillis()
         if (!force) {
             if (positionMs < MIN_AUTOSAVE_POSITION_MS) return
@@ -647,7 +1038,7 @@ class PlayerViewModel(
     }
 
     private fun clearProgress() {
-        viewModelScope.launch {
+        progressPersistenceScope.launch {
             playbackProgressRepository.clear(mediaKey)
             lastPersistedPositionMs = Long.MIN_VALUE
             lastPersistedDurationMs = 0L
@@ -679,6 +1070,7 @@ class PlayerViewModel(
             title: String,
             fileName: String,
             directLinkRepository: DirectLinkRepository,
+            cloudStrmRecordRepository: CloudStrmRecordRepository,
             settingsRepository: AppSettingsRepository,
             playbackProgressRepository: PlaybackProgressRepository
         ): ViewModelProvider.Factory =
@@ -691,6 +1083,7 @@ class PlayerViewModel(
                         title = title,
                         fileName = fileName,
                         directLinkRepository = directLinkRepository,
+                        cloudStrmRecordRepository = cloudStrmRecordRepository,
                         settingsRepository = settingsRepository,
                         playbackProgressRepository = playbackProgressRepository
                     ) as T
@@ -701,8 +1094,20 @@ class PlayerViewModel(
 data class PlayerUiState(
     val playbackRequest: PlaybackRequest? = null,
     val player: ExoPlayer? = null,
+    val externalSubtitleStyle: ExternalSubtitleStyleSettings = ExternalSubtitleStyleSettings(),
     val vrMode: VrMode = VrMode.Normal2D,
     val vrControlMode: VrControlMode = VrControlMode.TouchAndSensor,
+    val externalSubtitlePanelVisible: Boolean = false,
+    val externalSubtitleSearching: Boolean = false,
+    val externalSubtitleDownloading: Boolean = false,
+    val externalSubtitleQueryNumber: String = "",
+    val externalSubtitleProviderLabel: String = SubtitleSearchProvider.Javzimu.label,
+    val localSubtitles: List<LocalSubtitleFile> = emptyList(),
+    val onlineSubtitles: List<JavzimuSubtitleResult> = emptyList(),
+    val activeExternalSubtitleName: String? = null,
+    val externalSubtitleMessage: String? = null,
+    val externalSubtitleError: String? = null,
+    val javzimuWebUrl: String? = null,
     val liveSubtitleEnabled: Boolean = false,
     val liveSubtitleListening: Boolean = false,
     val liveSubtitleSourceText: String = "",
@@ -711,3 +1116,23 @@ data class PlayerUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null
 )
+
+data class ExternalSubtitleStyleSettings(
+    val fontSizeSp: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP,
+    val bottomPaddingPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT,
+    val backgroundAlphaPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT
+)
+
+private sealed interface PendingJavzimuAction {
+    data class Search(val videoDurationMs: Long) : PendingJavzimuAction
+    data class Download(val result: JavzimuSubtitleResult) : PendingJavzimuAction
+}
+
+private fun LocalSubtitleFile.mimeType(): String {
+    return when (name.substringAfterLast('.', "").lowercase()) {
+        "vtt" -> MimeTypes.TEXT_VTT
+        "ass", "ssa" -> MimeTypes.TEXT_SSA
+        else -> MimeTypes.APPLICATION_SUBRIP
+    }
+}
+

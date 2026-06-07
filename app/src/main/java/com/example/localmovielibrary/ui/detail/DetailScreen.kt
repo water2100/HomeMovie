@@ -188,11 +188,13 @@ fun DetailScreen(
                     onScrapeDmm = viewModel::scrapeWithDmm,
                     onScrapeDmm2 = viewModel::scrapeWithDmm2,
                     onScrapeOfficial = viewModel::scrapeWithOfficial,
+                    onScrapeJavbus = viewModel::scrapeWithJavbus,
                     onScrapeMissav = viewModel::scrapeWithMissav,
                     onRescrapeDefault = viewModel::rescrapeWithDefault,
                     onRescrapeDmm = viewModel::rescrapeWithDmm,
                     onRescrapeDmm2 = viewModel::rescrapeWithDmm2,
                     onRescrapeOfficial = viewModel::rescrapeWithOfficial,
+                    onRescrapeJavbus = viewModel::rescrapeWithJavbus,
                     onRescrapeMissav = viewModel::rescrapeWithMissav,
                     onClearScrapeRequest = { showClearScrapeConfirm = true },
                     thumbBackgroundSettings = thumbBackgroundSettings,
@@ -272,11 +274,13 @@ fun MovieDetailScreen(
     onScrapeDmm: () -> Unit,
     onScrapeDmm2: () -> Unit,
     onScrapeOfficial: () -> Unit,
+    onScrapeJavbus: () -> Unit,
     onScrapeMissav: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
+    onRescrapeJavbus: () -> Unit,
     onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit,
     thumbBackgroundSettings: ThumbBackgroundSettings,
@@ -337,11 +341,13 @@ fun MovieDetailScreen(
                     onScrapeDmm = onScrapeDmm,
                     onScrapeDmm2 = onScrapeDmm2,
                     onScrapeOfficial = onScrapeOfficial,
+                    onScrapeJavbus = onScrapeJavbus,
                     onScrapeMissav = onScrapeMissav,
                     onRescrapeDefault = onRescrapeDefault,
                     onRescrapeDmm = onRescrapeDmm,
                     onRescrapeDmm2 = onRescrapeDmm2,
                     onRescrapeOfficial = onRescrapeOfficial,
+                    onRescrapeJavbus = onRescrapeJavbus,
                     onRescrapeMissav = onRescrapeMissav,
                     onClearScrapeRequest = onClearScrapeRequest,
                     onThumbBackgroundSettingsRequest = onThumbBackgroundSettingsRequest
@@ -551,11 +557,13 @@ private fun MobileActionBar(
     onScrapeDmm: () -> Unit,
     onScrapeDmm2: () -> Unit,
     onScrapeOfficial: () -> Unit,
+    onScrapeJavbus: () -> Unit,
     onScrapeMissav: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
+    onRescrapeJavbus: () -> Unit,
     onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit,
     onThumbBackgroundSettingsRequest: () -> Unit
@@ -624,6 +632,13 @@ private fun MobileActionBar(
                         }
                     )
                     DropdownMenuItem(
+                        text = { Text("从 JavBus 刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onScrapeJavbus()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("从 MissAV 刮削") },
                         onClick = {
                             moreExpanded = false
@@ -658,6 +673,13 @@ private fun MobileActionBar(
                         onClick = {
                             moreExpanded = false
                             onRescrapeOfficial()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("用 JavBus 重新刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onRescrapeJavbus()
                         }
                     )
                     DropdownMenuItem(

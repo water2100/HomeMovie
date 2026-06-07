@@ -17,6 +17,7 @@ import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.translate.TranslateProvider
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplate
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
@@ -326,6 +327,56 @@ class SettingsViewModel(
         _uiState.update { it.copy(asrModelBaseUrl = value.trim(), savedMessage = null) }
     }
 
+    fun updatePlayerLiveSubtitleEnabled(enabled: Boolean) {
+        repository.savePlayerLiveSubtitleEnabled(enabled)
+        _uiState.update {
+            it.copy(
+                playerLiveSubtitleEnabled = enabled,
+                savedMessage = if (enabled) "已开启播放器实时字幕" else "已关闭播放器实时字幕"
+            )
+        }
+    }
+
+    fun updateExternalSubtitleFontSizeSp(value: Int) {
+        repository.saveExternalSubtitleFontSizeSp(value)
+        _uiState.update {
+            it.copy(
+                externalSubtitleFontSizeSp = repository.getExternalSubtitleFontSizeSp(),
+                savedMessage = "外挂字幕字号已调整"
+            )
+        }
+    }
+
+    fun updateExternalSubtitleBottomPaddingPercent(value: Int) {
+        repository.saveExternalSubtitleBottomPaddingPercent(value)
+        _uiState.update {
+            it.copy(
+                externalSubtitleBottomPaddingPercent = repository.getExternalSubtitleBottomPaddingPercent(),
+                savedMessage = "外挂字幕位置已调整"
+            )
+        }
+    }
+
+    fun updateExternalSubtitleBackgroundAlphaPercent(value: Int) {
+        repository.saveExternalSubtitleBackgroundAlphaPercent(value)
+        _uiState.update {
+            it.copy(
+                externalSubtitleBackgroundAlphaPercent = repository.getExternalSubtitleBackgroundAlphaPercent(),
+                savedMessage = "外挂字幕背景已调整"
+            )
+        }
+    }
+
+    fun updateSubtitleSearchProvider(provider: SubtitleSearchProvider) {
+        repository.saveSubtitleSearchProvider(provider)
+        _uiState.update {
+            it.copy(
+                subtitleSearchProvider = provider,
+                savedMessage = "在线字幕来源已切换为：${provider.label}"
+            )
+        }
+    }
+
     fun downloadAsrModel() {
         if (_uiState.value.isAsrModelDownloading) return
         asrDownloadJob?.cancel()
@@ -384,6 +435,8 @@ class SettingsViewModel(
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
         repository.saveAsrModelId(state.selectedAsrModelId)
         repository.saveAsrModelBaseUrl(state.asrModelBaseUrl)
+        repository.savePlayerLiveSubtitleEnabled(state.playerLiveSubtitleEnabled)
+        repository.saveSubtitleSearchProvider(state.subtitleSearchProvider)
         _uiState.value = loadState().copy(savedMessage = "翻译配置已保存")
     }
 
@@ -411,6 +464,8 @@ class SettingsViewModel(
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
         repository.saveAsrModelId(state.selectedAsrModelId)
         repository.saveAsrModelBaseUrl(state.asrModelBaseUrl)
+        repository.savePlayerLiveSubtitleEnabled(state.playerLiveSubtitleEnabled)
+        repository.saveSubtitleSearchProvider(state.subtitleSearchProvider)
         _uiState.value = loadState().copy(savedMessage = "设置已保存")
     }
 
@@ -516,6 +571,12 @@ class SettingsViewModel(
             asrModelBaseUrl = repository.getAsrModelBaseUrl(),
             isAsrModelReady = asrModelManager.currentStatus().isReady,
             asrModelSizeText = formatBytes(asrModelManager.currentStatus().sizeBytes),
+            playerLiveSubtitleEnabled = repository.isPlayerLiveSubtitleEnabled(),
+            externalSubtitleFontSizeSp = repository.getExternalSubtitleFontSizeSp(),
+            externalSubtitleBottomPaddingPercent = repository.getExternalSubtitleBottomPaddingPercent(),
+            externalSubtitleBackgroundAlphaPercent = repository.getExternalSubtitleBackgroundAlphaPercent(),
+            subtitleSearchProvider = repository.getSubtitleSearchProvider(),
+            subtitleSearchProviderOptions = SubtitleSearchProvider.entries,
             selectedCloud115LoginApp = Cloud115LoginApps.find(repository.getCloud115LoginApp()),
             savedCloud115Accounts = emptyList(),
             scrapeLog = ""
@@ -584,6 +645,12 @@ data class SettingsUiState(
     val asrModelBaseUrl: String = AppSettingsRepository.DEFAULT_ASR_MODEL_BASE_URL,
     val isAsrModelReady: Boolean = false,
     val asrModelSizeText: String = "0 KB",
+    val playerLiveSubtitleEnabled: Boolean = false,
+    val externalSubtitleFontSizeSp: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP,
+    val externalSubtitleBottomPaddingPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT,
+    val externalSubtitleBackgroundAlphaPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT,
+    val subtitleSearchProvider: SubtitleSearchProvider = SubtitleSearchProvider.Xunlei,
+    val subtitleSearchProviderOptions: List<SubtitleSearchProvider> = SubtitleSearchProvider.entries,
     val isAsrModelDownloading: Boolean = false,
     val asrModelDownloadProgress: Int = 0,
     val asrModelDownloadMessage: String = "",

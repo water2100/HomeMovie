@@ -273,10 +273,7 @@ fun MoviesLibraryScreen(
             )
             LibraryTab.Actors -> ActorSummaryGrid(
                 summaries = uiState.librarySummaries.actors,
-                isUpdating = uiState.isUpdatingActorAvatars,
-                updateMessage = uiState.actorAvatarUpdateMessage,
                 refreshVersion = uiState.actorAvatarRefreshVersion,
-                onUpdateAvatars = viewModel::updateMissingActorAvatars,
                 onClick = { onFilterClick("actor", it.value) }
             )
             LibraryTab.Tags -> LibrarySummaryGrid(
@@ -1001,10 +998,7 @@ private fun LibrarySummaryGrid(
 @Composable
 private fun ActorSummaryGrid(
     summaries: List<MovieMetadataSummary>,
-    isUpdating: Boolean,
-    updateMessage: String?,
     refreshVersion: Int,
-    onUpdateAvatars: () -> Unit,
     onClick: (MovieMetadataSummary) -> Unit
 ) {
     val context = LocalContext.current
@@ -1018,27 +1012,12 @@ private fun ActorSummaryGrid(
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "演员 ${summaries.size}",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    AssistChip(
-                        enabled = !isUpdating,
-                        onClick = onUpdateAvatars,
-                        label = { Text(if (isUpdating) "更新中" else "更新头像") }
-                    )
-                }
-                updateMessage?.takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        text = it,
-                        color = Color.White.copy(alpha = 0.58f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
+                Text(
+                    text = "演员 ${summaries.size}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold
+                )
             }
         }
         if (summaries.isEmpty()) {

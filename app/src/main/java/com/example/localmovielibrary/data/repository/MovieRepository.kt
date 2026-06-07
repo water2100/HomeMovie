@@ -208,17 +208,16 @@ class MovieRepository(
             )
             val movies = scanner.scan(rootUri)
             val existingMovies = movieDao.getMoviesByLibraryRootLite(rootUri.toString())
-            val existingByUri = existingMovies.associateBy { it.videoUri }
-            val existingById = existingMovies.associateBy { it.id }
-            val existingMovieIds = existingMovies.map { it.id }.filter { it > 0 }
+            val allMovies = movieDao.getMoviesSnapshotLite()
+            val existingByUri = allMovies.associateBy { it.videoUri }
+            val existingById = allMovies.associateBy { it.id }
+            val existingMovieIds = allMovies.map { it.id }.filter { it > 0 }
             val cloudRecords = (
                 cloudStrmRecordDao.getByLibraryRoot(rootUri.toString()) +
                     existingMovieIds.takeIf { it.isNotEmpty() }?.let { cloudStrmRecordDao.getByMovieIds(it) }.orEmpty()
                 ).distinctBy { it.pickcode }
-            val existingByPickcode = buildExistingMoviePickcodeMap(existingMovies, existingById, cloudRecords)
-            val existingByNumber = existingMovies.mapNotNull { movie ->
-                movie.movieNumberKey()?.let { it to movie }
-            }.toMap()
+            val existingByPickcode = buildExistingMoviePickcodeMap(allMovies, existingById, cloudRecords)
+            val existingByNumber = buildExistingMovieNumberMap(allMovies, rootUri.toString())
             val matchedExistingIds = linkedSetOf<Long>()
             val synchronizedMovies = movies.map { scanned ->
                 val pickcode = scanned.extractPickcodeFromStrm()
@@ -238,11 +237,19 @@ class MovieRepository(
                     )
                 }
             }
-            val removedIds = existingMovies
+            val removedCurrentRootIds = existingMovies
                 .asSequence()
                 .map { it.id }
                 .filter { it !in matchedExistingIds }
                 .toList()
+            val staleMovedDuplicateIds = findStaleMovedDuplicateIds(
+                allMovies = allMovies,
+                currentLibraryRootUri = rootUri.toString(),
+                scannedMovies = synchronizedMovies,
+                cloudRecords = cloudRecords,
+                protectedIds = matchedExistingIds + removedCurrentRootIds
+            )
+            val removedIds = (removedCurrentRootIds + staleMovedDuplicateIds).distinct()
             movieDao.synchronizeLibraryMovies(removedIds, synchronizedMovies)
             if (removedIds.isNotEmpty()) {
                 cloudStrmRecordDao.deleteByMovieIds(removedIds)
@@ -250,6 +257,46 @@ class MovieRepository(
             updateCloudStrmRecordsAfterScan(movies, rootUri.toString(), cloudRecords)
             movies.size
         }
+    }
+
+    private fun buildExistingMovieNumberMap(
+        movies: List<MovieEntity>,
+        currentLibraryRootUri: String
+    ): Map<String, MovieEntity> {
+        val result = linkedMapOf<String, MovieEntity>()
+        movies
+            .sortedBy { movie -> if (movie.libraryRootUri == currentLibraryRootUri) 0 else 1 }
+            .forEach { movie ->
+                movie.movieNumberKey()?.let { key ->
+                    result.putIfAbsent(key, movie)
+                }
+            }
+        return result
+    }
+
+    private fun findStaleMovedDuplicateIds(
+        allMovies: List<MovieEntity>,
+        currentLibraryRootUri: String,
+        scannedMovies: List<MovieEntity>,
+        cloudRecords: List<CloudStrmRecordEntity>,
+        protectedIds: Set<Long>
+    ): List<Long> {
+        val scannedKeys = scannedMovies.mapNotNull { it.movieNumberKey() }.toSet()
+        val scannedPickcodes = scannedMovies.mapNotNull { it.extractPickcodeFromStrm() }.toSet()
+        val pickcodeByMovieId = cloudRecords
+            .mapNotNull { record -> record.movieId?.let { it to record.pickcode } }
+            .groupBy({ it.first }, { it.second })
+        return allMovies
+            .asSequence()
+            .filter { it.libraryRootUri != currentLibraryRootUri }
+            .filter { it.id !in protectedIds }
+            .filter { movie ->
+                val sameNumber = movie.movieNumberKey()?.let { it in scannedKeys } == true
+                val samePickcode = pickcodeByMovieId[movie.id]?.any { it in scannedPickcodes } == true
+                (samePickcode || sameNumber) && !canOpenUri(movie.videoUri)
+            }
+            .map { it.id }
+            .toList()
     }
 
     suspend fun reorganizeExistingLibraries(): LibraryReorganizeResult = withContext(Dispatchers.IO) {
@@ -446,6 +493,7 @@ class MovieRepository(
         val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri)) ?: return@withContext movie.singlePart()
         val target = findFileWithParentFast(root, movie.libraryRootUri, movie.videoUri)
             ?: findFileWithParent(root, movie.videoUri)
+            ?: findStrmWithParentByMovieNumber(root, movie)
             ?: return@withContext movie.singlePart()
         val number = movie.videoName.movieNumberKeyFromText()
             ?: movie.title.movieNumberKeyFromText()
@@ -479,6 +527,7 @@ class MovieRepository(
         return records
             .asSequence()
             .filter { it.strmUri.isNotBlank() }
+            .filter { canOpenUri(it.strmUri) }
             .distinctBy { it.playbackRecordKey() }
             .map { record ->
                 MoviePlaybackPart(
@@ -491,6 +540,11 @@ class MovieRepository(
             .sortedWith(compareBy<MoviePlaybackPart> { it.label.playbackPartUiSortKey() }.thenBy { it.fileName.lowercase(Locale.ROOT) })
             .toList()
     }
+
+    private fun canOpenUri(uriString: String): Boolean =
+        runCatching {
+            context.contentResolver.openInputStream(Uri.parse(uriString))?.use { true } == true
+        }.getOrDefault(false)
 
     private fun findFileWithParent(directory: DocumentFile, videoUri: String): FileWithParent? {
         directory.listFiles().forEach { child ->

@@ -28,6 +28,8 @@ import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -164,6 +167,8 @@ fun CloudBrowserScreen(
                 path = uiState.path,
                 canGoBackFolder = viewModel.canGoBackFolder(),
                 onBack = ::handleBack,
+                sortOption = uiState.sortOption,
+                onSortOptionSelected = viewModel::setSortOption,
                 sortAscending = uiState.sortAscending,
                 onToggleSortDirection = viewModel::toggleSortDirection
             )
@@ -204,9 +209,12 @@ private fun CloudTopBar(
     path: List<CloudPathItem>,
     canGoBackFolder: Boolean,
     onBack: () -> Unit,
+    sortOption: CloudSortOption,
+    onSortOptionSelected: (CloudSortOption) -> Unit,
     sortAscending: Boolean,
     onToggleSortDirection: () -> Unit
 ) {
+    var sortMenuExpanded by remember { androidx.compose.runtime.mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -231,10 +239,37 @@ private fun CloudTopBar(
                     .weight(1f)
                     .padding(start = 10.dp)
             )
+            Box {
+                Text(
+                    text = sortOption.label,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color.White.copy(alpha = 0.10f))
+                        .clickable { sortMenuExpanded = true }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+                DropdownMenu(
+                    expanded = sortMenuExpanded,
+                    onDismissRequest = { sortMenuExpanded = false }
+                ) {
+                    CloudSortOption.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            onClick = {
+                                sortMenuExpanded = false
+                                onSortOptionSelected(option)
+                            }
+                        )
+                    }
+                }
+            }
             IconButton(onClick = onToggleSortDirection) {
                 Icon(
                     imageVector = if (sortAscending) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
-                    contentDescription = if (sortAscending) "修改时间正序" else "修改时间倒序",
+                    contentDescription = "${sortOption.label}${if (sortAscending) "正序" else "倒序"}",
                     tint = Color.White
                 )
             }
@@ -378,6 +413,12 @@ private fun CloudFileRow(
         }
     }
 }
+
+private val CloudSortOption.label: String
+    get() = when (this) {
+        CloudSortOption.ModifiedTime -> "时间"
+        CloudSortOption.Size -> "大小"
+    }
 
 @Composable
 private fun AddVideoButton(isAdding: Boolean, isAdded: Boolean, onAddVideo: () -> Unit) {
