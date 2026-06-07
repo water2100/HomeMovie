@@ -242,6 +242,10 @@ class StrmScrapeRepository(
         val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
             ?: error("无法从文件名提取番号：${target.file.name}")
 
+        dmm2SkipMessage(source, number)?.let { message ->
+            logStore.append("Skipped: $message")
+            error(message)
+        }
         logStore.append("Start scrape: file=${target.file.name}, number=$number, source=${source.label}")
         appendMovieDivider("Start movie scrape", number, target.file.name.orEmpty(), source)
         val info = scraperRegistry.scrape(source, number)
@@ -287,6 +291,10 @@ class StrmScrapeRepository(
             ?: MovieNumberExtractor.extract(movie.title)
             ?: error("无法从文件名提取番号：${target.file.name}")
 
+        dmm2SkipMessage(source, number)?.let { message ->
+            logStore.append("Skipped: $message")
+            error(message)
+        }
         logStore.append("Start rescrape: file=${target.file.name}, number=$number, source=${source.label}")
         appendMovieDivider("Start movie rescrape", number, target.file.name.orEmpty(), source)
         val info = scraperRegistry.scrape(source, number)
@@ -352,6 +360,11 @@ class StrmScrapeRepository(
                 logStore.append("Skipped: cannot extract number from ${target.file.name}")
                 return@forEach
             }
+            dmm2SkipMessage(source, number)?.let { message ->
+                skipped += 1
+                logStore.append("Skipped: $message")
+                return@forEach
+            }
 
             runCatching {
                 logStore.append("Scraping $number, file=${target.file.name}")
@@ -370,6 +383,17 @@ class StrmScrapeRepository(
         val result = ScrapeRunResult(targets.size, success, skipped, failed)
         logStore.append("Batch scrape finished: success=$success, failed=$failed, skipped=$skipped")
         result
+    }
+
+    private fun dmm2SkipMessage(source: ScrapeSource, number: String): String? {
+        if (source != ScrapeSource.Dmm2) return null
+        val prefix = number.substringBefore('-', missingDelimiterValue = number).uppercase()
+        if (prefix.isBlank()) return null
+        return if (prefix in settingsRepository.getDmm2SkippedNumberPrefixes()) {
+            "DMM2不支持${prefix}番号刮削"
+        } else {
+            null
+        }
     }
 
     suspend fun clearScrapeFiles(movie: MovieEntity): String = withContext(ioDispatcher) {

@@ -11,10 +11,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -191,6 +194,7 @@ fun SettingsScreen(
                         onSavedCloud115AccountDelete = viewModel::deleteSavedCloud115Account,
                         onRefreshSavedCloud115Accounts = viewModel::refreshSavedCloud115Accounts,
                         onDomesticRootCidChange = viewModel::updateDomesticRootCid,
+                        onDomesticPageEnabledChange = viewModel::updateDomesticPageEnabled,
                         onStartCloud115QrLogin = viewModel::startCloud115QrLogin,
                         onCancelCloud115QrLogin = viewModel::cancelCloud115QrLogin,
                         onOpenStrmBaseUrlDialog = { showStrmBaseUrlDialog = true },
@@ -206,6 +210,9 @@ fun SettingsScreen(
                         onSourceSelected = viewModel::updateDefaultScrapeSource,
                         onRetryCountChange = viewModel::updateImageDownloadRetryCount,
                         onConcurrencyLimitChange = viewModel::updateScrapeConcurrencyLimit,
+                        onDmm2SkippedPrefixDraftChange = viewModel::updateNewDmm2SkippedPrefix,
+                        onAddDmm2SkippedPrefix = viewModel::addDmm2SkippedPrefix,
+                        onRemoveDmm2SkippedPrefix = viewModel::removeDmm2SkippedPrefix,
                         onRefreshCacheSize = ::refreshImageCacheSize,
                         onClearImageCache = { showImageCacheDialog = true },
                         onOpenLogs = onOpenScrapeLogs,
@@ -343,7 +350,7 @@ private fun SettingsOverviewPage(
     SettingsGroupCard(title = "网盘") {
         SettingsEntryRow(
             title = "115、STRM 入口与 A目录",
-            subtitle = "115 账号登录与切换 · A目录 ${uiState.domesticRootCidText.ifBlank { "未配置" }}",
+            subtitle = "115 账号登录与切换 · 国产页面：${if (uiState.domesticPageEnabled) "已开启" else "未开启"} · A目录 ${uiState.domesticRootCidText.ifBlank { "未配置" }}",
             onClick = { onOpenPage(SettingsPage.Cloud) }
         )
     }
@@ -743,6 +750,7 @@ private fun CloudSettingsPage(
     onSavedCloud115AccountDelete: (SavedCloud115Account) -> Unit,
     onRefreshSavedCloud115Accounts: () -> Unit,
     onDomesticRootCidChange: (String) -> Unit,
+    onDomesticPageEnabledChange: (Boolean) -> Unit,
     onStartCloud115QrLogin: () -> Unit,
     onCancelCloud115QrLogin: () -> Unit,
     onOpenStrmBaseUrlDialog: () -> Unit,
@@ -791,6 +799,10 @@ private fun CloudSettingsPage(
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         colors = settingsTextFieldColors()
     )
+    DomesticPageSwitchRow(
+        enabled = uiState.domesticPageEnabled,
+        onEnabledChange = onDomesticPageEnabledChange
+    )
     SettingsSectionTitle("网盘添加")
     CloudAddBehaviorPanel(
         enabled = uiState.cloudAddButtonMessageEnabled,
@@ -804,6 +816,41 @@ private fun CloudSettingsPage(
         onAdd = onAddExcludedVideoName,
         onRemove = onRemoveExcludedVideoName
     )
+}
+
+@Composable
+private fun DomesticPageSwitchRow(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "开启国产页面",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "关闭后，影片页面不显示国产分类。默认关闭。",
+                color = Color.White.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = onEnabledChange
+        )
+    }
 }
 
 @Composable
@@ -961,6 +1008,9 @@ private fun ScrapeSettingsPage(
     onSourceSelected: (ScrapeSource) -> Unit,
     onRetryCountChange: (String) -> Unit,
     onConcurrencyLimitChange: (String) -> Unit,
+    onDmm2SkippedPrefixDraftChange: (String) -> Unit,
+    onAddDmm2SkippedPrefix: () -> Unit,
+    onRemoveDmm2SkippedPrefix: (String) -> Unit,
     onRefreshCacheSize: () -> Unit,
     onClearImageCache: () -> Unit,
     onOpenLogs: () -> Unit,
@@ -970,6 +1020,14 @@ private fun ScrapeSettingsPage(
     DefaultScrapeSourceRow(
         selected = uiState.defaultScrapeSource,
         onSelected = onSourceSelected
+    )
+    SettingsSectionTitle("DMM2 跳过")
+    Dmm2SkippedPrefixPanel(
+        prefixes = uiState.dmm2SkippedPrefixes,
+        draft = uiState.newDmm2SkippedPrefix,
+        onDraftChange = onDmm2SkippedPrefixDraftChange,
+        onAdd = onAddDmm2SkippedPrefix,
+        onRemove = onRemoveDmm2SkippedPrefix
     )
     SettingsSectionTitle("刮削队列")
     OutlinedTextField(
@@ -1011,6 +1069,125 @@ private fun ScrapeSettingsPage(
         onClear = onClearLogs,
         onOpenLogs = onOpenLogs
     )
+}
+
+@Composable
+private fun Dmm2SkippedPrefixPanel(
+    prefixes: List<String>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var showManageDialog by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "跳过番号开头",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (prefixes.isEmpty()) {
+                        "未设置。只影响 DMM2 刮削方式。"
+                    } else {
+                        "已设置 ${prefixes.size} 个：${prefixes.joinToString("、")}"
+                    },
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(
+                onClick = { showManageDialog = true },
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("管理")
+            }
+        }
+    }
+
+    if (showManageDialog) {
+        AlertDialog(
+            onDismissRequest = { showManageDialog = false },
+            title = { Text("DMM2 跳过番号开头") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("例如添加 ABF 后，DMM2 遇到 ABF-123 会直接跳过。")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = onDraftChange,
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            shape = RoundedCornerShape(18.dp),
+                            label = { Text("番号开头") },
+                            placeholder = { Text("例如 ABF") }
+                        )
+                        Button(
+                            onClick = onAdd,
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Text("添加")
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (prefixes.isEmpty()) {
+                            Text("暂无跳过前缀")
+                        } else {
+                            prefixes.forEach { prefix ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color.Black.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                                        .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = prefix,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    TextButton(onClick = { onRemove(prefix) }) {
+                                        Text("删除")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showManageDialog = false }) {
+                    Text("完成")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -2111,7 +2288,8 @@ private fun SettingsTopBar(title: String = "设置", onBack: (() -> Unit)? = nul
         modifier = Modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xFF101923), SettingsBackground)))
-            .padding(start = 18.dp, end = 18.dp, top = 24.dp, bottom = 16.dp),
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(start = 14.dp, end = 16.dp, top = 6.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (onBack != null) {
@@ -2124,7 +2302,7 @@ private fun SettingsTopBar(title: String = "设置", onBack: (() -> Unit)? = nul
         Text(
             text = title,
             color = Color.White,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.ExtraBold,
             modifier = Modifier.padding(start = 10.dp)
         )

@@ -1,18 +1,24 @@
 ﻿package com.example.localmovielibrary.ui.cloud
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -39,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,6 +55,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -219,37 +229,46 @@ private fun CloudTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xFF101923), CloudBackground)))
-            .padding(start = 10.dp, end = 10.dp, top = 18.dp, bottom = 14.dp)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                 Icon(
                     Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = if (canGoBackFolder) "返回上一级目录" else "返回影片",
-                    tint = Color.White
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
                 )
             }
-            Icon(Icons.Rounded.Cloud, contentDescription = null, tint = Color.White.copy(alpha = 0.9f))
+            Icon(
+                Icons.Rounded.Cloud,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(20.dp)
+            )
             Text(
                 text = "115 网盘",
                 color = Color.White,
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 10.dp)
+                    .padding(start = 8.dp)
             )
             Box {
                 Text(
                     text = sortOption.label,
                     color = Color.White,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
                         .background(Color.White.copy(alpha = 0.10f))
                         .clickable { sortMenuExpanded = true }
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 )
                 DropdownMenu(
                     expanded = sortMenuExpanded,
@@ -266,11 +285,12 @@ private fun CloudTopBar(
                     }
                 }
             }
-            IconButton(onClick = onToggleSortDirection) {
+            IconButton(onClick = onToggleSortDirection, modifier = Modifier.size(40.dp)) {
                 Icon(
                     imageVector = if (sortAscending) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
                     contentDescription = "${sortOption.label}${if (sortAscending) "正序" else "倒序"}",
-                    tint = Color.White
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -280,7 +300,7 @@ private fun CloudTopBar(
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 14.dp)
+            modifier = Modifier.padding(horizontal = 12.dp)
         )
     }
 }
@@ -334,6 +354,7 @@ private fun CloudFileList(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CloudFileRow(
     item: Cloud115FileItem,
@@ -348,68 +369,95 @@ private fun CloudFileRow(
     onAddVideo: () -> Unit,
     onAddDomesticFolder: () -> Unit
 ) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val subtitle = remember(item.size, item.modifiedAt, item.isDirectory) {
         item.cloudSubtitle()
     }
+    var folderMenuExpanded by remember { mutableStateOf(false) }
+    val folderCid = item.cid?.toString().orEmpty()
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(CloudPanel)
-            .then(
-                when {
-                    item.isDirectory -> Modifier.clickable(onClick = onOpenFolder)
-                    item.isVideoFile() -> Modifier.clickable(onClick = onPlayVideo)
-                    else -> Modifier
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(CloudPanel)
+                .then(
+                    when {
+                        item.isDirectory -> Modifier.combinedClickable(
+                            onClick = onOpenFolder,
+                            onLongClick = {
+                                if (folderCid.isNotBlank()) folderMenuExpanded = true
+                            }
+                        )
+                        item.isVideoFile() -> Modifier.clickable(onClick = onPlayVideo)
+                        else -> Modifier
+                    }
+                )
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (item.isDirectory) Icons.Rounded.Folder else Icons.Rounded.VideoFile,
+                    contentDescription = null,
+                    tint = if (item.isDirectory) Color(0xFFE7C267) else Color.White.copy(alpha = 0.76f)
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = item.name,
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    color = Color.White.copy(alpha = 0.56f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            when {
+                showDomesticAdd -> AddVideoButton(
+                    isAdding = isDomesticAdding,
+                    isAdded = isDomesticAdded,
+                    onAddVideo = onAddDomesticFolder
+                )
+                item.isDirectory -> Unit
+                item.isVideoFile() && !isExcludedVideo -> AddVideoButton(isAdding = isAdding, isAdded = isAdded, onAddVideo = onAddVideo)
+            }
+        }
+
+        DropdownMenu(
+            expanded = folderMenuExpanded,
+            onDismissRequest = { folderMenuExpanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("复制 CID") },
+                onClick = {
+                    folderMenuExpanded = false
+                    if (folderCid.isNotBlank()) {
+                        clipboardManager.setText(AnnotatedString(folderCid))
+                        Toast.makeText(context, "已复制 CID：$folderCid", Toast.LENGTH_SHORT).show()
+                    }
                 }
             )
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.10f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = if (item.isDirectory) Icons.Rounded.Folder else Icons.Rounded.VideoFile,
-                contentDescription = null,
-                tint = if (item.isDirectory) Color(0xFFE7C267) else Color.White.copy(alpha = 0.76f)
-            )
-        }
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = item.name,
-                color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = subtitle,
-                color = Color.White.copy(alpha = 0.56f),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        when {
-            showDomesticAdd -> AddVideoButton(
-                isAdding = isDomesticAdding,
-                isAdded = isDomesticAdded,
-                onAddVideo = onAddDomesticFolder
-            )
-            item.isDirectory -> Unit
-            item.isVideoFile() && !isExcludedVideo -> AddVideoButton(isAdding = isAdding, isAdded = isAdded, onAddVideo = onAddVideo)
         }
     }
 }

@@ -37,6 +37,7 @@ class HomeViewModel(
     private val scanState = MutableStateFlow<ScanState>(ScanState.Idle)
     private val sortState = MutableStateFlow(loadSavedSortState(settingsRepository))
     private val imageModeState = MutableStateFlow(loadSavedImageMode(settingsRepository))
+    private val domesticPageEnabledState = MutableStateFlow(settingsRepository.isDomesticPageEnabled())
     private val displayedMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     private val pendingMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     private val pendingNewCount = MutableStateFlow(0)
@@ -91,7 +92,7 @@ class HomeViewModel(
         }
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(homeMovieData, scanState, imageModeState, libraryUpdateState) { combinedHomeData, scan, imageMode, libraryUpdate ->
+    val uiState: StateFlow<HomeUiState> = combine(homeMovieData, scanState, imageModeState, libraryUpdateState, domesticPageEnabledState) { combinedHomeData, scan, imageMode, libraryUpdate, domesticPageEnabled ->
         val (combinedMovieData, summaries) = combinedHomeData
         val (movieData, domestic) = combinedMovieData
         val (buckets, recentlyPlayed) = movieData
@@ -102,6 +103,7 @@ class HomeViewModel(
             recentlyPlayed = recentlyPlayed,
             favoriteMovies = buckets.favoriteMovies,
             domesticMovies = domestic,
+            domesticPageEnabled = domesticPageEnabled,
             scanState = scan,
             sortState = buckets.sortState,
             imageMode = imageMode,
@@ -190,6 +192,10 @@ class HomeViewModel(
     fun setImageMode(mode: HomeImageMode) {
         imageModeState.value = mode
         settingsRepository.saveHomeImageModeName(mode.name)
+    }
+
+    fun refreshDomesticPageEnabled() {
+        domesticPageEnabledState.value = settingsRepository.isDomesticPageEnabled()
     }
 
     fun refreshLibrarySummaries() {
@@ -318,6 +324,7 @@ data class HomeUiState(
     val recentlyPlayed: List<MovieEntity> = emptyList(),
     val favoriteMovies: List<MovieEntity> = emptyList(),
     val domesticMovies: List<DomesticMovieWithSources> = emptyList(),
+    val domesticPageEnabled: Boolean = false,
     val scanState: ScanState = ScanState.Idle,
     val sortState: HomeSortState = HomeSortState(),
     val imageMode: HomeImageMode = HomeImageMode.Poster,

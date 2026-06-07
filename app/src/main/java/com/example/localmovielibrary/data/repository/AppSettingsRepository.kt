@@ -9,6 +9,7 @@ import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
 import com.example.localmovielibrary.translate.TranslateProvider
+import java.security.MessageDigest
 
 class AppSettingsRepository(context: Context) {
     private val appContext = context.applicationContext
@@ -139,6 +140,28 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putInt(KEY_SCRAPE_CONCURRENCY_LIMIT, count.coerceIn(1, MAX_SCRAPE_CONCURRENCY_LIMIT)).apply()
     }
 
+    fun getDmm2SkippedNumberPrefixes(): Set<String> =
+        prefs.getStringSet(KEY_DMM2_SKIPPED_NUMBER_PREFIXES, DEFAULT_DMM2_SKIPPED_NUMBER_PREFIXES)
+            .orEmpty()
+            .mapNotNull { it.normalizedNumberPrefixOrNull() }
+            .toSet()
+
+    fun saveDmm2SkippedNumberPrefixes(prefixes: Set<String>) {
+        prefs.edit()
+            .putStringSet(KEY_DMM2_SKIPPED_NUMBER_PREFIXES, prefixes.mapNotNull { it.normalizedNumberPrefixOrNull() }.toSet())
+            .apply()
+    }
+
+    fun addDmm2SkippedNumberPrefix(prefix: String) {
+        val normalized = prefix.normalizedNumberPrefixOrNull() ?: return
+        saveDmm2SkippedNumberPrefixes(getDmm2SkippedNumberPrefixes() + normalized)
+    }
+
+    fun removeDmm2SkippedNumberPrefix(prefix: String) {
+        val normalized = prefix.normalizedNumberPrefixOrNull() ?: return
+        saveDmm2SkippedNumberPrefixes(getDmm2SkippedNumberPrefixes() - normalized)
+    }
+
     fun getHomeSortOptionName(): String? = prefs.getString(KEY_HOME_SORT_OPTION, null)
 
     fun saveHomeSortOptionName(value: String) {
@@ -266,6 +289,13 @@ class AppSettingsRepository(context: Context) {
 
     fun saveDomesticRootCid(value: String) {
         prefs.edit().putString(KEY_DOMESTIC_ROOT_CID, value.filter { it.isDigit() }).apply()
+    }
+
+    fun isDomesticPageEnabled(): Boolean =
+        prefs.getBoolean(KEY_DOMESTIC_PAGE_ENABLED, false)
+
+    fun saveDomesticPageEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_DOMESTIC_PAGE_ENABLED, enabled).apply()
     }
 
     fun isLibraryNoMediaEnabled(): Boolean =
@@ -426,6 +456,39 @@ class AppSettingsRepository(context: Context) {
             .apply()
     }
 
+    fun isExternalSubtitleEnabled(mediaKey: String): Boolean =
+        prefs.getBoolean(externalSubtitleKey(KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX, mediaKey), false)
+
+    fun saveExternalSubtitleEnabled(mediaKey: String, enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(externalSubtitleKey(KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX, mediaKey), enabled)
+            .apply()
+    }
+
+    fun getPreferredExternalSubtitleName(mediaKey: String): String =
+        prefs.getString(externalSubtitleKey(KEY_EXTERNAL_SUBTITLE_NAME_PREFIX, mediaKey), null).orEmpty()
+
+    fun savePreferredExternalSubtitle(mediaKey: String, subtitleName: String, enabled: Boolean = true) {
+        prefs.edit()
+            .putString(externalSubtitleKey(KEY_EXTERNAL_SUBTITLE_NAME_PREFIX, mediaKey), subtitleName)
+            .putBoolean(externalSubtitleKey(KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX, mediaKey), enabled)
+            .apply()
+    }
+
+    private fun externalSubtitleKey(prefix: String, mediaKey: String): String =
+        prefix + mediaKey.sha256()
+
+    private fun String.normalizedNumberPrefixOrNull(): String? =
+        trim()
+            .uppercase()
+            .filter { it.isLetterOrDigit() }
+            .takeIf { it.isNotBlank() }
+
+    private fun String.sha256(): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
     private fun getTreeDisplayName(uriString: String?): String? {
         val uri = uriString?.let { Uri.parse(it) } ?: return null
         DocumentFile.fromTreeUri(appContext, uri)?.name?.takeIf { it.isNotBlank() }?.let { return it }
@@ -451,6 +514,7 @@ class AppSettingsRepository(context: Context) {
         const val KEY_DEFAULT_SCRAPE_SOURCE = "default_scrape_source"
         const val KEY_IMAGE_DOWNLOAD_RETRY_COUNT = "image_download_retry_count"
         const val KEY_SCRAPE_CONCURRENCY_LIMIT = "scrape_concurrency_limit"
+        const val KEY_DMM2_SKIPPED_NUMBER_PREFIXES = "dmm2_skipped_number_prefixes"
         const val KEY_HOME_SORT_OPTION = "home_sort_option"
         const val KEY_HOME_SORT_DIRECTION = "home_sort_direction"
         const val KEY_HOME_IMAGE_MODE = "home_image_mode"
@@ -465,6 +529,7 @@ class AppSettingsRepository(context: Context) {
         const val KEY_DEEPSEEK_PROMPT_TEMPLATE_ID = "deepseek_prompt_template_id"
         const val KEY_DEEPSEEK_CUSTOM_PROMPT = "deepseek_custom_prompt"
         const val KEY_DOMESTIC_ROOT_CID = "domestic_root_cid"
+        const val KEY_DOMESTIC_PAGE_ENABLED = "domestic_page_enabled"
         const val KEY_LIBRARY_NOMEDIA_ENABLED = "library_nomedia_enabled"
         const val KEY_CLOUD_ADD_BUTTON_MESSAGE_ENABLED = "cloud_add_button_message_enabled"
         const val KEY_CLOUD_EXCLUDED_VIDEO_NAMES = "cloud_excluded_video_names"
@@ -476,9 +541,12 @@ class AppSettingsRepository(context: Context) {
         const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
         const val KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = "external_subtitle_bottom_padding_percent"
         const val KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = "external_subtitle_background_alpha_percent"
+        const val KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX = "external_subtitle_enabled_"
+        const val KEY_EXTERNAL_SUBTITLE_NAME_PREFIX = "external_subtitle_name_"
         const val DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT = 5
         const val DEFAULT_SCRAPE_CONCURRENCY_LIMIT = 2
         const val MAX_SCRAPE_CONCURRENCY_LIMIT = 4
+        val DEFAULT_DMM2_SKIPPED_NUMBER_PREFIXES = setOf("ABF", "ABW", "ABP", "REBDB", "TRE", "PPT", "CHN", "BGN")
         const val DEFAULT_DETAIL_THUMB_BACKGROUND_ALPHA = 32
         const val DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 22
         const val MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 14

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,8 +18,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -222,7 +225,20 @@ fun MoviesLibraryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var selectedTabName by rememberSaveable { mutableStateOf(LibraryTab.All.name) }
-    val selectedTab = LibraryTab.entries.firstOrNull { it.name == selectedTabName } ?: LibraryTab.All
+    val availableTabs = remember(uiState.domesticPageEnabled) {
+        LibraryTab.entries.filter { tab -> uiState.domesticPageEnabled || tab != LibraryTab.Domestic }
+    }
+    val selectedTab = availableTabs.firstOrNull { it.name == selectedTabName } ?: LibraryTab.All
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshDomesticPageEnabled()
+    }
+
+    LaunchedEffect(selectedTabName, uiState.domesticPageEnabled) {
+        if (selectedTabName != selectedTab.name) {
+            selectedTabName = selectedTab.name
+        }
+    }
 
     LaunchedEffect(selectedTab, uiState.movies.size) {
         if (selectedTab != LibraryTab.All && selectedTab != LibraryTab.Domestic && selectedTab != LibraryTab.Years) {
@@ -237,6 +253,7 @@ fun MoviesLibraryScreen(
     ) {
         LibraryTopBar(
             selectedTab = selectedTab,
+            tabs = availableTabs,
             stats = uiState.stats,
             sortState = uiState.sortState,
             imageMode = uiState.imageMode,
@@ -321,15 +338,16 @@ fun MoviesTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xFF101923), MoviesBackground)))
-            .padding(start = 20.dp, end = 12.dp, top = 28.dp, bottom = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(start = 18.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "\u9996\u9875",
                     color = Color.White,
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
@@ -616,6 +634,7 @@ fun HomeMovieSection(
 @Composable
 private fun LibraryTopBar(
     selectedTab: LibraryTab,
+    tabs: List<LibraryTab>,
     stats: LibraryStats,
     sortState: HomeSortState,
     imageMode: HomeImageMode,
@@ -631,8 +650,9 @@ private fun LibraryTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xFF101923), MoviesBackground)))
-            .padding(top = 22.dp, bottom = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(top = 6.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
             modifier = Modifier.padding(start = 18.dp, end = 8.dp),
@@ -642,7 +662,7 @@ private fun LibraryTopBar(
                 Text(
                     text = "影片库",
                     color = Color.White,
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
@@ -696,7 +716,7 @@ private fun LibraryTopBar(
             horizontalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             items(
-                items = LibraryTab.entries,
+                items = tabs,
                 key = { it.name },
                 contentType = { "library-tab" }
             ) { tab ->

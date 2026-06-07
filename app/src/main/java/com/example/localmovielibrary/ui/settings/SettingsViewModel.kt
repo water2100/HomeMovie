@@ -230,6 +230,30 @@ class SettingsViewModel(
         _uiState.update { it.copy(scrapeConcurrencyLimitText = cleaned, savedMessage = null) }
     }
 
+    fun updateNewDmm2SkippedPrefix(value: String) {
+        _uiState.update {
+            it.copy(
+                newDmm2SkippedPrefix = value.uppercase().filter { char -> char.isLetterOrDigit() }.take(12),
+                savedMessage = null
+            )
+        }
+    }
+
+    fun addDmm2SkippedPrefix() {
+        val prefix = _uiState.value.newDmm2SkippedPrefix.trim()
+        if (prefix.isBlank()) {
+            _uiState.update { it.copy(savedMessage = "请输入要跳过的番号开头") }
+            return
+        }
+        repository.addDmm2SkippedNumberPrefix(prefix)
+        _uiState.value = loadState().copy(savedMessage = "已添加 DMM2 跳过前缀：${prefix.uppercase()}")
+    }
+
+    fun removeDmm2SkippedPrefix(prefix: String) {
+        repository.removeDmm2SkippedNumberPrefix(prefix)
+        _uiState.value = loadState().copy(savedMessage = "已移除 DMM2 跳过前缀")
+    }
+
     fun updateBaiduTranslateAppId(value: String) {
         _uiState.update { it.copy(baiduTranslateAppId = value.trim(), savedMessage = null) }
     }
@@ -278,6 +302,11 @@ class SettingsViewModel(
 
     fun updateDomesticRootCid(value: String) {
         _uiState.update { it.copy(domesticRootCidText = value.filter { char -> char.isDigit() }, savedMessage = null) }
+    }
+
+    fun updateDomesticPageEnabled(enabled: Boolean) {
+        repository.saveDomesticPageEnabled(enabled)
+        _uiState.update { it.copy(domesticPageEnabled = enabled, savedMessage = null) }
     }
 
     fun updateLibraryNoMediaEnabled(enabled: Boolean) {
@@ -430,6 +459,7 @@ class SettingsViewModel(
         repository.saveDeepSeekPromptTemplateId(state.deepSeekPromptTemplateId)
         repository.saveDeepSeekCustomPrompt(state.deepSeekCustomPrompt)
         repository.saveDomesticRootCid(state.domesticRootCidText)
+        repository.saveDomesticPageEnabled(state.domesticPageEnabled)
         repository.saveLibraryNoMediaEnabled(state.libraryNoMediaEnabled)
         repository.saveCloudAddButtonMessageEnabled(state.cloudAddButtonMessageEnabled)
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
@@ -448,6 +478,7 @@ class SettingsViewModel(
         repository.saveDefaultScrapeSource(state.defaultScrapeSource)
         repository.saveImageDownloadRetryCount(state.imageDownloadRetryCountText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT)
         repository.saveScrapeConcurrencyLimit(state.scrapeConcurrencyLimitText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_SCRAPE_CONCURRENCY_LIMIT)
+        repository.saveDmm2SkippedNumberPrefixes(state.dmm2SkippedPrefixes.toSet())
         repository.saveTranslateProvider(state.translateProvider)
         repository.saveBaiduTranslateAppId(state.baiduTranslateAppId)
         repository.saveBaiduTranslateSecretKey(state.baiduTranslateSecretKey)
@@ -459,6 +490,7 @@ class SettingsViewModel(
         repository.saveDeepSeekPromptTemplateId(state.deepSeekPromptTemplateId)
         repository.saveDeepSeekCustomPrompt(state.deepSeekCustomPrompt)
         repository.saveDomesticRootCid(state.domesticRootCidText)
+        repository.saveDomesticPageEnabled(state.domesticPageEnabled)
         repository.saveLibraryNoMediaEnabled(state.libraryNoMediaEnabled)
         repository.saveCloudAddButtonMessageEnabled(state.cloudAddButtonMessageEnabled)
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
@@ -551,6 +583,7 @@ class SettingsViewModel(
             defaultScrapeSource = repository.getDefaultScrapeSource(),
             imageDownloadRetryCountText = repository.getImageDownloadRetryCount().toString(),
             scrapeConcurrencyLimitText = repository.getScrapeConcurrencyLimit().toString(),
+            dmm2SkippedPrefixes = repository.getDmm2SkippedNumberPrefixes().toList().sorted(),
             translateProvider = repository.getTranslateProvider(),
             baiduTranslateAppId = repository.getBaiduTranslateAppId(),
             baiduTranslateSecretKey = repository.getBaiduTranslateSecretKey(),
@@ -563,6 +596,7 @@ class SettingsViewModel(
             deepSeekPromptTemplateId = repository.getDeepSeekPromptTemplateId(),
             deepSeekCustomPrompt = repository.getDeepSeekCustomPrompt(),
             domesticRootCidText = repository.getDomesticRootCidText(),
+            domesticPageEnabled = repository.isDomesticPageEnabled(),
             libraryNoMediaEnabled = repository.isLibraryNoMediaEnabled(),
             cloudAddButtonMessageEnabled = repository.isCloudAddButtonMessageEnabled(),
             cloudExcludedVideoNames = repository.getCloudExcludedVideoNames().toList().sorted(),
@@ -624,6 +658,8 @@ data class SettingsUiState(
     val defaultScrapeSource: ScrapeSource = ScrapeSource.Dmm2,
     val imageDownloadRetryCountText: String = AppSettingsRepository.DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT.toString(),
     val scrapeConcurrencyLimitText: String = AppSettingsRepository.DEFAULT_SCRAPE_CONCURRENCY_LIMIT.toString(),
+    val dmm2SkippedPrefixes: List<String> = emptyList(),
+    val newDmm2SkippedPrefix: String = "",
     val translateProvider: TranslateProvider = TranslateProvider.Baidu,
     val baiduTranslateAppId: String = AppSettingsRepository.DEFAULT_BAIDU_TRANSLATE_APP_ID,
     val baiduTranslateSecretKey: String = AppSettingsRepository.DEFAULT_BAIDU_TRANSLATE_SECRET_KEY,
@@ -636,6 +672,7 @@ data class SettingsUiState(
     val deepSeekPromptTemplateId: String = DeepSeekPromptTemplates.DEFAULT_ID,
     val deepSeekCustomPrompt: String = "",
     val domesticRootCidText: String = "",
+    val domesticPageEnabled: Boolean = false,
     val libraryNoMediaEnabled: Boolean = true,
     val cloudAddButtonMessageEnabled: Boolean = true,
     val cloudExcludedVideoNames: List<String> = emptyList(),

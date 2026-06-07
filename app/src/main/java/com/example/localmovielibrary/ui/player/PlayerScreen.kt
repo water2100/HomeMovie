@@ -22,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
@@ -67,6 +69,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -543,28 +546,36 @@ fun PlayerScreen(
             providerLabel = uiState.externalSubtitleProviderLabel,
             localSubtitles = uiState.localSubtitles,
             onlineSubtitles = uiState.onlineSubtitles,
+            externalSubtitleEnabled = uiState.externalSubtitleEnabled,
             activeSubtitleName = uiState.activeExternalSubtitleName,
             isSearching = uiState.externalSubtitleSearching,
             isDownloading = uiState.externalSubtitleDownloading,
             message = uiState.externalSubtitleMessage,
             error = uiState.externalSubtitleError,
             onDismiss = viewModel::dismissExternalSubtitlePanel,
+            onExternalSubtitleEnabledChange = viewModel::setExternalSubtitleEnabled,
             onSearchOnline = { viewModel.searchExternalSubtitles(durationMs) },
             onLocalSelected = viewModel::loadLocalSubtitle,
             onOnlineSelected = viewModel::downloadAndLoadSubtitle
         )
 
-        PlayerLockButton(
-            locked = controlsLocked,
-            onClick = {
-                controlsLocked = !controlsLocked
-                controlsVisible = !controlsLocked
-            },
+        AnimatedVisibility(
+            visible = controlsVisible || controlsLocked,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(start = 18.dp, bottom = 18.dp)
-        )
+        ) {
+            PlayerLockButton(
+                locked = controlsLocked,
+                onClick = {
+                    controlsLocked = !controlsLocked
+                    controlsVisible = !controlsLocked
+                }
+            )
+        }
 
     }
 }
@@ -917,12 +928,14 @@ private fun ExternalSubtitleDialog(
     providerLabel: String,
     localSubtitles: List<LocalSubtitleFile>,
     onlineSubtitles: List<JavzimuSubtitleResult>,
+    externalSubtitleEnabled: Boolean,
     activeSubtitleName: String?,
     isSearching: Boolean,
     isDownloading: Boolean,
     message: String?,
     error: String?,
     onDismiss: () -> Unit,
+    onExternalSubtitleEnabledChange: (Boolean) -> Unit,
     onSearchOnline: () -> Unit,
     onLocalSelected: (LocalSubtitleFile) -> Unit,
     onOnlineSelected: (JavzimuSubtitleResult) -> Unit
@@ -935,6 +948,7 @@ private fun ExternalSubtitleDialog(
             Text(
                 text = if (queryNumber.isBlank()) "字幕" else "字幕 · $queryNumber",
                 color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
         },
@@ -942,10 +956,40 @@ private fun ExternalSubtitleDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(420.dp)
+                    .heightIn(max = 320.dp)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.07f))
+                        .padding(horizontal = 11.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "外挂字幕",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = activeSubtitleName ?: "关闭",
+                            color = Color.White.copy(alpha = 0.58f),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Switch(
+                        checked = externalSubtitleEnabled,
+                        onCheckedChange = onExternalSubtitleEnabledChange,
+                        enabled = !isDownloading
+                    )
+                }
+
                 if (isSearching || isDownloading) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -970,7 +1014,7 @@ private fun ExternalSubtitleDialog(
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                 }
 
-                Text("本地字幕", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("本地字幕", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 if (localSubtitles.isEmpty()) {
                     Text("当前目录没有可加载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
                 } else {
@@ -986,14 +1030,15 @@ private fun ExternalSubtitleDialog(
 
                 HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
 
-                Text("在线字幕 · $providerLabel", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("在线字幕 · $providerLabel", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 OutlinedButton(
                     onClick = onSearchOnline,
                     enabled = !isSearching && !isDownloading && queryNumber.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
-                    Text("搜索 $providerLabel")
+                    Text("搜索 $providerLabel", style = MaterialTheme.typography.labelLarge)
                 }
                 if (!isSearching && onlineSubtitles.isEmpty()) {
                     Text("没有可下载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
@@ -1035,8 +1080,8 @@ private fun SubtitleOptionRow(
             .clip(RoundedCornerShape(12.dp))
             .background(Color.White.copy(alpha = if (enabled) 0.08f else 0.04f))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+            .padding(horizontal = 11.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         Text(
             text = title,
