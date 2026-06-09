@@ -55,14 +55,6 @@ class DetailViewModel(
     private val _playbackParts = MutableStateFlow<List<MoviePlaybackPart>>(emptyList())
     val playbackParts: StateFlow<List<MoviePlaybackPart>> = _playbackParts
 
-    private val _thumbBackgroundSettings = MutableStateFlow(
-        ThumbBackgroundSettings(
-            enabled = settingsRepository.isDetailThumbBackgroundEnabled(),
-            alphaPercent = settingsRepository.getDetailThumbBackgroundAlphaPercent()
-        )
-    )
-    val thumbBackgroundSettings: StateFlow<ThumbBackgroundSettings> = _thumbBackgroundSettings
-
     private val events = Channel<DetailEvent>(Channel.BUFFERED)
     val eventFlow: Flow<DetailEvent> = events.receiveAsFlow()
 
@@ -132,15 +124,28 @@ class DetailViewModel(
         }
     }
 
-    fun setThumbBackgroundEnabled(enabled: Boolean) {
-        settingsRepository.saveDetailThumbBackgroundEnabled(enabled)
-        _thumbBackgroundSettings.value = _thumbBackgroundSettings.value.copy(enabled = enabled)
-    }
-
-    fun setThumbBackgroundAlphaPercent(percent: Int) {
-        val coerced = percent.coerceIn(0, 100)
-        settingsRepository.saveDetailThumbBackgroundAlphaPercent(coerced)
-        _thumbBackgroundSettings.value = _thumbBackgroundSettings.value.copy(alphaPercent = coerced)
+    fun renameMovieFile(newFileName: String) {
+        val current = movie.value ?: return
+        if (_isScraping.value) return
+        viewModelScope.launch {
+            _isScraping.value = true
+            events.send(DetailEvent.Message("正在重命名 STRM..."))
+            runCatching {
+                repository.renameMovieStrmFile(current.id, newFileName)
+            }.onSuccess { result ->
+                _isScraping.value = false
+                val message = if (result.oldFileName == result.newFileName) {
+                    "文件名没有变化"
+                } else {
+                    "已重命名为 ${result.newFileName}"
+                }
+                events.send(DetailEvent.Message(message))
+            }.onFailure { error ->
+                _isScraping.value = false
+                if (error is CancellationException) throw error
+                events.send(DetailEvent.Message(error.message ?: "重命名失败"))
+            }
+        }
     }
 
     fun menuFeedback(label: String) {
@@ -151,6 +156,10 @@ class DetailViewModel(
 
     fun scrapeWithDmm() {
         scrapeCurrent(ScrapeSource.Dmm, allowCookieRefresh = false)
+    }
+
+    fun scrapeWithDefault() {
+        scrapeCurrent(scrapeRepository.getDefaultScrapeSource(), allowCookieRefresh = true)
     }
 
     fun scrapeWithDmm2() {
@@ -364,7 +373,7 @@ class DetailViewModel(
         _hiddenMissavRequest.value = HiddenMissavRequest(
             id = System.currentTimeMillis(),
             number = number,
-            url = "https://missav.ai/cn/${number.lowercase()}",
+            url = settingsRepository.getMissavScrapeLanguage().movieUrl(number),
             rescrape = isRescrape
         )
     }
@@ -384,11 +393,6 @@ class DetailViewModel(
             }
     }
 }
-
-data class ThumbBackgroundSettings(
-    val enabled: Boolean = false,
-    val alphaPercent: Int = 32
-)
 
 private data class DetailDerivedDataKey(
     val id: Long,
@@ -413,9 +417,11 @@ private fun MovieEntity.toDetailDerivedDataKey(): DetailDerivedDataKey =
 
 private val ScrapeSource.displayName: String
     get() = when (this) {
+        ScrapeSource.Priority -> "优先级刮削"
         ScrapeSource.Dmm -> "DMM"
         ScrapeSource.Dmm2 -> "DMM2"
         ScrapeSource.Official -> "Official"
+        ScrapeSource.Mgstage -> "MGStage"
         ScrapeSource.Javbus -> "JavBus"
         ScrapeSource.Missav -> "MissAV"
     }

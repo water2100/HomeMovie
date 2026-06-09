@@ -122,6 +122,7 @@ private fun collectMissavCookies(): String {
     CookieManager.getInstance().flush()
     return listOf(
         CookieManager.getInstance().getCookie("https://missav.ai").orEmpty(),
+        CookieManager.getInstance().getCookie("https://missav.ai/ja").orEmpty(),
         CookieManager.getInstance().getCookie("https://missav.ai/cn").orEmpty(),
         CookieManager.getInstance().getCookie("https://www.missav.ai").orEmpty()
     )

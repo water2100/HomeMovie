@@ -12,6 +12,7 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -19,10 +20,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -35,6 +40,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.localmovielibrary.data.AppContainer
+import com.example.localmovielibrary.data.repository.AppUpdateInfo
 import com.example.localmovielibrary.ui.cloud.CloudBrowserScreen
 import com.example.localmovielibrary.ui.cloud.CloudBrowserViewModel
 import com.example.localmovielibrary.ui.detail.DetailScreen
@@ -57,12 +63,18 @@ import com.example.localmovielibrary.ui.settings.JavzimuCookieWebViewScreen
 import com.example.localmovielibrary.ui.settings.SettingsScreen
 import com.example.localmovielibrary.ui.settings.SettingsViewModel
 import com.example.localmovielibrary.ui.settings.MissavCookieWebViewScreen
+import kotlinx.coroutines.delay
 
 @Composable
 fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+    val unfinishedScrapeTaskCount by appContainer.movieRepository
+        .observeUnfinishedScrapeTaskCount()
+        .collectAsState(initial = 0)
+    var scrapeTaskPromptDismissed by remember { mutableStateOf(false) }
+    var startupUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     val showBottomBar = currentRoute == Route.Home ||
         currentRoute == Route.Movies ||
         currentRoute == Route.MovieLibrary ||
@@ -70,7 +82,22 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
         currentRoute == Route.Favorites ||
         currentRoute == Route.Search ||
         currentRoute == Route.CloudBrowser ||
-        currentRoute == Route.Settings
+        currentRoute == Route.Settings ||
+        currentRoute == Route.SettingsUpdate ||
+        currentRoute == Route.SettingsScrapeTasks
+
+    LaunchedEffect(Unit) {
+        appContainer.appUpdateRepository.cleanupInstalledUpdateApksIfNeeded()
+        if (!appContainer.settingsRepository.isUpdateAutoCheckOnStartupEnabled()) return@LaunchedEffect
+        delay(8_000)
+        if (!appContainer.settingsRepository.isUpdateAutoCheckOnStartupEnabled()) return@LaunchedEffect
+        runCatching { appContainer.appUpdateRepository.checkForUpdate() }
+            .onSuccess { result ->
+                if (result.hasUpdate) {
+                    startupUpdateInfo = result.latest
+                }
+            }
+    }
 
     Scaffold(
         containerColor = Color(0xFF070A0E),
@@ -175,6 +202,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             movieRepository = appContainer.movieRepository,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
                             scrapeRepository = appContainer.strmScrapeRepository,
+                            appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
                             asrModelManager = appContainer.asrModelManager
                         )
@@ -183,6 +211,46 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                         viewModel = viewModel,
                         onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
                         onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) }
+                    )
+                }
+                composable(Route.SettingsUpdate) {
+                    val viewModel: SettingsViewModel = viewModel(
+                        factory = SettingsViewModel.factory(
+                            repository = appContainer.settingsRepository,
+                            movieRepository = appContainer.movieRepository,
+                            cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
+                            scrapeRepository = appContainer.strmScrapeRepository,
+                            appUpdateRepository = appContainer.appUpdateRepository,
+                            cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
+                            asrModelManager = appContainer.asrModelManager
+                        )
+                    )
+                    SettingsScreen(
+                        viewModel = viewModel,
+                        onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
+                        onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) },
+                        openUpdatePage = true,
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable(Route.SettingsScrapeTasks) {
+                    val viewModel: SettingsViewModel = viewModel(
+                        factory = SettingsViewModel.factory(
+                            repository = appContainer.settingsRepository,
+                            movieRepository = appContainer.movieRepository,
+                            cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
+                            scrapeRepository = appContainer.strmScrapeRepository,
+                            appUpdateRepository = appContainer.appUpdateRepository,
+                            cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
+                            asrModelManager = appContainer.asrModelManager
+                        )
+                    )
+                    SettingsScreen(
+                        viewModel = viewModel,
+                        onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
+                        onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) },
+                        openScrapePage = true,
+                        onBack = { navController.popBackStack() }
                     )
                 }
                 composable(
@@ -196,12 +264,14 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             movieRepository = appContainer.movieRepository,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
                             scrapeRepository = appContainer.strmScrapeRepository,
+                            appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
                             asrModelManager = appContainer.asrModelManager
                         )
                     )
                     MissavCookieWebViewScreen(
                         number = number,
+                        scrapeLanguage = appContainer.settingsRepository.getMissavScrapeLanguage(),
                         onBack = { navController.popBackStack() },
                         onSaveCookie = { cookie ->
                             viewModel.saveMissavCookies(cookie)
@@ -358,6 +428,73 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
             }
         }
     }
+
+    if (unfinishedScrapeTaskCount > 0 && !scrapeTaskPromptDismissed) {
+        AlertDialog(
+            onDismissRequest = { scrapeTaskPromptDismissed = true },
+            title = { Text("刮削任务未完成") },
+            text = {
+                Text("您有未完成的刮削任务，请挂节点后到刮削任务中启动刮削。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scrapeTaskPromptDismissed = true
+                        navController.navigate(Route.SettingsScrapeTasks) {
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    }
+                ) {
+                    Text("去刮削任务")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { scrapeTaskPromptDismissed = true }) {
+                    Text("稍后处理")
+                }
+            }
+        )
+    }
+
+    startupUpdateInfo?.let { update ->
+        AlertDialog(
+            onDismissRequest = { startupUpdateInfo = null },
+            title = { Text("发现新版本 ${update.versionName}") },
+            text = {
+                Text(
+                    buildString {
+                        append("当前版本可以更新到 ${update.versionName}。")
+                        update.sizeBytes?.let { size ->
+                            append("\nAPK 大小：${formatUpdateSize(size)}")
+                        }
+                        if (update.notes.isNotEmpty()) {
+                            append("\n\n")
+                            append(update.notes.take(5).joinToString("\n") { "- $it" })
+                        }
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        startupUpdateInfo = null
+                        navController.navigate(Route.SettingsUpdate) {
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    }
+                ) {
+                    Text("去更新")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { startupUpdateInfo = null }) {
+                    Text("稍后")
+                }
+            }
+        )
+    }
 }
 
 private fun AppContainer.homeImageMode(): HomeImageMode =
@@ -412,7 +549,9 @@ private fun AppBottomNavigation(
             colors = bottomNavColors()
         )
         NavigationBarItem(
-            selected = currentRoute == Route.Settings,
+            selected = currentRoute == Route.Settings ||
+                currentRoute == Route.SettingsUpdate ||
+                currentRoute == Route.SettingsScrapeTasks,
             onClick = { onNavigate(Route.Settings) },
             icon = { Icon(Icons.Rounded.Settings, contentDescription = "设置") },
             label = { Text("\u8BBE\u7F6E") },
@@ -438,6 +577,8 @@ private object Route {
     const val Search = "search"
     const val CloudBrowser = "cloudBrowser"
     const val Settings = "settings"
+    const val SettingsUpdate = "settings/update"
+    const val SettingsScrapeTasks = "settings/scrapeTasks"
     const val ScrapeLogs = "scrapeLogs"
     const val MissavCookieWeb = "missavCookieWeb/{number}"
     const val JavzimuCookieWeb = "javzimuCookieWeb/{url}"
@@ -455,4 +596,9 @@ private object Route {
 
     fun player(videoUri: String, title: String, fileName: String) =
         "player/${Uri.encode(videoUri)}?title=${Uri.encode(title)}&fileName=${Uri.encode(fileName)}"
+}
+
+private fun formatUpdateSize(bytes: Long): String {
+    val mb = bytes / 1024.0 / 1024.0
+    return if (mb >= 1.0) "%.1f MB".format(mb) else "${bytes / 1024} KB"
 }

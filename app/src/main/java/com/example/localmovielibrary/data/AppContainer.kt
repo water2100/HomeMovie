@@ -9,6 +9,7 @@ import com.example.localmovielibrary.cloud115.Cloud115ApiClient
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115QrLoginClient
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
+import com.example.localmovielibrary.data.repository.AppUpdateRepository
 import com.example.localmovielibrary.data.repository.Cloud115StrmRepository
 import com.example.localmovielibrary.data.local.AppDatabase
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
@@ -35,11 +36,14 @@ class AppContainer(context: Context) {
         MIGRATION_6_7,
         MIGRATION_7_8,
         MIGRATION_8_9,
-        MIGRATION_9_10
+        MIGRATION_9_10,
+        MIGRATION_10_11,
+        MIGRATION_11_12
     ).build()
 
     val scanner = LibraryScanner(appContext)
     val settingsRepository = AppSettingsRepository(appContext)
+    val appUpdateRepository = AppUpdateRepository(appContext, settingsRepository)
     val asrModelManager = AsrModelManager(appContext, settingsRepository)
     val cloud115Client = Cloud115ApiClient(Cloud115CookieProvider(appContext))
     val cloud115QrLoginClient = Cloud115QrLoginClient(appContext, settingsRepository)
@@ -220,6 +224,19 @@ class AppContainer(context: Context) {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_direct_links_expiresAt` ON `direct_links` (`expiresAt`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_playback_progress_updatedAt` ON `playback_progress` (`updatedAt`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_strm_records_movieNumber_partLabel_variant_fileName` ON `cloud_strm_records` (`movieNumber`, `partLabel`, `variant`, `fileName`)")
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE movies ADD COLUMN scrapeFailureReason TEXT")
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE movies ADD COLUMN scrapeTaskStatus TEXT NOT NULL DEFAULT 'None'")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_scrapeTaskStatus` ON `movies` (`scrapeTaskStatus`)")
             }
         }
     }

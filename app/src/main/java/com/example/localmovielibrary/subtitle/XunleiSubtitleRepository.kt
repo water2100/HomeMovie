@@ -29,7 +29,7 @@ class XunleiSubtitleRepository(
 
     suspend fun search(number: String, videoDurationMs: Long): List<JavzimuSubtitleResult> =
         withContext(Dispatchers.IO) {
-            val normalized = normalizeJavzimuSubtitleNumber(number).lowercase(Locale.ROOT)
+            val normalized = normalizeXunleiSubtitleNumber(number)
             if (normalized.isBlank()) return@withContext emptyList()
             val url = BASE_URL.toHttpUrl().newBuilder()
                 .addQueryParameter("name", normalized)
@@ -140,4 +140,12 @@ class XunleiSubtitleRepository(
         private const val MAX_DURATION_DIFF_MS = 10L * 60L * 1_000L
         private val SUPPORTED_EXTENSIONS = setOf("srt", "ass", "ssa", "vtt")
     }
+}
+
+fun normalizeXunleiSubtitleNumber(number: String): String {
+    val value = number.trim().uppercase(Locale.ROOT).replace("_", "-")
+    val match = Regex("""^([A-Z]+)-?(\d+)$""").matchEntire(value) ?: return value
+    val prefix = match.groupValues[1]
+    val digits = match.groupValues[2]
+    return "$prefix-${digits.padStart(3, '0')}"
 }

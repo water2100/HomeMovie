@@ -47,6 +47,8 @@ class DmmScraper(
         if (title.isBlank()) error("DMM 详情页没有解析到标题")
         val thumb = Regex("""<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.replace("ps.jpg", "pl.jpg").orEmpty()
+        val poster = buildPosterUrl(thumb)
+        val imageCandidates = buildDigitalImageCandidates(number, thumb, poster.ifBlank { thumb })
         val tags = linksNearLabel(html, "ジャンル")
         val actors = Regex("""<(?:span|td)[^>]+(?:id=["']performer["']|id=["']fn-visibleActor["'])[\s\S]*?</(?:span|td)>""", RegexOption.IGNORE_CASE)
             .find(html)?.value
@@ -79,7 +81,9 @@ class DmmScraper(
             website = detailUrl,
             source = "dmm",
             thumbUrl = thumb,
-            posterUrl = thumb
+            posterUrl = poster.ifBlank { thumb },
+            thumbImageUrls = imageCandidates.thumbUrls,
+            posterImageUrls = imageCandidates.posterUrls
         )
     }
 
@@ -120,6 +124,45 @@ class DmmScraper(
 
     private fun String.digitsOnly(): String = Regex("""\d+""").find(this)?.value.orEmpty()
 
+    private fun buildPosterUrl(thumbUrl: String): String =
+        thumbUrl.replace(Regex("""pl(\.(jpg|jpeg|png|webp))$""", RegexOption.IGNORE_CASE), "ps\$1")
+
+    private fun buildDigitalImageCandidates(
+        number: String,
+        fallbackThumb: String,
+        fallbackPoster: String
+    ): DmmImageCandidates {
+        val contentId = buildDigitalContentId(number) ?: return DmmImageCandidates(
+            thumbUrls = listOf(fallbackThumb).normalizedUrlList(),
+            posterUrls = listOf(fallbackPoster).normalizedUrlList()
+        )
+        val baseUrl = "$AWS_IMAGE_BASE_URL/$contentId"
+        return DmmImageCandidates(
+            thumbUrls = listOf(
+                "$baseUrl/${contentId}pl.jpg",
+                "$AWS_IMAGE_BASE_URL/1$contentId/1${contentId}pl.jpg",
+                fallbackThumb
+            ).normalizedUrlList(),
+            posterUrls = listOf(
+                "$baseUrl/${contentId}ps.jpg",
+                "$AWS_IMAGE_BASE_URL/1$contentId/1${contentId}ps.jpg",
+                fallbackPoster
+            ).normalizedUrlList()
+        )
+    }
+
+    private fun buildDigitalContentId(number: String): String? {
+        val match = Regex("""(?i)^([a-z]+)[-_ ]?0*(\d+)$""").find(number.trim()) ?: return null
+        val prefix = match.groupValues[1].lowercase()
+        val digits = match.groupValues[2].trimStart('0').ifBlank { "0" }
+        return prefix + digits.padStart(5, '0')
+    }
+
+    private fun List<String>.normalizedUrlList(): List<String> =
+        map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+
     private fun cleanHtml(value: String): String =
         value.replace(Regex("""<[^>]+>"""), "")
             .replace("&amp;", "&")
@@ -135,5 +178,11 @@ class DmmScraper(
 
     private companion object {
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        const val AWS_IMAGE_BASE_URL = "https://awsimgsrc.dmm.co.jp/pics_dig/digital/video"
     }
+
+    private data class DmmImageCandidates(
+        val thumbUrls: List<String>,
+        val posterUrls: List<String>
+    )
 }

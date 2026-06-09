@@ -3,7 +3,6 @@ package com.example.localmovielibrary.ui.player
 import android.view.Surface
 import androidx.annotation.OptIn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
@@ -61,19 +60,4 @@ fun VrSphericalPlayerView(
             player.clearCameraMotionListener(view.getCameraMotionListener())
         }
     )
-
-    DisposableEffect(player) {
-        onDispose {
-            player.clearVideoSurface()
-        }
-    }
-}
-
-@OptIn(UnstableApi::class)
-fun ExoPlayer.clearVrSurface(surface: Surface? = null) {
-    if (surface == null) {
-        clearVideoSurface()
-    } else {
-        clearVideoSurface(surface)
-    }
 }

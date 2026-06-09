@@ -14,7 +14,8 @@ import androidx.room.PrimaryKey
         Index(value = ["updatedAt"]),
         Index(value = ["year"]),
         Index(value = ["isFavorite"]),
-        Index(value = ["isWatched"])
+        Index(value = ["isWatched"]),
+        Index(value = ["scrapeTaskStatus"])
     ]
 )
 data class MovieEntity(
@@ -47,5 +48,19 @@ data class MovieEntity(
     val scannedAtMillis: Long,
     val isFavorite: Boolean = false,
     val isWatched: Boolean = false,
-    val updatedAt: Long = 0
+    val updatedAt: Long = 0,
+    val scrapeFailureReason: String? = null,
+    val scrapeTaskStatus: String = ScrapeTaskStatus.None.name
 )
+
+enum class ScrapeTaskStatus {
+    None,
+    Pending,
+    Running,
+    Completed,
+    Failed;
+
+    companion object {
+        val unfinishedNames: List<String> = listOf(Pending.name, Running.name, Failed.name)
+    }
+}

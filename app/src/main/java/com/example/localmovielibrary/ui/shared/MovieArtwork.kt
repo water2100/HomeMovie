@@ -28,7 +28,8 @@ fun MovieArtwork(
             uri = imageUri,
             modifier = Modifier.fillMaxSize(),
             contentScale = contentScale,
-            maxDecodeSize = maxDecodeSize
+            maxDecodeSize = maxDecodeSize,
+            cacheKey = movie.artworkCacheRevision()
         )
         if (imageUri == null) {
             MovieArtworkPlaceholder(title = movie.title)
@@ -42,6 +43,15 @@ fun MovieEntity.selectArtworkUri(preferThumb: Boolean): String? =
     } else {
         posterUri ?: thumbUri ?: fanartUri
     }
+
+fun MovieEntity.artworkCacheRevision(): String =
+    listOf(
+        id.toString(),
+        maxOf(updatedAt, scannedAtMillis).toString(),
+        posterUri.orEmpty(),
+        fanartUri.orEmpty(),
+        thumbUri.orEmpty()
+    ).joinToString("|")
 
 @Composable
 fun MovieArtworkPlaceholder(title: String, modifier: Modifier = Modifier) {

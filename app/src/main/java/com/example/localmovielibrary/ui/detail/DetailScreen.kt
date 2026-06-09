@@ -35,9 +35,10 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
-import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Person
@@ -52,11 +53,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -87,6 +87,7 @@ import com.example.localmovielibrary.data.repository.MoviePlaybackPart
 import com.example.localmovielibrary.scraper.ActorAvatarStore
 import com.example.localmovielibrary.scraper.MissavScraper
 import com.example.localmovielibrary.ui.shared.UriImage
+import com.example.localmovielibrary.ui.shared.artworkCacheRevision
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -114,15 +115,14 @@ fun DetailScreen(
     val isScraping by viewModel.isScraping.collectAsStateWithLifecycle()
     val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
     val playbackParts by viewModel.playbackParts.collectAsStateWithLifecycle()
-    val thumbBackgroundSettings by viewModel.thumbBackgroundSettings.collectAsStateWithLifecycle()
     val hiddenMissavRequest by viewModel.hiddenMissavRequest.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var cachedMovie by remember { mutableStateOf<MovieEntity?>(null) }
     var showPathDialog by rememberSaveable { mutableStateOf(false) }
     var showNfoDialog by rememberSaveable { mutableStateOf(false) }
+    var showRenameDialog by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirm by rememberSaveable { mutableStateOf(false) }
     var showClearScrapeConfirm by rememberSaveable { mutableStateOf(false) }
-    var showThumbBackgroundDialog by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(movie) {
         movie?.let { cachedMovie = it }
@@ -184,7 +184,9 @@ fun DetailScreen(
                         showNfoDialog = true
                         viewModel.menuFeedback("Showing parsed NFO fields")
                     },
+                    onRenameRequest = { showRenameDialog = true },
                     onRefresh = viewModel::refreshMovie,
+                    onScrapeDefault = viewModel::scrapeWithDefault,
                     onScrapeDmm = viewModel::scrapeWithDmm,
                     onScrapeDmm2 = viewModel::scrapeWithDmm2,
                     onScrapeOfficial = viewModel::scrapeWithOfficial,
@@ -197,8 +199,6 @@ fun DetailScreen(
                     onRescrapeJavbus = viewModel::rescrapeWithJavbus,
                     onRescrapeMissav = viewModel::rescrapeWithMissav,
                     onClearScrapeRequest = { showClearScrapeConfirm = true },
-                    thumbBackgroundSettings = thumbBackgroundSettings,
-                    onThumbBackgroundSettingsRequest = { showThumbBackgroundDialog = true },
                     onDeleteRequest = { showDeleteConfirm = true },
                     onActorClick = { onFilterClick("actor", it) },
                     onTagClick = { onFilterClick("tag", it) },
@@ -227,6 +227,16 @@ fun DetailScreen(
         if (showNfoDialog) {
             ParsedNfoDialog(movie = it, onDismiss = { showNfoDialog = false })
         }
+        if (showRenameDialog) {
+            RenameMovieFileDialog(
+                movie = it,
+                onDismiss = { showRenameDialog = false },
+                onConfirm = { newFileName ->
+                    showRenameDialog = false
+                    viewModel.renameMovieFile(newFileName)
+                }
+            )
+        }
         if (showDeleteConfirm) {
             ConfirmDeleteDialog(
                 movieTitle = it.title,
@@ -247,16 +257,6 @@ fun DetailScreen(
                 }
             )
         }
-        if (showThumbBackgroundDialog) {
-            ThumbBackgroundDialog(
-                enabled = thumbBackgroundSettings.enabled,
-                alphaPercent = thumbBackgroundSettings.alphaPercent,
-                hasThumb = it.thumbUri != null,
-                onEnabledChange = viewModel::setThumbBackgroundEnabled,
-                onAlphaChange = viewModel::setThumbBackgroundAlphaPercent,
-                onDismiss = { showThumbBackgroundDialog = false }
-            )
-        }
     }
 }
 
@@ -270,7 +270,9 @@ fun MovieDetailScreen(
     onToggleWatched: () -> Unit,
     onShowPaths: () -> Unit,
     onShowNfo: () -> Unit,
+    onRenameRequest: () -> Unit,
     onRefresh: () -> Unit,
+    onScrapeDefault: () -> Unit,
     onScrapeDmm: () -> Unit,
     onScrapeDmm2: () -> Unit,
     onScrapeOfficial: () -> Unit,
@@ -283,8 +285,6 @@ fun MovieDetailScreen(
     onRescrapeJavbus: () -> Unit,
     onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit,
-    thumbBackgroundSettings: ThumbBackgroundSettings,
-    onThumbBackgroundSettingsRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
     onActorClick: (String) -> Unit,
     onTagClick: (String) -> Unit,
@@ -292,14 +292,14 @@ fun MovieDetailScreen(
     similarMovies: List<MovieEntity>,
     onSimilarClick: (Long) -> Unit
 ) {
+    val scrapeFailureReason = movie.scrapeFailureReason?.trim()?.takeIf { it.isNotBlank() }
+    var showScrapeFailureDialog by rememberSaveable(movie.id, scrapeFailureReason) { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(DetailBackground)
     ) {
-        if (thumbBackgroundSettings.enabled && movie.thumbUri != null) {
-            DetailThumbBackground(movie.thumbUri, thumbBackgroundSettings)
-        }
         IconButton(
             modifier = Modifier
                 .padding(start = 12.dp, top = 12.dp)
@@ -319,25 +319,29 @@ fun MovieDetailScreen(
                 .padding(bottom = 26.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            if (!thumbBackgroundSettings.enabled || movie.thumbUri == null) {
-                MobileHeroImage(movie)
-            } else {
-                Spacer(Modifier.height(72.dp))
-            }
+            MobileHeroImage(movie)
             Column(
                 modifier = Modifier.padding(horizontal = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 MobileTitleBlock(movie = movie, onGenreClick = onGenreClick)
+                scrapeFailureReason?.let { reason ->
+                    ScrapeFailureNotice(
+                        reason = reason,
+                        onClick = { showScrapeFailureDialog = true }
+                    )
+                }
                 MobileMainButtons(playbackParts = playbackParts, onPlay = onPlay, onTrailer = onShowNfo)
                 MobileActionBar(
                     movie = movie,
                     onDownload = onShowPaths,
                     onToggleWatched = onToggleWatched,
                     onToggleFavorite = onToggleFavorite,
+                    onRenameRequest = onRenameRequest,
                     onDeleteRequest = onDeleteRequest,
                     onShowNfo = onShowNfo,
                     onRefresh = onRefresh,
+                    onScrapeDefault = onScrapeDefault,
                     onScrapeDmm = onScrapeDmm,
                     onScrapeDmm2 = onScrapeDmm2,
                     onScrapeOfficial = onScrapeOfficial,
@@ -349,37 +353,65 @@ fun MovieDetailScreen(
                     onRescrapeOfficial = onRescrapeOfficial,
                     onRescrapeJavbus = onRescrapeJavbus,
                     onRescrapeMissav = onRescrapeMissav,
-                    onClearScrapeRequest = onClearScrapeRequest,
-                    onThumbBackgroundSettingsRequest = onThumbBackgroundSettingsRequest
+                    onClearScrapeRequest = onClearScrapeRequest
                 )
                 ReleaseAndOverview(movie = movie, onTagClick = onTagClick)
                 CastSection(actors = movie.actors, onActorClick = onActorClick)
                 CollectionSection(movie)
                 SimilarSection(movies = similarMovies, onMovieClick = onSimilarClick)
-                OtherInfoSection(movie = movie, onGenreClick = onGenreClick, onTagClick = onTagClick)
+                OtherInfoSection(movie = movie, onTagClick = onTagClick)
             }
+        }
+
+        if (showScrapeFailureDialog && scrapeFailureReason != null) {
+            AlertDialog(
+                onDismissRequest = { showScrapeFailureDialog = false },
+                title = { Text("未刮削成功") },
+                text = { Text(scrapeFailureReason) },
+                confirmButton = {
+                    TextButton(onClick = { showScrapeFailureDialog = false }) {
+                        Text("知道了")
+                    }
+                }
+            )
         }
     }
 }
 
 @Composable
-private fun DetailThumbBackground(
-    thumbUri: String,
-    settings: ThumbBackgroundSettings
-) {
-    val overlayAlpha = (1f - settings.alphaPercent / 100f).coerceIn(0.08f, 0.95f)
-    UriImage(
-        uri = thumbUri,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop,
-        alignment = Alignment.Center,
-        maxDecodeSize = 1400
-    )
-    Box(
+private fun ScrapeFailureNotice(reason: String, onClick: () -> Unit) {
+    Row(
         modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = overlayAlpha))
-    )
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFFFF4D5E).copy(alpha = 0.20f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            Icons.Rounded.ErrorOutline,
+            contentDescription = null,
+            tint = Color(0xFFFF7A86),
+            modifier = Modifier.size(22.dp)
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = "未刮削成功，点击查看原因",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = reason,
+                color = Color.White.copy(alpha = 0.72f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
 }
 
 @Composable
@@ -396,7 +428,8 @@ private fun MobileHeroImage(movie: MovieEntity) {
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (movie.fanartUri == null) Modifier.blur(8.dp) else Modifier),
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Crop,
+            cacheKey = movie.artworkCacheRevision()
         )
         Box(
             modifier = Modifier
@@ -551,9 +584,11 @@ private fun MobileActionBar(
     onDownload: () -> Unit,
     onToggleWatched: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onRenameRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
     onShowNfo: () -> Unit,
     onRefresh: () -> Unit,
+    onScrapeDefault: () -> Unit,
     onScrapeDmm: () -> Unit,
     onScrapeDmm2: () -> Unit,
     onScrapeOfficial: () -> Unit,
@@ -565,8 +600,7 @@ private fun MobileActionBar(
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
     onRescrapeMissav: () -> Unit,
-    onClearScrapeRequest: () -> Unit,
-    onThumbBackgroundSettingsRequest: () -> Unit
+    onClearScrapeRequest: () -> Unit
 ) {
     var moreExpanded by remember { mutableStateOf(false) }
     val canScrape = movie.videoName.endsWith(".strm", ignoreCase = true) && movie.nfoUri == null
@@ -590,8 +624,8 @@ private fun MobileActionBar(
             onToggleFavorite,
             active = movie.isFavorite
         )
+        DetailActionItem(Icons.Rounded.Edit, "重命名", onRenameRequest)
         DetailActionItem(Icons.Rounded.DeleteOutline, "删除", onDeleteRequest)
-        DetailActionItem(Icons.Rounded.Image, "背景", onThumbBackgroundSettingsRequest, active = movie.thumbUri != null)
         Box {
             DetailActionItem(Icons.Rounded.MoreHoriz, "更多", { moreExpanded = true })
             DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
@@ -610,6 +644,13 @@ private fun MobileActionBar(
                     }
                 )
                 if (canScrape) {
+                    DropdownMenuItem(
+                        text = { Text("从优先级刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onScrapeDefault()
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("从 DMM 刮削") },
                         onClick = {
@@ -648,7 +689,7 @@ private fun MobileActionBar(
                 }
                 if (canRescrape) {
                     DropdownMenuItem(
-                        text = { Text("重新刮削（默认方式）") },
+                        text = { Text("用优先级重新刮削") },
                         onClick = {
                             moreExpanded = false
                             onRescrapeDefault()
@@ -728,62 +769,6 @@ private fun DetailActionItem(
         )
         Text(label, color = DetailMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
     }
-}
-
-@Composable
-private fun ThumbBackgroundDialog(
-    enabled: Boolean,
-    alphaPercent: Int,
-    hasThumb: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
-    onAlphaChange: (Int) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = DetailPanel,
-        title = { Text("透明背景", color = Color.White, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("使用 thumb 全屏背景", color = Color.White)
-                        Text(
-                            if (hasThumb) "在详情页底层显示半透明横图背景" else "当前影片没有 thumb 图片",
-                            color = DetailMuted,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Switch(
-                        checked = enabled && hasThumb,
-                        enabled = hasThumb,
-                        onCheckedChange = onEnabledChange
-                    )
-                }
-                Text("背景可见度：$alphaPercent%", color = Color.White)
-                Slider(
-                    value = alphaPercent.toFloat(),
-                    onValueChange = { onAlphaChange(it.toInt()) },
-                    valueRange = 0f..90f,
-                    enabled = hasThumb
-                )
-                Text(
-                    "显示方式固定为 centerCrop：铺满屏幕、居中裁剪、无黑边。",
-                    color = DetailMuted,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("完成", color = EmbyGreen)
-            }
-        }
-    )
 }
 
 @Composable
@@ -903,7 +888,8 @@ private fun CollectionSection(movie: MovieEntity) {
             SmallPosterCard(
                 imageUri = movie.posterUri ?: movie.thumbUri,
                 title = collectionLabel,
-                subtitle = movie.title
+                subtitle = movie.title,
+                cacheKey = movie.artworkCacheRevision()
             )
         }
     }
@@ -923,6 +909,7 @@ private fun SimilarSection(movies: List<MovieEntity>, onMovieClick: (Long) -> Un
                     imageUri = movie.posterUri ?: movie.thumbUri,
                     title = movie.title,
                     subtitle = movie.year?.toString().orEmpty(),
+                    cacheKey = movie.artworkCacheRevision(),
                     onClick = { onMovieClick(movie.id) }
                 )
             }
@@ -935,6 +922,7 @@ private fun SmallPosterCard(
     imageUri: String?,
     title: String,
     subtitle: String,
+    cacheKey: Any? = null,
     onClick: (() -> Unit)? = null
 ) {
     Column(
@@ -955,7 +943,8 @@ private fun SmallPosterCard(
                 uri = imageUri,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
-                maxDecodeSize = 520
+                maxDecodeSize = 520,
+                cacheKey = cacheKey
             )
             if (imageUri == null) {
                 Icon(Icons.Rounded.Movie, contentDescription = null, tint = Color.White.copy(alpha = 0.76f))
@@ -972,18 +961,14 @@ private fun SmallPosterCard(
 @Composable
 private fun OtherInfoSection(
     movie: MovieEntity,
-    onGenreClick: (String) -> Unit,
     onTagClick: (String) -> Unit
 ) {
+    val tagValues = (movie.tags + movie.genres).distinctByNormalizedText()
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         DetailSectionTitle("其他信息")
-        InfoLine("类型", movie.genres.joinToString(", "))
-        if (movie.genres.isNotEmpty()) {
-            ChipFlow(values = movie.genres, onClick = onGenreClick)
-        }
-        InfoLine("标签", movie.tags.joinToString(", "))
-        if (movie.tags.isNotEmpty()) {
-            ChipFlow(values = movie.tags, onClick = onTagClick)
+        if (tagValues.isNotEmpty()) {
+            Text("标签", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            ChipFlow(values = tagValues, onClick = onTagClick)
         }
         InfoLine("导演", movie.directors.joinToString(", "))
         InfoLine("媒体信息", listOfNotNull(movie.videoName, movie.runtimeMinutes?.let { "${it}分钟" }).joinToString(" / "))
@@ -993,6 +978,11 @@ private fun OtherInfoSection(
         InfoLine("添加时间", formatAddedTime(movie.scannedAtMillis))
     }
 }
+
+private fun List<String>.distinctByNormalizedText(): List<String> =
+    map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
 
 @Composable
 private fun InfoLine(label: String, value: String) {
@@ -1133,6 +1123,7 @@ private fun collectMissavCookies(): String {
     CookieManager.getInstance().flush()
     return listOf(
         CookieManager.getInstance().getCookie("https://missav.ai").orEmpty(),
+        CookieManager.getInstance().getCookie("https://missav.ai/ja").orEmpty(),
         CookieManager.getInstance().getCookie("https://missav.ai/cn").orEmpty(),
         CookieManager.getInstance().getCookie("https://www.missav.ai").orEmpty()
     )
@@ -1186,6 +1177,48 @@ private fun ParsedNfoDialog(movie: MovieEntity, onDismiss: () -> Unit) {
         DialogLine("标签", movie.tags.joinToString(", ").ifBlank { emptyText })
         DialogLine("唯一标识", movie.uniqueIds.joinToString(", ").ifBlank { emptyText })
     }
+}
+
+@Composable
+private fun RenameMovieFileDialog(
+    movie: MovieEntity,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var draft by rememberSaveable(movie.id, movie.videoName) { mutableStateOf(movie.videoName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名 STRM") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    singleLine = true,
+                    label = { Text("文件名") },
+                    placeholder = { Text("例如 MEYD-772.strm") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "只会重命名影片库里的 STRM 文件，不会删除 115 网盘里的真实视频。未填写 .strm 时会自动补上。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = draft.trim().isNotBlank(),
+                onClick = { onConfirm(draft) }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
 }
 
 @Composable

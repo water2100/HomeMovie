@@ -22,13 +22,36 @@ data class MovieSourceIdentity(
 }
 
 fun extractMovieNumberInfo(text: String): MovieNumberInfo? {
-    val baseName = text.substringBeforeLast('.', text)
+    val rawBaseName = text.substringBeforeLast('.', text)
+    val stripResult = NumberRecognitionRules.stripIgnoredSuffix(rawBaseName)
+    val baseName = stripResult.baseName
     val match = MOVIE_NUMBER_PATTERN
         .findAll(baseName)
-        .lastOrNull()
+        .filter { match -> match.groupValues[1].any { it.isLetter() } }
+        .map { match ->
+            MovieNumberMatch(
+                match = match,
+                hasExplicitSeparator = match.hasExplicitSeparator()
+            )
+        }
+        .maxWithOrNull(
+            compareBy<MovieNumberMatch> { it.hasExplicitSeparator }
+                .thenBy { it.match.range.first }
+        )
+        ?.match
         ?: return null
-    val number = "${match.groupValues[1].uppercase(Locale.ROOT)}-${match.groupValues[2]}"
-    val letterPart = match.groupValues.getOrNull(3)
+    val hasExplicitSeparator = match.hasExplicitSeparator()
+    val digits = NumberRecognitionRules.normalizeDigits(
+        digits = match.groupValues[2],
+        hasExplicitSeparator = hasExplicitSeparator,
+        strippedIgnoredSuffix = stripResult.stripped
+    )
+    val attachedSuffix = match.groupValues.getOrNull(3)
+        ?.takeIf { it.isNotBlank() }
+        ?.uppercase(Locale.ROOT)
+        .orEmpty()
+    val number = "${match.groupValues[1].uppercase(Locale.ROOT)}-$digits$attachedSuffix"
+    val letterPart = match.groupValues.getOrNull(4)
         ?.takeIf { it.isNotBlank() }
         ?.uppercase(Locale.ROOT)
     val suffix = baseName.substring(match.range.last + 1)
@@ -81,4 +104,17 @@ fun partSortKey(label: String?): Int {
 }
 
 private val MOVIE_NUMBER_PATTERN =
-    Regex("""(?i)\b([a-z]{2,10})[-_ ]?(\d{2,6})(?:[-_ ]([a-z]))?(?:$|[^a-z0-9])""")
+    Regex("""(?i)\b([a-z0-9]{2,12}?)[-_ ]?(\d{2,6})([a-z]{0,2})(?:[-_ ]([a-z]))?(?:$|[^a-z0-9])""")
+
+private data class MovieNumberMatch(
+    val match: MatchResult,
+    val hasExplicitSeparator: Boolean
+)
+
+private fun MatchResult.hasExplicitSeparator(): Boolean {
+    val prefixRange = groups[1]?.range ?: return false
+    val numberRange = groups[2]?.range ?: return false
+    if (numberRange.first <= prefixRange.last + 1) return false
+    return value.substring(prefixRange.last + 1 - range.first, numberRange.first - range.first)
+        .any { it == '-' || it == '_' || it == ' ' }
+}

@@ -241,7 +241,7 @@ fun MoviesLibraryScreen(
     }
 
     LaunchedEffect(selectedTab, uiState.movies.size) {
-        if (selectedTab != LibraryTab.All && selectedTab != LibraryTab.Domestic && selectedTab != LibraryTab.Years) {
+        if (selectedTab != LibraryTab.All && selectedTab != LibraryTab.Vr && selectedTab != LibraryTab.Domestic && selectedTab != LibraryTab.Years) {
             viewModel.refreshLibrarySummaries()
         }
     }
@@ -270,7 +270,16 @@ fun MoviesLibraryScreen(
         }
         when (selectedTab) {
             LibraryTab.All -> LibraryAllMoviesGrid(
-                movies = uiState.movies,
+                movies = uiState.movies.filterNot { it.isVrMovie() },
+                imageMode = uiState.imageMode,
+                sortState = uiState.sortState,
+                onMovieClick = onMovieClick,
+                onPlay = onPlay,
+                onToggleFavorite = viewModel::toggleFavorite,
+                onToggleWatched = viewModel::toggleWatched
+            )
+            LibraryTab.Vr -> LibraryAllMoviesGrid(
+                movies = uiState.movies.filter { it.isVrMovie() },
                 imageMode = uiState.imageMode,
                 sortState = uiState.sortState,
                 onMovieClick = onMovieClick,
@@ -1361,6 +1370,7 @@ private fun scanMessage(scanState: ScanState): String = when (scanState) {
 
 private enum class LibraryTab(val label: String) {
     All("全部"),
+    Vr("VR"),
     Domestic("国产"),
     Collections("合集"),
     Actors("演员"),
@@ -1369,6 +1379,11 @@ private enum class LibraryTab(val label: String) {
     Years("年份"),
     Studios("工作室")
 }
+
+private fun MovieEntity.isVrMovie(): Boolean =
+    tags.any { tag -> tag.contains("VR", ignoreCase = true) } ||
+        title.contains("【VR】", ignoreCase = true) ||
+        originalTitle.orEmpty().contains("【VR】", ignoreCase = true)
 
 private fun List<String>.summaryValues(): List<MovieMetadataSummary> =
     map { it.trim() }

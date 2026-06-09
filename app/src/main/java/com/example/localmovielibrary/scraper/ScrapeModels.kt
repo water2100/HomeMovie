@@ -1,11 +1,47 @@
 package com.example.localmovielibrary.scraper
 
+import java.util.Locale
+
 enum class ScrapeSource {
+    Priority,
     Dmm,
     Dmm2,
     Official,
+    Mgstage,
     Javbus,
     Missav
+}
+
+enum class MissavScrapeLanguage(
+    val id: String,
+    val pathSegment: String
+) {
+    Japanese("ja", "ja"),
+    Chinese("cn", "cn");
+
+    fun movieUrl(number: String): String =
+        "https://missav.ai/$pathSegment/${number.lowercase(Locale.ROOT)}"
+
+    val referer: String
+        get() = "https://missav.ai/$pathSegment"
+
+    val acceptLanguage: String
+        get() = when (this) {
+            Japanese -> "ja,en;q=0.8,zh-CN;q=0.7,zh;q=0.6"
+            Chinese -> "zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7"
+        }
+
+    companion object {
+        val Default = Japanese
+
+        fun fromId(id: String?): MissavScrapeLanguage {
+            val normalized = id?.trim().orEmpty()
+            return entries.firstOrNull {
+                it.id.equals(normalized, ignoreCase = true) ||
+                    it.name.equals(normalized, ignoreCase = true)
+            } ?: Default
+        }
+    }
 }
 
 data class ScrapedMovieInfo(
@@ -30,7 +66,9 @@ data class ScrapedMovieInfo(
     val website: String = "",
     val source: String = "",
     val thumbUrl: String = "",
-    val posterUrl: String = ""
+    val posterUrl: String = "",
+    val thumbImageUrls: List<String> = emptyList(),
+    val posterImageUrls: List<String> = emptyList()
 )
 
 data class ScrapeRunResult(

@@ -5,15 +5,22 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
+import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
 import com.example.localmovielibrary.translate.TranslateProvider
+import com.example.localmovielibrary.util.NumberRecognitionRules
+import org.json.JSONObject
 import java.security.MessageDigest
 
 class AppSettingsRepository(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(Cloud115CookieProvider.PREFS_NAME, Context.MODE_PRIVATE)
+
+    init {
+        NumberRecognitionRules.updateIgnoredSuffixes(getCachedNumberRecognitionIgnoredSuffixes())
+    }
 
     fun getCookies(): String = prefs.getString(Cloud115CookieProvider.KEY_COOKIES, null).orEmpty()
 
@@ -37,6 +44,13 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putString(KEY_MISSAV_COOKIES, value.trim()).commit()
     }
 
+    fun getMissavScrapeLanguage(): MissavScrapeLanguage =
+        MissavScrapeLanguage.fromId(prefs.getString(KEY_MISSAV_SCRAPE_LANGUAGE, null))
+
+    fun saveMissavScrapeLanguage(language: MissavScrapeLanguage) {
+        prefs.edit().putString(KEY_MISSAV_SCRAPE_LANGUAGE, language.id).apply()
+    }
+
     fun getJavzimuCookies(): String = prefs.getString(KEY_JAVZIMU_COOKIES, null).orEmpty()
 
     fun saveJavzimuCookies(value: String) {
@@ -54,6 +68,61 @@ class AppSettingsRepository(context: Context) {
 
     fun saveSubtitleSearchProvider(provider: SubtitleSearchProvider) {
         prefs.edit().putString(KEY_SUBTITLE_SEARCH_PROVIDER, provider.id).apply()
+    }
+
+    fun getUpdateManifestUrl(): String =
+        prefs.getString(KEY_UPDATE_MANIFEST_URL, null)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_UPDATE_MANIFEST_URL
+
+    fun saveUpdateManifestUrl(value: String) {
+        prefs.edit()
+            .putString(KEY_UPDATE_MANIFEST_URL, value.trim().ifBlank { DEFAULT_UPDATE_MANIFEST_URL })
+            .apply()
+    }
+
+    fun getUpdateProxyBaseUrl(): String {
+        val stored = prefs.getString(KEY_UPDATE_PROXY_BASE_URL, null)
+        return if (stored == null) DEFAULT_UPDATE_PROXY_BASE_URL else normalizeUpdateProxyBaseUrl(stored)
+    }
+
+    fun saveUpdateProxyBaseUrl(value: String) {
+        prefs.edit().putString(KEY_UPDATE_PROXY_BASE_URL, normalizeUpdateProxyBaseUrl(value)).apply()
+    }
+
+    fun isUpdateAutoCheckOnStartupEnabled(): Boolean =
+        prefs.getBoolean(KEY_UPDATE_AUTO_CHECK_ON_STARTUP_ENABLED, true)
+
+    fun saveUpdateAutoCheckOnStartupEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UPDATE_AUTO_CHECK_ON_STARTUP_ENABLED, enabled).apply()
+    }
+
+    fun isUpdateAutoDeleteInstalledApkEnabled(): Boolean =
+        prefs.getBoolean(KEY_UPDATE_AUTO_DELETE_INSTALLED_APK_ENABLED, true)
+
+    fun saveUpdateAutoDeleteInstalledApkEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UPDATE_AUTO_DELETE_INSTALLED_APK_ENABLED, enabled).apply()
+    }
+
+    fun getPendingUpdateInstallVersionCode(): Int =
+        prefs.getInt(KEY_PENDING_UPDATE_INSTALL_VERSION_CODE, 0)
+
+    fun getPendingUpdateInstallApkPath(): String =
+        prefs.getString(KEY_PENDING_UPDATE_INSTALL_APK_PATH, null).orEmpty()
+
+    fun savePendingUpdateInstallApk(versionCode: Int, apkPath: String) {
+        prefs.edit()
+            .putInt(KEY_PENDING_UPDATE_INSTALL_VERSION_CODE, versionCode.coerceAtLeast(0))
+            .putString(KEY_PENDING_UPDATE_INSTALL_APK_PATH, apkPath)
+            .apply()
+    }
+
+    fun clearPendingUpdateInstallApk() {
+        prefs.edit()
+            .remove(KEY_PENDING_UPDATE_INSTALL_VERSION_CODE)
+            .remove(KEY_PENDING_UPDATE_INSTALL_APK_PATH)
+            .apply()
     }
 
     fun getStrmTreeUri(): String? = prefs.getString(KEY_STRM_TREE_URI, null)
@@ -115,11 +184,33 @@ class AppSettingsRepository(context: Context) {
 
     fun getDefaultScrapeSource(): ScrapeSource {
         val stored = prefs.getString(KEY_DEFAULT_SCRAPE_SOURCE, null)
-        return ScrapeSource.entries.firstOrNull { it.name == stored } ?: ScrapeSource.Dmm2
+        return ScrapeSource.entries.firstOrNull { it.name == stored && it == ScrapeSource.Priority } ?: ScrapeSource.Priority
     }
 
     fun saveDefaultScrapeSource(source: ScrapeSource) {
-        prefs.edit().putString(KEY_DEFAULT_SCRAPE_SOURCE, source.name).apply()
+        prefs.edit().putString(KEY_DEFAULT_SCRAPE_SOURCE, ScrapeSource.Priority.name).apply()
+    }
+
+    fun getPriorityScrapeSources(): List<ScrapeSource> {
+        val stored = prefs.getString(KEY_PRIORITY_SCRAPE_SOURCES, null)
+            ?.split(",")
+            ?.mapNotNull { name ->
+                ScrapeSource.entries.firstOrNull { it.name == name.trim() }
+            }
+            ?.filter { it in PRIORITY_SCRAPE_SOURCE_OPTIONS }
+            ?.distinct()
+            .orEmpty()
+        return stored.ifEmpty { DEFAULT_PRIORITY_SCRAPE_SOURCES }
+    }
+
+    fun savePriorityScrapeSources(sources: List<ScrapeSource>) {
+        val normalized = sources
+            .filter { it in PRIORITY_SCRAPE_SOURCE_OPTIONS }
+            .distinct()
+            .ifEmpty { DEFAULT_PRIORITY_SCRAPE_SOURCES }
+        prefs.edit()
+            .putString(KEY_PRIORITY_SCRAPE_SOURCES, normalized.joinToString(",") { it.name })
+            .apply()
     }
 
     fun getImageDownloadRetryCount(): Int {
@@ -160,6 +251,92 @@ class AppSettingsRepository(context: Context) {
     fun removeDmm2SkippedNumberPrefix(prefix: String) {
         val normalized = prefix.normalizedNumberPrefixOrNull() ?: return
         saveDmm2SkippedNumberPrefixes(getDmm2SkippedNumberPrefixes() - normalized)
+    }
+
+    fun getRemoteScrapeConfigUrl(): String =
+        prefs.getString(KEY_REMOTE_SCRAPE_CONFIG_URL, null)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_REMOTE_SCRAPE_CONFIG_URL
+
+    fun saveRemoteScrapeConfigUrl(value: String) {
+        prefs.edit()
+            .putString(KEY_REMOTE_SCRAPE_CONFIG_URL, value.trim().ifBlank { DEFAULT_REMOTE_SCRAPE_CONFIG_URL })
+            .apply()
+    }
+
+    fun getCachedMgstageNumberPrefixes(): Set<String> =
+        prefs.getStringSet(KEY_CACHED_MGSTAGE_NUMBER_PREFIXES, DEFAULT_MGSTAGE_NUMBER_PREFIXES)
+            .orEmpty()
+            .mapNotNull { it.normalizedNumberPrefixOrNull() }
+            .toSet()
+
+    fun saveCachedMgstageNumberPrefixes(prefixes: Set<String>) {
+        prefs.edit()
+            .putStringSet(KEY_CACHED_MGSTAGE_NUMBER_PREFIXES, prefixes.mapNotNull { it.normalizedNumberPrefixOrNull() }.toSet())
+            .apply()
+    }
+
+    fun getCachedMgstageSearchPrefixAliases(): Map<String, String> =
+        prefs.getString(KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES, null)
+            ?.let { parseMgstageSearchPrefixAliases(it) }
+            ?.takeIf { it.isNotEmpty() }
+            ?: DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES
+
+    fun saveCachedMgstageSearchPrefixAliases(aliases: Map<String, String>) {
+        prefs.edit()
+            .putString(
+                KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES,
+                normalizeMgstageSearchPrefixAliases(aliases).toJsonObjectString()
+            )
+            .apply()
+    }
+
+    fun getCachedNumberRecognitionIgnoredSuffixes(): Set<String> =
+        prefs.getStringSet(KEY_CACHED_NUMBER_RECOGNITION_IGNORED_SUFFIXES, DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES)
+            .orEmpty()
+            .let(NumberRecognitionRules::normalizeIgnoredSuffixes)
+            .ifEmpty { DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES }
+
+    fun saveCachedNumberRecognitionIgnoredSuffixes(suffixes: Set<String>) {
+        val normalized = NumberRecognitionRules.normalizeIgnoredSuffixes(suffixes)
+            .ifEmpty { DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES }
+        prefs.edit()
+            .putStringSet(KEY_CACHED_NUMBER_RECOGNITION_IGNORED_SUFFIXES, normalized)
+            .apply()
+        NumberRecognitionRules.updateIgnoredSuffixes(normalized)
+    }
+
+    fun getCustomMgstageNumberPrefixes(): Set<String> =
+        prefs.getStringSet(KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES, emptySet())
+            .orEmpty()
+            .mapNotNull { it.normalizedMgstageNumberPrefixOrNull() }
+            .toSet()
+
+    fun saveCustomMgstageNumberPrefixes(prefixes: Set<String>) {
+        prefs.edit()
+            .putStringSet(KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES, prefixes.mapNotNull { it.normalizedMgstageNumberPrefixOrNull() }.toSet())
+            .apply()
+    }
+
+    fun addCustomMgstageNumberPrefix(prefix: String) {
+        val normalized = prefix.normalizedMgstageNumberPrefixOrNull() ?: return
+        saveCustomMgstageNumberPrefixes(getCustomMgstageNumberPrefixes() + normalized)
+    }
+
+    fun removeCustomMgstageNumberPrefix(prefix: String) {
+        val normalized = prefix.normalizedMgstageNumberPrefixOrNull() ?: return
+        saveCustomMgstageNumberPrefixes(getCustomMgstageNumberPrefixes() - normalized)
+    }
+
+    fun getMergedMgstageNumberPrefixes(): Set<String> =
+        getCachedMgstageNumberPrefixes() + getCustomMgstageNumberPrefixes()
+
+    fun getRemoteScrapeConfigLastFetchMillis(): Long =
+        prefs.getLong(KEY_REMOTE_SCRAPE_CONFIG_LAST_FETCH_MILLIS, 0L)
+
+    fun saveRemoteScrapeConfigLastFetchMillis(value: Long) {
+        prefs.edit().putLong(KEY_REMOTE_SCRAPE_CONFIG_LAST_FETCH_MILLIS, value.coerceAtLeast(0L)).apply()
     }
 
     fun getHomeSortOptionName(): String? = prefs.getString(KEY_HOME_SORT_OPTION, null)
@@ -380,6 +557,19 @@ class AppSettingsRepository(context: Context) {
         saveCloudExcludedVideoNames(getCloudExcludedVideoNames() - name)
     }
 
+    fun getCloudScrapeSkipBelowSizeMb(): Int =
+        prefs.getInt(KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB, DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
+            .coerceIn(0, MAX_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
+
+    fun saveCloudScrapeSkipBelowSizeMb(value: Int) {
+        prefs.edit()
+            .putInt(KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB, value.coerceIn(0, MAX_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB))
+            .apply()
+    }
+
+    fun getCloudScrapeSkipBelowSizeBytes(): Long =
+        getCloudScrapeSkipBelowSizeMb().toLong() * 1024L * 1024L
+
     fun getAsrModelId(): String =
         prefs.getString(KEY_ASR_MODEL_ID, null)
             ?.trim()
@@ -402,21 +592,6 @@ class AppSettingsRepository(context: Context) {
             KEY_ASR_MODEL_BASE_URL,
             value.trim().trimEnd('/').ifBlank { DEFAULT_ASR_MODEL_BASE_URL }
         ).apply()
-    }
-
-    fun isDetailThumbBackgroundEnabled(): Boolean =
-        prefs.getBoolean(KEY_DETAIL_THUMB_BACKGROUND_ENABLED, false)
-
-    fun saveDetailThumbBackgroundEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_DETAIL_THUMB_BACKGROUND_ENABLED, enabled).apply()
-    }
-
-    fun getDetailThumbBackgroundAlphaPercent(): Int =
-        prefs.getInt(KEY_DETAIL_THUMB_BACKGROUND_ALPHA, DEFAULT_DETAIL_THUMB_BACKGROUND_ALPHA)
-            .coerceIn(0, 100)
-
-    fun saveDetailThumbBackgroundAlphaPercent(percent: Int) {
-        prefs.edit().putInt(KEY_DETAIL_THUMB_BACKGROUND_ALPHA, percent.coerceIn(0, 100)).apply()
     }
 
     fun isPlayerLiveSubtitleEnabled(): Boolean =
@@ -478,11 +653,46 @@ class AppSettingsRepository(context: Context) {
     private fun externalSubtitleKey(prefix: String, mediaKey: String): String =
         prefix + mediaKey.sha256()
 
+    private fun normalizeUpdateProxyBaseUrl(value: String): String {
+        val trimmed = value.trim()
+        if (trimmed.isBlank()) return ""
+        return trimmed.trimEnd('/') + "/"
+    }
+
     private fun String.normalizedNumberPrefixOrNull(): String? =
         trim()
             .uppercase()
             .filter { it.isLetterOrDigit() }
             .takeIf { it.isNotBlank() }
+
+    private fun String.normalizedMgstageNumberPrefixOrNull(): String? =
+        normalizedNumberPrefixOrNull()
+            ?.takeIf { value -> value.any { it.isLetter() } }
+
+    private fun parseMgstageSearchPrefixAliases(jsonText: String): Map<String, String>? =
+        runCatching {
+            val json = JSONObject(jsonText)
+            json.keys().asSequence()
+                .mapNotNull { key ->
+                    val normalizedKey = key.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
+                    val normalizedValue = json.optString(key).normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
+                    normalizedKey to normalizedValue
+                }
+                .toMap()
+        }.getOrNull()
+
+    private fun normalizeMgstageSearchPrefixAliases(aliases: Map<String, String>): Map<String, String> =
+        aliases.mapNotNull { (key, value) ->
+            val normalizedKey = key.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
+            val normalizedValue = value.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
+            normalizedKey to normalizedValue
+        }.toMap()
+
+    private fun Map<String, String>.toJsonObjectString(): String {
+        val json = JSONObject()
+        forEach { (key, value) -> json.put(key, value) }
+        return json.toString()
+    }
 
     private fun String.sha256(): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(toByteArray(Charsets.UTF_8))
@@ -507,14 +717,33 @@ class AppSettingsRepository(context: Context) {
         const val KEY_LIBRARY_ROOT_URI = "library_root_uri"
         const val KEY_LIBRARY_ROOT_URI_HISTORY = "library_root_uri_history"
         const val KEY_MISSAV_COOKIES = "missav_cookies"
+        const val KEY_MISSAV_SCRAPE_LANGUAGE = "missav_scrape_language"
         const val KEY_JAVZIMU_COOKIES = "javzimu_cookies"
         const val KEY_AVSUBTITLES_COOKIES = "avsubtitles_cookies"
         const val KEY_SUBTITLE_SEARCH_PROVIDER = "subtitle_search_provider"
         const val KEY_CLOUD115_LOGIN_APP = "cloud115_login_app"
+        const val KEY_UPDATE_MANIFEST_URL = "update_manifest_url"
+        const val DEFAULT_UPDATE_MANIFEST_URL =
+            "https://github.com/water2100/HomeMovie/releases/latest/download/latest.json"
+        const val KEY_UPDATE_PROXY_BASE_URL = "update_proxy_base_url"
+        const val DEFAULT_UPDATE_PROXY_BASE_URL = "https://v4.gh-proxy.org/"
+        const val KEY_UPDATE_AUTO_CHECK_ON_STARTUP_ENABLED = "update_auto_check_on_startup_enabled"
+        const val KEY_UPDATE_AUTO_DELETE_INSTALLED_APK_ENABLED = "update_auto_delete_installed_apk_enabled"
+        const val KEY_PENDING_UPDATE_INSTALL_VERSION_CODE = "pending_update_install_version_code"
+        const val KEY_PENDING_UPDATE_INSTALL_APK_PATH = "pending_update_install_apk_path"
         const val KEY_DEFAULT_SCRAPE_SOURCE = "default_scrape_source"
+        const val KEY_PRIORITY_SCRAPE_SOURCES = "priority_scrape_sources"
         const val KEY_IMAGE_DOWNLOAD_RETRY_COUNT = "image_download_retry_count"
         const val KEY_SCRAPE_CONCURRENCY_LIMIT = "scrape_concurrency_limit"
         const val KEY_DMM2_SKIPPED_NUMBER_PREFIXES = "dmm2_skipped_number_prefixes"
+        const val KEY_REMOTE_SCRAPE_CONFIG_URL = "remote_scrape_config_url"
+        const val DEFAULT_REMOTE_SCRAPE_CONFIG_URL =
+            "https://github.com/water2100/HomeMovie/releases/latest/download/scrape-config.json"
+        const val KEY_CACHED_MGSTAGE_NUMBER_PREFIXES = "cached_mgstage_number_prefixes"
+        const val KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES = "cached_mgstage_search_prefix_aliases"
+        const val KEY_CACHED_NUMBER_RECOGNITION_IGNORED_SUFFIXES = "cached_number_recognition_ignored_suffixes"
+        const val KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES = "custom_mgstage_number_prefixes"
+        const val KEY_REMOTE_SCRAPE_CONFIG_LAST_FETCH_MILLIS = "remote_scrape_config_last_fetch_millis"
         const val KEY_HOME_SORT_OPTION = "home_sort_option"
         const val KEY_HOME_SORT_DIRECTION = "home_sort_direction"
         const val KEY_HOME_IMAGE_MODE = "home_image_mode"
@@ -533,10 +762,9 @@ class AppSettingsRepository(context: Context) {
         const val KEY_LIBRARY_NOMEDIA_ENABLED = "library_nomedia_enabled"
         const val KEY_CLOUD_ADD_BUTTON_MESSAGE_ENABLED = "cloud_add_button_message_enabled"
         const val KEY_CLOUD_EXCLUDED_VIDEO_NAMES = "cloud_excluded_video_names"
+        const val KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = "cloud_scrape_skip_below_size_mb"
         const val KEY_ASR_MODEL_ID = "asr_model_id"
         const val KEY_ASR_MODEL_BASE_URL = "asr_model_base_url"
-        const val KEY_DETAIL_THUMB_BACKGROUND_ENABLED = "detail_thumb_background_enabled"
-        const val KEY_DETAIL_THUMB_BACKGROUND_ALPHA = "detail_thumb_background_alpha"
         const val KEY_PLAYER_LIVE_SUBTITLE_ENABLED = "player_live_subtitle_enabled"
         const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
         const val KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = "external_subtitle_bottom_padding_percent"
@@ -546,8 +774,55 @@ class AppSettingsRepository(context: Context) {
         const val DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT = 5
         const val DEFAULT_SCRAPE_CONCURRENCY_LIMIT = 2
         const val MAX_SCRAPE_CONCURRENCY_LIMIT = 4
+        const val DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = 100
+        const val MAX_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = 102400
+        val PRIORITY_SCRAPE_SOURCE_OPTIONS = listOf(
+            ScrapeSource.Dmm2,
+            ScrapeSource.Dmm,
+            ScrapeSource.Official,
+            ScrapeSource.Mgstage,
+            ScrapeSource.Javbus,
+            ScrapeSource.Missav
+        )
+        val DEFAULT_PRIORITY_SCRAPE_SOURCES = listOf(ScrapeSource.Dmm2, ScrapeSource.Dmm, ScrapeSource.Javbus)
         val DEFAULT_DMM2_SKIPPED_NUMBER_PREFIXES = setOf("ABF", "ABW", "ABP", "REBDB", "TRE", "PPT", "CHN", "BGN")
-        const val DEFAULT_DETAIL_THUMB_BACKGROUND_ALPHA = 32
+        val DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES = mapOf(
+            "SHN" to "116SHN",
+            "DANDY" to "104DANDY",
+            "GANA" to "200GANA",
+            "CUTE" to "229SCUTE",
+            "LUXU" to "259LUXU",
+            "ARA" to "261ARA",
+            "DCV" to "277DCV",
+            "MY" to "292MY",
+            "EWDX" to "299EWDX",
+            "MAAN" to "300MAAN",
+            "MIUM" to "300MIUM",
+            "NTK" to "300NTK",
+            "KIRAY" to "314KIRAY",
+            "KJO" to "326KJO",
+            "NAMA" to "332NAMA",
+            "KNB" to "336KNB",
+            "SIMM" to "345SIMM",
+            "NTR" to "348NTR",
+            "ICHK" to "368ICHK",
+            "JAC" to "390JAC",
+            "KIWVR" to "408KIWVR",
+            "INST" to "413INST",
+            "SRYA" to "417SRYA",
+            "SUKE" to "428SUKE",
+            "MFC" to "435MFC",
+            "HHH" to "451HHH",
+            "TEN" to "459TEN",
+            "MLA" to "476MLA",
+            "SGK" to "483SGK",
+            "GCB" to "485GCB",
+            "SEI" to "502SEI",
+            "STCV" to "529STCV"
+        )
+        val DEFAULT_MGSTAGE_NUMBER_PREFIXES =
+            DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.keys + DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.values + setOf("SIRO")
+        val DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES = NumberRecognitionRules.DEFAULT_IGNORED_SUFFIXES
         const val DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 22
         const val MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 14
         const val MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 40

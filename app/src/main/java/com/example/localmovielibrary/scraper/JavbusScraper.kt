@@ -198,7 +198,7 @@ class JavbusScraper(
     private fun normalizeNumber(number: String): String {
         val match = Regex("""(?i)([a-z]{2,12})[-_ ]?(\d{2,6})""").find(number)
             ?: return number.trim().uppercase(Locale.ROOT)
-        val digits = match.groupValues[2].trimStart('0').ifBlank { "0" }
+        val digits = match.groupValues[2].trimStart('0').ifBlank { "0" }.padStart(3, '0')
         return "${match.groupValues[1].uppercase(Locale.ROOT)}-$digits"
     }
 

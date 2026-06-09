@@ -11,6 +11,7 @@ import com.example.localmovielibrary.data.local.MovieDao
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.data.local.MovieListItem
 import com.example.localmovielibrary.data.local.MoviePlaybackKeyItem
+import com.example.localmovielibrary.data.local.ScrapeTaskStatus
 import kotlinx.coroutines.flow.map
 import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.scanner.LibraryScanner
@@ -233,7 +234,9 @@ class MovieRepository(
                         isFavorite = old.isFavorite,
                         isWatched = old.isWatched,
                         scannedAtMillis = old.scannedAtMillis,
-                        updatedAt = old.updatedAt
+                        updatedAt = old.updatedAt,
+                        scrapeFailureReason = scanned.resolvedScrapeFailureReason(old),
+                        scrapeTaskStatus = scanned.resolvedScrapeTaskStatus(old)
                     )
                 }
             }
@@ -372,36 +375,87 @@ class MovieRepository(
     suspend fun deleteMovieWithFiles(movieId: Long): DeleteMovieResult = withContext(Dispatchers.IO) {
         val movie = movieDao.getMovieLite(movieId)
         val pickcodes = linkedSetOf<String>()
-        if (movie != null && movie.videoName.endsWith(".strm", ignoreCase = true)) {
-            val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
-            val target = root?.let {
-                findFileWithParentFast(it, movie.libraryRootUri, movie.videoUri)
-                    ?: findFileWithParent(it, movie.videoUri)
-                    ?: findStrmWithParentByMovieNumber(it, movie)
-            }
-            if (target != null) {
-                val movieDirectory = target.parent.takeIf { it.uri != root.uri }
-                val actorDirectory = movieDirectory
-                    ?.parentFile
-                    ?.takeIf { it.uri != root.uri }
-                val filesToRead = if (target.parent.uri != root.uri) {
-                    target.parent.listFiles().filter { it.isFile && it.name.orEmpty().endsWith(".strm", ignoreCase = true) }
-                } else {
-                    listOf(target.file)
+        runCatching {
+            if (movie != null && movie.videoName.endsWith(".strm", ignoreCase = true)) {
+                val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
+                val target = root?.let {
+                    findFileWithParentFast(it, movie.libraryRootUri, movie.videoUri)
+                        ?: findFileWithParent(it, movie.videoUri)
+                        ?: findStrmWithParentByMovieNumber(it, movie)
                 }
-                filesToRead.forEach { file ->
-                    readPickcode(file)?.let { pickcodes += it }
-                }
-                if (target.parent.uri != root.uri) {
-                    deleteRecursively(target.parent)
-                    cleanupEmptyActorDirectory(actorDirectory, root)
-                } else {
-                    target.file.delete()
+                if (target != null) {
+                    val movieDirectory = target.parent.takeIf { it.uri != root.uri }
+                    val actorDirectory = movieDirectory
+                        ?.parentFile
+                        ?.takeIf { it.uri != root.uri }
+                    val filesToRead = if (target.parent.uri != root.uri) {
+                        target.parent.listFiles().filter { it.isFile && it.name.orEmpty().endsWith(".strm", ignoreCase = true) }
+                    } else {
+                        listOf(target.file)
+                    }
+                    filesToRead.forEach { file ->
+                        readPickcode(file)?.let { pickcodes += it }
+                    }
+                    if (target.parent.uri != root.uri) {
+                        deleteRecursively(target.parent)
+                        cleanupEmptyActorDirectory(actorDirectory, root)
+                    } else {
+                        target.file.delete()
+                    }
                 }
             }
         }
         movieDao.deleteById(movieId)
         DeleteMovieResult(movieId = movieId, pickcodes = pickcodes)
+    }
+
+    suspend fun renameMovieStrmFile(movieId: Long, newFileName: String): RenameMovieFileResult = withContext(Dispatchers.IO) {
+        val old = movieDao.getMovieLite(movieId) ?: error("影片记录不存在")
+        if (!old.videoName.endsWith(".strm", ignoreCase = true)) {
+            error("当前影片不是 STRM 文件，暂不支持重命名")
+        }
+        val normalizedFileName = normalizeStrmFileName(newFileName)
+        val rootUri = Uri.parse(old.libraryRootUri)
+        val root = DocumentFile.fromTreeUri(context, rootUri) ?: error("影片库目录不可用")
+        if (!root.canWrite()) error("影片库目录没有写入权限")
+        val target = findFileWithParentFast(root, old.libraryRootUri, old.videoUri)
+            ?: findFileWithParent(root, old.videoUri)
+            ?: findStrmWithParentByMovieNumber(root, old)
+            ?: error("当前 STRM 文件不存在")
+
+        val oldName = target.file.name.orEmpty()
+        if (oldName.equals(normalizedFileName, ignoreCase = false)) {
+            return@withContext RenameMovieFileResult(movie = old, oldFileName = oldName, newFileName = oldName)
+        }
+        val existing = target.parent.findFile(normalizedFileName)
+        if (existing != null && existing.uri != target.file.uri) {
+            error("同目录已存在：$normalizedFileName")
+        }
+        val pickcodes = (cloudStrmRecordDao.getByMovieId(old.id).map { it.pickcode } + listOfNotNull(readPickcode(target.file)))
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (!target.file.renameTo(normalizedFileName)) {
+            error("重命名失败，请检查影片库目录写入权限")
+        }
+        val renamedFile = target.parent.findFile(normalizedFileName)
+            ?: target.parent.listFiles().firstOrNull { it.isFile && it.name == normalizedFileName }
+            ?: target.file
+        val refreshed = scanner.scanFile(rootUri, renamedFile.uri)
+            ?: error("重命名成功，但重新扫描 STRM 失败")
+        val movie = refreshed.copy(
+            id = old.id,
+            isFavorite = old.isFavorite,
+            isWatched = old.isWatched,
+            scannedAtMillis = old.scannedAtMillis,
+            updatedAt = System.currentTimeMillis(),
+            scrapeFailureReason = null,
+            scrapeTaskStatus = ScrapeTaskStatus.None.name
+        )
+        movieDao.upsert(movie)
+        pickcodes.forEach { pickcode ->
+            updateCloudStrmRecordLocation(pickcode, movie, movie.libraryRootUri)
+        }
+        RenameMovieFileResult(movie = movie, oldFileName = oldName, newFileName = movie.videoName)
     }
 
     suspend fun refreshMovie(movieId: Long): Boolean = withContext(Dispatchers.IO) {
@@ -418,7 +472,9 @@ class MovieRepository(
                 id = old.id,
                 isFavorite = old.isFavorite,
                 isWatched = old.isWatched,
-                updatedAt = System.currentTimeMillis()
+                updatedAt = System.currentTimeMillis(),
+                scrapeFailureReason = refreshed.resolvedScrapeFailureReason(old),
+                scrapeTaskStatus = refreshed.resolvedScrapeTaskStatus(old)
             )
         )
         true
@@ -438,7 +494,9 @@ class MovieRepository(
             isFavorite = old.isFavorite,
             isWatched = old.isWatched,
             scannedAtMillis = old.scannedAtMillis,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            scrapeFailureReason = refreshed.resolvedScrapeFailureReason(old),
+            scrapeTaskStatus = refreshed.resolvedScrapeTaskStatus(old)
         )
         movieDao.upsert(movie)
         movie
@@ -461,7 +519,9 @@ class MovieRepository(
                 isFavorite = it.isFavorite,
                 isWatched = it.isWatched,
                 scannedAtMillis = it.scannedAtMillis,
-                updatedAt = it.updatedAt
+                updatedAt = it.updatedAt,
+                scrapeFailureReason = scanned.resolvedScrapeFailureReason(it),
+                scrapeTaskStatus = scanned.resolvedScrapeTaskStatus(it)
             )
         } ?: scanned
         movieDao.upsert(movie)
@@ -470,6 +530,106 @@ class MovieRepository(
             updateCloudStrmRecordLocation(pickcode, saved, rootUri.toString())
         }
         saved
+    }
+
+    suspend fun setScrapeFailureReason(movieId: Long, reason: String?) = withContext(Dispatchers.IO) {
+        movieDao.setScrapeFailureReason(movieId, reason?.trim()?.takeIf { it.isNotBlank() }, System.currentTimeMillis())
+    }
+
+    fun observeUnfinishedScrapeTaskCount(): Flow<Int> =
+        movieDao.observeScrapeTaskCount(ScrapeTaskStatus.unfinishedNames)
+            .distinctUntilChanged()
+
+    suspend fun scrapeTaskSummary(): ScrapeTaskSummary = withContext(Dispatchers.IO) {
+        ScrapeTaskSummary(
+            pending = movieDao.countScrapeTasks(ScrapeTaskStatus.Pending.name),
+            running = movieDao.countScrapeTasks(ScrapeTaskStatus.Running.name),
+            failed = movieDao.countScrapeTasks(ScrapeTaskStatus.Failed.name),
+            completed = movieDao.countScrapeTasks(ScrapeTaskStatus.Completed.name)
+        )
+    }
+
+    suspend fun getManualScrapeTaskMovies(): List<MovieEntity> = withContext(Dispatchers.IO) {
+        movieDao.getScrapeTaskMovies(ScrapeTaskStatus.unfinishedNames)
+    }
+
+    suspend fun markScrapeTaskPending(movieId: Long) = withContext(Dispatchers.IO) {
+        movieDao.setScrapeTaskStatusAndFailureReason(
+            movieId,
+            ScrapeTaskStatus.Pending.name,
+            null,
+            System.currentTimeMillis()
+        )
+    }
+
+    suspend fun markScrapeTaskRunning(movieId: Long) = withContext(Dispatchers.IO) {
+        movieDao.setScrapeTaskStatus(movieId, ScrapeTaskStatus.Running.name, System.currentTimeMillis())
+    }
+
+    suspend fun markScrapeTaskCompleted(movieId: Long) = withContext(Dispatchers.IO) {
+        movieDao.setScrapeTaskStatusAndFailureReason(
+            movieId,
+            ScrapeTaskStatus.Completed.name,
+            null,
+            System.currentTimeMillis()
+        )
+    }
+
+    suspend fun markScrapeTaskFailed(movieId: Long, reason: String) = withContext(Dispatchers.IO) {
+        movieDao.setScrapeTaskStatusAndFailureReason(
+            movieId,
+            ScrapeTaskStatus.Failed.name,
+            reason.trim().takeIf { it.isNotBlank() },
+            System.currentTimeMillis()
+        )
+    }
+
+    suspend fun resetFailedScrapeTasks(): Int = withContext(Dispatchers.IO) {
+        movieDao.updateScrapeTaskStatuses(
+            fromStatuses = listOf(ScrapeTaskStatus.Failed.name),
+            toStatus = ScrapeTaskStatus.Pending.name,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    suspend fun clearFinishedScrapeTasks(): Int = withContext(Dispatchers.IO) {
+        movieDao.updateScrapeTaskStatuses(
+            fromStatuses = listOf(ScrapeTaskStatus.Completed.name),
+            toStatus = ScrapeTaskStatus.None.name,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    suspend fun countUnfinishedScrapeTasks(): Int = withContext(Dispatchers.IO) {
+        movieDao.countScrapeTasks(ScrapeTaskStatus.unfinishedNames)
+    }
+
+    suspend fun refreshMovieAfterScrape(
+        original: MovieEntity,
+        scrapedStrmUri: String,
+        mergeByMovieNumber: Boolean = true
+    ): MovieEntity? = withContext(Dispatchers.IO) {
+        val records = if (original.id > 0L) cloudStrmRecordDao.getByMovieId(original.id) else emptyList()
+        val pickcodes = (records.map { it.pickcode } + listOfNotNull(original.extractPickcodeFromStrm()))
+            .filter { it.isNotBlank() }
+            .toSet()
+        val refreshed = scanSingleMovie(
+            rootUri = Uri.parse(original.libraryRootUri),
+            videoUri = Uri.parse(scrapedStrmUri),
+            mergeByMovieNumber = mergeByMovieNumber
+        )
+        if (refreshed != null) {
+            if (
+                original.id != refreshed.id &&
+                original.videoUri != refreshed.videoUri
+            ) {
+                movieDao.deleteById(original.id)
+            }
+            pickcodes.forEach { pickcode ->
+                updateCloudStrmRecordLocation(pickcode, refreshed, refreshed.libraryRootUri)
+            }
+        }
+        refreshed
     }
 
     suspend fun findMovieByNumber(rootUri: String, number: String): MovieEntity? = withContext(Dispatchers.IO) {
@@ -545,6 +705,12 @@ class MovieRepository(
         runCatching {
             context.contentResolver.openInputStream(Uri.parse(uriString))?.use { true } == true
         }.getOrDefault(false)
+
+    private fun MovieEntity.resolvedScrapeFailureReason(old: MovieEntity): String? =
+        if (nfoUri != null) null else old.scrapeFailureReason
+
+    private fun MovieEntity.resolvedScrapeTaskStatus(old: MovieEntity): String =
+        if (nfoUri != null) ScrapeTaskStatus.Completed.name else old.scrapeTaskStatus
 
     private fun findFileWithParent(directory: DocumentFile, videoUri: String): FileWithParent? {
         directory.listFiles().forEach { child ->
@@ -716,6 +882,17 @@ class MovieRepository(
         )
     }
 
+    private fun normalizeStrmFileName(value: String): String {
+        val trimmed = value.trim()
+        if (trimmed.isBlank()) error("请输入新的 STRM 文件名")
+        if (trimmed.any { it == '/' || it == '\\' || it == ':' || it == '*' || it == '?' || it == '"' || it == '<' || it == '>' || it == '|' || it == '\r' || it == '\n' }) {
+            error("文件名不能包含 / \\ : * ? \" < > |")
+        }
+        val fileName = if (trimmed.endsWith(".strm", ignoreCase = true)) trimmed else "$trimmed.strm"
+        if (fileName.equals(".strm", ignoreCase = true)) error("请输入有效文件名")
+        return fileName
+    }
+
     private fun deleteRecursively(file: DocumentFile) {
         if (file.isDirectory) {
             file.listFiles().forEach { deleteRecursively(it) }
@@ -834,9 +1011,25 @@ data class MoviePlaybackPart(
     val fileName: String
 )
 
+data class ScrapeTaskSummary(
+    val pending: Int = 0,
+    val running: Int = 0,
+    val failed: Int = 0,
+    val completed: Int = 0
+) {
+    val unfinished: Int
+        get() = pending + running + failed
+}
+
 data class DeleteMovieResult(
     val movieId: Long,
     val pickcodes: Set<String>
+)
+
+data class RenameMovieFileResult(
+    val movie: MovieEntity,
+    val oldFileName: String,
+    val newFileName: String
 )
 
 private data class FileWithParent(

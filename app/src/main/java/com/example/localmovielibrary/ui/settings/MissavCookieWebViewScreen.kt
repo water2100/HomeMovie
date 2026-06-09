@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.scraper.MissavScraper
 import org.json.JSONArray
 
@@ -36,6 +37,7 @@ import org.json.JSONArray
 @Composable
 fun MissavCookieWebViewScreen(
     number: String,
+    scrapeLanguage: MissavScrapeLanguage = MissavScrapeLanguage.Default,
     onBack: () -> Unit,
     onSaveCookie: (String) -> Unit
 ) {
@@ -43,7 +45,7 @@ fun MissavCookieWebViewScreen(
     var statusText by remember {
         mutableStateOf("请在此页面打开一次 MissAV。获取到 Cookie 后会自动保存，后续刮削会在后台继续。")
     }
-    val missavUrl = remember(number) { "https://missav.ai/cn/${number.lowercase()}" }
+    val missavUrl = remember(number, scrapeLanguage) { scrapeLanguage.movieUrl(number) }
     BackHandler { onBack() }
 
     fun trySaveCookie(view: WebView?) {
@@ -139,6 +141,7 @@ private fun collectMissavCookies(): String {
     CookieManager.getInstance().flush()
     val cookies = listOf(
         CookieManager.getInstance().getCookie(MISSAV_HOME).orEmpty(),
+        CookieManager.getInstance().getCookie("$MISSAV_HOME/ja").orEmpty(),
         CookieManager.getInstance().getCookie("$MISSAV_HOME/cn").orEmpty(),
         CookieManager.getInstance().getCookie("https://www.missav.ai").orEmpty()
     )

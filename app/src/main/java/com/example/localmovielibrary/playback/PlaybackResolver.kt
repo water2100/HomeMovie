@@ -8,11 +8,16 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class PlaybackResolver(
     private val contentResolver: ContentResolver,
     private val directLinkRepository: DirectLinkRepository,
-    private val httpClient: OkHttpClient = OkHttpClient()
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
+        .build()
 ) {
     private val strmParser = StrmParser(contentResolver)
     private val m3uParser = M3uParser()

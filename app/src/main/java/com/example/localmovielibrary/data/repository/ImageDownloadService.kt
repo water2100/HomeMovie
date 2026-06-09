@@ -38,19 +38,21 @@ class ImageDownloadService(
     }
 
     private fun buildRequest(url: String, referer: String?): Request {
-        val builder = Request.Builder().url(url)
-        if ("awsimgsrc.dmm.co.jp" !in url) {
-            builder
-                .header("User-Agent", IMAGE_USER_AGENT)
-                .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-        }
-        if (!referer.isNullOrBlank()) {
-            builder.header("Referer", referer)
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", IMAGE_USER_AGENT)
+            .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            .header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
+        val effectiveReferer = referer?.takeIf { it.isNotBlank() }
+            ?: DMM_IMAGE_REFERER.takeIf { url.contains("dmm.co.jp", ignoreCase = true) }
+        if (!effectiveReferer.isNullOrBlank()) {
+            builder.header("Referer", effectiveReferer)
         }
         return builder.build()
     }
 
     private companion object {
         const val IMAGE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        const val DMM_IMAGE_REFERER = "https://www.dmm.co.jp/"
     }
 }

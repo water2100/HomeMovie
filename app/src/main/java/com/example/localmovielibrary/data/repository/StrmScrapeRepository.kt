@@ -8,6 +8,7 @@ import com.example.localmovielibrary.scraper.ActorAvatarStore
 import com.example.localmovielibrary.scraper.Dmm2Scraper
 import com.example.localmovielibrary.scraper.DmmScraper
 import com.example.localmovielibrary.scraper.JavbusScraper
+import com.example.localmovielibrary.scraper.MgstageScraper
 import com.example.localmovielibrary.scraper.MissavScraper
 import com.example.localmovielibrary.scraper.MovieNumberExtractor
 import com.example.localmovielibrary.scraper.MovieScraperRegistry
@@ -18,6 +19,7 @@ import com.example.localmovielibrary.scraper.ScrapeLogStore
 import com.example.localmovielibrary.scraper.ScrapeRunResult
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.scraper.ScrapedMovieInfo
+import com.example.localmovielibrary.scraper.normalizeMgstageSearchNumber
 import com.example.localmovielibrary.util.MovieVariant
 import com.example.localmovielibrary.util.detectMovieVariant
 import com.example.localmovielibrary.util.displayNumberWithVariant
@@ -47,17 +49,24 @@ class StrmScrapeRepository(
     private val logStore: ScrapeLogStore = ScrapeLogStore(context),
     private val httpClient: OkHttpClient = OkHttpClient(),
     private val networkProbe: NetworkProbe = NetworkProbe(ioDispatcher = ioDispatcher),
+    private val remoteScrapeConfigRepository: RemoteScrapeConfigRepository = RemoteScrapeConfigRepository(
+        settingsRepository = settingsRepository,
+        client = httpClient,
+        ioDispatcher = ioDispatcher
+    ),
     private val dmmScraper: DmmScraper = DmmScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val dmm2Scraper: Dmm2Scraper = Dmm2Scraper(client = httpClient, ioDispatcher = ioDispatcher, logger = logStore::append),
     private val officialScraper: OfficialScraper = OfficialScraper(client = httpClient, ioDispatcher = ioDispatcher),
+    private val mgstageScraper: MgstageScraper = MgstageScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javbusScraper: JavbusScraper = JavbusScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val missavScraper: MissavScraper = MissavScraper(
         cookieProvider = settingsRepository::getMissavCookies,
+        languageProvider = settingsRepository::getMissavScrapeLanguage,
         client = httpClient,
         ioDispatcher = ioDispatcher
     ),
     private val scraperRegistry: MovieScraperRegistry = MovieScraperRegistry(
-        listOf(dmmScraper, dmm2Scraper, officialScraper, javbusScraper, missavScraper)
+        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, missavScraper)
     ),
     private val imageDownloadService: ImageDownloadService = ImageDownloadService(
         httpClient = httpClient,
@@ -197,6 +206,12 @@ class StrmScrapeRepository(
 
     fun getDefaultScrapeSource(): ScrapeSource = settingsRepository.getDefaultScrapeSource()
 
+    suspend fun refreshMgstageNumberPrefixes(): Set<String> =
+        remoteScrapeConfigRepository.getMgstageNumberPrefixes(forceRefresh = true)
+
+    suspend fun refreshNumberRecognitionRules(forceRefresh: Boolean = false): Set<String> =
+        remoteScrapeConfigRepository.refreshNumberRecognitionRules(forceRefresh = forceRefresh)
+
     suspend fun canReachGoogle(): Boolean = withContext(ioDispatcher) {
         var reachable = false
         logStore.append("Start Google connectivity check, timeout 5s")
@@ -239,16 +254,12 @@ class StrmScrapeRepository(
         source: ScrapeSource,
         forceDistinct: Boolean
     ): ScrapedMovieWriteResult {
-        val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
+        val number = extractMovieNumberWithRules(target.file.name.orEmpty())
             ?: error("无法从文件名提取番号：${target.file.name}")
 
-        dmm2SkipMessage(source, number)?.let { message ->
-            logStore.append("Skipped: $message")
-            error(message)
-        }
         logStore.append("Start scrape: file=${target.file.name}, number=$number, source=${source.label}")
         appendMovieDivider("Start movie scrape", number, target.file.name.orEmpty(), source)
-        val info = scraperRegistry.scrape(source, number)
+        val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
         logStore.append("Metadata fetched: ${info.title.ifBlank { number }}")
         val strmUri = writeOrganizedScrapeFiles(target, info, number, forceDistinct)
         downloadActorAvatars(info)
@@ -269,7 +280,7 @@ class StrmScrapeRepository(
                 logStore.append("MissAV WebView cookie saved")
             }
             val target = findTargetForMovie(movie)
-            val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
+            val number = extractMovieNumberWithRules(target.file.name.orEmpty())
                 ?: error("无法从文件名提取番号：${target.file.name}")
 
             logStore.append("Parse MissAV WebView HTML: $number")
@@ -287,17 +298,12 @@ class StrmScrapeRepository(
         serialMutex = source.serialScrapeMutex()
     ) {
         val target = findTargetForMovie(movie)
-        val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
-            ?: MovieNumberExtractor.extract(movie.title)
+        val number = extractMovieNumberWithRules(target.file.name.orEmpty(), movie.title)
             ?: error("无法从文件名提取番号：${target.file.name}")
 
-        dmm2SkipMessage(source, number)?.let { message ->
-            logStore.append("Skipped: $message")
-            error(message)
-        }
         logStore.append("Start rescrape: file=${target.file.name}, number=$number, source=${source.label}")
         appendMovieDivider("Start movie rescrape", number, target.file.name.orEmpty(), source)
-        val info = scraperRegistry.scrape(source, number)
+        val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
         logStore.append("Rescrape metadata fetched: ${info.title.ifBlank { number }}")
         rewriteScrapeFilesInPlace(target, info)
         downloadActorAvatars(info)
@@ -315,8 +321,7 @@ class StrmScrapeRepository(
                 logStore.append("MissAV WebView cookie saved")
             }
             val target = findTargetForMovie(movie)
-            val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
-                ?: MovieNumberExtractor.extract(movie.title)
+            val number = extractMovieNumberWithRules(target.file.name.orEmpty(), movie.title)
                 ?: error("无法从文件名提取番号：${target.file.name}")
 
             logStore.append("Parse MissAV WebView HTML for rescrape: $number")
@@ -354,13 +359,13 @@ class StrmScrapeRepository(
         var skipped = 0
         var failed = 0
         targets.forEach { target ->
-            val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
+            val number = extractMovieNumberWithRules(target.file.name.orEmpty())
             if (number == null) {
                 skipped += 1
                 logStore.append("Skipped: cannot extract number from ${target.file.name}")
                 return@forEach
             }
-            dmm2SkipMessage(source, number)?.let { message ->
+            if (source != ScrapeSource.Priority) dmm2SkipMessage(source, number)?.let { message ->
                 skipped += 1
                 logStore.append("Skipped: $message")
                 return@forEach
@@ -369,7 +374,7 @@ class StrmScrapeRepository(
             runCatching {
                 logStore.append("Scraping $number, file=${target.file.name}")
                 appendMovieDivider("Start batch movie scrape", number, target.file.name.orEmpty(), source)
-                val info = scraperRegistry.scrape(source, number)
+                val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
                 logStore.append("Metadata fetched: $number")
                 writeOrganizedScrapeFiles(target, info, number)
                 downloadActorAvatars(info)
@@ -385,9 +390,91 @@ class StrmScrapeRepository(
         result
     }
 
+    private suspend fun scrapeWithFallback(
+        requestedSource: ScrapeSource,
+        number: String,
+        fileName: String
+    ): ScrapedMovieInfo {
+        val sources = scrapeSourcesFor(requestedSource, number)
+        val failures = mutableListOf<String>()
+        sources.forEachIndexed { index, source ->
+            dmm2SkipMessage(source, number)?.let { message ->
+                failures += "${source.label}: $message"
+                logStore.append("Priority scrape skipped ${source.label}: $message")
+                return@forEachIndexed
+            }
+            if (requestedSource == ScrapeSource.Priority) {
+                logStore.append("优先级刮削尝试 ${index + 1}/${sources.size}：${source.label}，file=$fileName，number=$number")
+            }
+            runCatching {
+                scrapeSource(source, number, useSerialMutex = requestedSource == ScrapeSource.Priority)
+            }.onSuccess { info ->
+                if (requestedSource == ScrapeSource.Priority) {
+                    logStore.append("优先级刮削成功：${source.label} -> ${info.title.ifBlank { number }}")
+                }
+                return info.copy(source = info.source.ifBlank { source.label })
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                val message = error.message ?: error::class.java.simpleName
+                failures += "${source.label}: $message"
+                if (requestedSource == ScrapeSource.Priority) {
+                    logStore.append("优先级刮削失败：${source.label}，原因：$message")
+                }
+            }
+        }
+        if (requestedSource == ScrapeSource.Priority) {
+            error("优先级刮削全部失败：${failures.joinToString("；")}")
+        }
+        error(failures.lastOrNull()?.substringAfter(": ") ?: "${requestedSource.label} 刮削失败")
+    }
+
+    private suspend fun scrapeSource(
+        source: ScrapeSource,
+        number: String,
+        useSerialMutex: Boolean
+    ): ScrapedMovieInfo {
+        val scrapeNumber = if (source == ScrapeSource.Mgstage) {
+            remoteScrapeConfigRepository.getMgstageNumberPrefixes()
+            normalizeMgstageSearchNumber(
+                number,
+                remoteScrapeConfigRepository.getCachedMgstageSearchPrefixAliases()
+            )
+        } else {
+            number
+        }
+        val mutex = source.serialScrapeMutex().takeIf { useSerialMutex }
+        return if (mutex == null) {
+            scraperRegistry.scrape(source, scrapeNumber)
+        } else {
+            mutex.withLock { scraperRegistry.scrape(source, scrapeNumber) }
+        }
+    }
+
+    private suspend fun extractMovieNumberWithRules(vararg values: String?): String? {
+        refreshNumberRecognitionRules(forceRefresh = false)
+        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
+            MovieNumberExtractor.extract(value)?.let { return it }
+        }
+        refreshNumberRecognitionRules(forceRefresh = true)
+        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
+            MovieNumberExtractor.extract(value)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun scrapeSourcesFor(source: ScrapeSource, number: String): List<ScrapeSource> {
+        if (source != ScrapeSource.Priority) return listOf(source)
+        val configuredSources = settingsRepository.getPriorityScrapeSources()
+        val prefix = numberPrefix(number) ?: return configuredSources
+        val mgstagePrefixes = remoteScrapeConfigRepository.getMgstageNumberPrefixes()
+        if (prefix !in mgstagePrefixes) return configuredSources
+        logStore.append("MGStage 前缀规则命中：$prefix，优先使用 MGStage")
+        return (listOf(ScrapeSource.Mgstage) + configuredSources).distinct()
+    }
+
     private fun dmm2SkipMessage(source: ScrapeSource, number: String): String? {
         if (source != ScrapeSource.Dmm2) return null
-        val prefix = number.substringBefore('-', missingDelimiterValue = number).uppercase()
+        val prefix = numberPrefix(number) ?: return null
         if (prefix.isBlank()) return null
         return if (prefix in settingsRepository.getDmm2SkippedNumberPrefixes()) {
             "DMM2不支持${prefix}番号刮削"
@@ -398,8 +485,9 @@ class StrmScrapeRepository(
 
     suspend fun clearScrapeFiles(movie: MovieEntity): String = withContext(ioDispatcher) {
         val target = findTargetForMovie(movie)
-        val number = MovieNumberExtractor.extract(target.file.name.orEmpty())
-            ?: MovieNumberExtractor.extract(movie.title)
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
+            ?: error("影片库目录不可用")
+        val number = extractMovieNumberWithRules(target.file.name.orEmpty(), movie.title)
             ?: error("无法安全提取影片番号")
 
         logStore.append("Start clearing scrape files: $number")
@@ -411,10 +499,12 @@ class StrmScrapeRepository(
 
         if (isOrganizedFolder) {
             val parent = target.parentDirectory ?: error("无法定位父目录")
-            copyStrmFile(target.file, parent, restoredFileName)
-            logStore.append("STRM restored to parent: $restoredFileName")
+            val rootFileName = root.uniqueChildFileName(restoredFileName)
+            copyStrmFile(target.file, root, rootFileName)
+            logStore.append("STRM restored to library root: $rootFileName")
             deleteRecursively(target.directory)
             logStore.append("Deleted generated movie directory: ${target.directory.name}")
+            deleteEmptyDirectory(parent, root)
         } else {
             deleteMetadataFiles(target.directory, target.baseName)
             logStore.append("Deleted metadata files for baseName=${target.baseName}")
@@ -583,23 +673,24 @@ class StrmScrapeRepository(
             logStore.append("NFO written: $nfoName")
 
             val imageReferer = info.imageReferer()
-            val poster = info.posterUrl.ifBlank { info.thumbUrl }
-            if (poster.isNotBlank()) {
+            val posterUrls = info.posterDownloadUrls()
+            if (posterUrls.isNotEmpty()) {
                 val posterName = "$baseName-poster.jpg"
-                logStore.append("Download poster: $poster")
-                tryDownloadImageToFile(movieDirectory, posterName, poster, imageReferer, "Poster")
+                logStore.append("Download poster: ${posterUrls.first()}${posterUrls.candidateCountSuffix()}")
+                tryDownloadImageToFile(movieDirectory, posterName, posterUrls, imageReferer, "Poster")
             } else {
                 logStore.append("Poster URL is blank; skipped")
             }
 
-            if (info.thumbUrl.isNotBlank()) {
+            val thumbUrls = info.thumbDownloadUrls()
+            if (thumbUrls.isNotEmpty()) {
                 val thumbName = "$baseName-thumb.jpg"
-                logStore.append("Download thumb: ${info.thumbUrl}")
-                tryDownloadImageToFile(movieDirectory, thumbName, info.thumbUrl, imageReferer, "Thumb")
+                logStore.append("Download thumb: ${thumbUrls.first()}${thumbUrls.candidateCountSuffix()}")
+                tryDownloadImageToFile(movieDirectory, thumbName, thumbUrls, imageReferer, "Thumb")
 
                 val fanartName = "$baseName-fanart.jpg"
                 logStore.append("Copy thumb as fanart: $fanartName")
-                tryDownloadImageToFile(movieDirectory, fanartName, info.thumbUrl, imageReferer, "Fanart")
+                tryDownloadImageToFile(movieDirectory, fanartName, thumbUrls, imageReferer, "Fanart")
             } else {
                 logStore.append("Thumb URL is blank; skipped")
             }
@@ -625,28 +716,37 @@ class StrmScrapeRepository(
         val posterName = "$baseName-poster.jpg"
         val thumbName = "$baseName-thumb.jpg"
         val fanartName = "$baseName-fanart.jpg"
-        val hasPoster = directory.hasAnyFile(posterName, "poster.jpg", "movie-poster.jpg")
+        val hasStandardPoster = directory.findFile(posterName) != null
+        val hasPoster = hasStandardPoster || directory.hasAnyFile("poster.jpg", "movie-poster.jpg")
         val hasThumb = directory.hasAnyFile(thumbName, "thumb.jpg")
         val hasFanart = directory.hasAnyFile(fanartName, "fanart.jpg", "movie-fanart.jpg")
-        if (hasPoster && hasThumb && hasFanart) {
+        val shouldRefreshPoster = info.shouldRefreshDistinctPoster()
+        if (hasPoster && hasThumb && hasFanart && !shouldRefreshPoster) {
             logStore.append("poster/thumb/fanart already exist; skipped image downloads")
             deleteLegacyNfoXml(target)
             return
         }
 
         val imageReferer = info.imageReferer()
-        val poster = info.posterUrl.ifBlank { info.thumbUrl }
-        if (!hasPoster && poster.isNotBlank()) {
-            logStore.append("Poster missing; downloading: $poster")
-            tryDownloadImageToFile(directory, posterName, poster, imageReferer, "Poster")
+        val posterUrls = info.posterDownloadUrls()
+        val thumbUrls = info.thumbDownloadUrls()
+        if (((!hasStandardPoster && posterUrls.isNotEmpty()) || (shouldRefreshPoster && posterUrls.isNotEmpty()))) {
+            logStore.append(
+                if (hasStandardPoster) {
+                    "Poster refreshed: ${posterUrls.first()}${posterUrls.candidateCountSuffix()}"
+                } else {
+                    "Poster missing; downloading: ${posterUrls.first()}${posterUrls.candidateCountSuffix()}"
+                }
+            )
+            tryDownloadImageToFile(directory, posterName, posterUrls, imageReferer, "Poster")
         }
-        if (!hasThumb && info.thumbUrl.isNotBlank()) {
-            logStore.append("Thumb missing; downloading: ${info.thumbUrl}")
-            tryDownloadImageToFile(directory, thumbName, info.thumbUrl, imageReferer, "Thumb")
+        if (!hasThumb && thumbUrls.isNotEmpty()) {
+            logStore.append("Thumb missing; downloading: ${thumbUrls.first()}${thumbUrls.candidateCountSuffix()}")
+            tryDownloadImageToFile(directory, thumbName, thumbUrls, imageReferer, "Thumb")
         }
-        if (!hasFanart && info.thumbUrl.isNotBlank()) {
+        if (!hasFanart && thumbUrls.isNotEmpty()) {
             logStore.append("Fanart missing; using thumb: $fanartName")
-            tryDownloadImageToFile(directory, fanartName, info.thumbUrl, imageReferer, "Fanart")
+            tryDownloadImageToFile(directory, fanartName, thumbUrls, imageReferer, "Fanart")
         }
         deleteLegacyNfoXml(target)
     }
@@ -827,6 +927,23 @@ class StrmScrapeRepository(
         return file
     }
 
+    private fun DocumentFile.uniqueChildFileName(desiredName: String): String {
+        if (findFile(desiredName) == null) return desiredName
+        val baseName = desiredName.substringBeforeLast('.', desiredName)
+        val extension = desiredName.substringAfterLast('.', "").takeIf { it.isNotBlank() }
+        var index = 1
+        while (true) {
+            val candidate = buildString {
+                append(baseName)
+                append("-")
+                append(index)
+                extension?.let { append(".").append(it) }
+            }
+            if (findFile(candidate) == null) return candidate
+            index += 1
+        }
+    }
+
     private suspend fun downloadImageToFile(directory: DocumentFile, fileName: String, url: String, referer: String? = null) {
         val bytes = imageDownloadService.downloadImageBytes(url, referer)
         directory.findFile(fileName)?.delete()
@@ -843,14 +960,36 @@ class StrmScrapeRepository(
         url: String,
         referer: String?,
         label: String
+    ): Boolean = tryDownloadImageToFile(directory, fileName, listOf(url), referer, label)
+
+    private suspend fun tryDownloadImageToFile(
+        directory: DocumentFile,
+        fileName: String,
+        urls: List<String>,
+        referer: String?,
+        label: String
     ): Boolean {
-        return runCatching {
-            downloadImageToFile(directory, fileName, url, referer)
-        }.onSuccess {
-            logStore.append("$label written: $fileName")
-        }.onFailure { error ->
-            logStore.append("$label download failed; skipped image: ${error.message ?: error::class.java.simpleName}")
-        }.isSuccess
+        val candidates = urls.normalizedUrlList()
+        if (candidates.isEmpty()) return false
+        candidates.forEachIndexed { index, url ->
+            runCatching {
+                downloadImageToFile(directory, fileName, url, referer)
+            }.onSuccess {
+                if (index > 0) {
+                    logStore.append("$label fallback succeeded (${index + 1}/${candidates.size}): $url")
+                }
+                logStore.append("$label written: $fileName")
+                return true
+            }.onFailure { error ->
+                val message = error.message ?: error::class.java.simpleName
+                if (index < candidates.lastIndex) {
+                    logStore.append("$label download failed (${index + 1}/${candidates.size}), trying next: $message")
+                } else {
+                    logStore.append("$label download failed; skipped image: $message")
+                }
+            }
+        }
+        return false
     }
 
     private fun deleteMetadataFiles(directory: DocumentFile, baseName: String) {
@@ -885,6 +1024,14 @@ class StrmScrapeRepository(
         file.delete()
     }
 
+    private fun deleteEmptyDirectory(directory: DocumentFile, root: DocumentFile) {
+        if (directory.uri == root.uri) return
+        if (!directory.isDirectory) return
+        if (directory.listFiles().isEmpty() && directory.delete()) {
+            logStore.append("Deleted empty parent directory: ${directory.name}")
+        }
+    }
+
     private fun String.sanitizeFileName(): String {
         return replace(Regex("""[\\/:*?"<>|]"""), "_").trim()
     }
@@ -903,10 +1050,32 @@ class StrmScrapeRepository(
         normalizedActorName() == other.normalizedActorName()
 
     private fun ScrapedMovieInfo.imageReferer(): String? {
+        if (source.equals("mgstage", ignoreCase = true)) return MGSTAGE_BASE_URL
         return website
             .takeIf { source.equals("javbus", ignoreCase = true) }
             ?.takeIf { it.startsWith(JAVBUS_BASE_URL, ignoreCase = true) }
     }
+
+    private fun ScrapedMovieInfo.posterDownloadUrls(): List<String> =
+        (posterImageUrls + posterUrl.ifBlank { thumbUrl }).normalizedUrlList()
+
+    private fun ScrapedMovieInfo.thumbDownloadUrls(): List<String> =
+        (thumbImageUrls + thumbUrl).normalizedUrlList()
+
+    private fun ScrapedMovieInfo.shouldRefreshDistinctPoster(): Boolean {
+        if (!source.equals("dmm", ignoreCase = true) && !source.equals("dmm2", ignoreCase = true)) return false
+        val poster = posterDownloadUrls().firstOrNull().orEmpty()
+        val thumb = thumbDownloadUrls().firstOrNull().orEmpty()
+        return poster.isNotBlank() && thumb.isNotBlank() && !poster.equals(thumb, ignoreCase = true)
+    }
+
+    private fun List<String>.normalizedUrlList(): List<String> =
+        map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+
+    private fun List<String>.candidateCountSuffix(): String =
+        if (size > 1) " (+${size - 1} fallback)" else ""
 
     private fun DocumentFile.isExcludedAssetDirectory(): Boolean {
         val normalized = name.orEmpty().trim().lowercase().replace('_', ' ').replace('-', ' ')
@@ -922,9 +1091,11 @@ class StrmScrapeRepository(
 
     private val ScrapeSource.label: String
         get() = when (this) {
+            ScrapeSource.Priority -> "优先级刮削"
             ScrapeSource.Dmm -> "DMM"
             ScrapeSource.Dmm2 -> "DMM2"
             ScrapeSource.Official -> "Official"
+            ScrapeSource.Mgstage -> "MGStage"
             ScrapeSource.Javbus -> "JavBus"
             ScrapeSource.Missav -> "MissAV"
         }
@@ -932,9 +1103,16 @@ class StrmScrapeRepository(
     private fun ScrapeSource.serialScrapeMutex(): Mutex? =
         if (this == ScrapeSource.Missav) missavScrapeMutex else null
 
+    private fun numberPrefix(number: String): String? =
+        number.substringBefore('-', missingDelimiterValue = number)
+            .uppercase()
+            .filter { it.isLetterOrDigit() }
+            .takeIf { it.isNotBlank() && it.any { char -> char.isLetter() } }
+
     private companion object {
         const val GENERIC_FILE_MIME_TYPE = "application/octet-stream"
         const val JAVBUS_BASE_URL = "https://www.javbus.com/"
+        const val MGSTAGE_BASE_URL = "https://www.mgstage.com/"
         const val SCRAPE_QUEUE_POLL_INTERVAL_MS = 250L
     }
 }

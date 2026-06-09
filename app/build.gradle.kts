@@ -20,8 +20,8 @@ android {
         applicationId = "com.example.localmovielibrary"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 13
+        versionName = "1.3.7"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -68,6 +68,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

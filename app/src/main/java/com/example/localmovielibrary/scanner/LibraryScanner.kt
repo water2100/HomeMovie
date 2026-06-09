@@ -119,9 +119,9 @@ class LibraryScanner(private val context: Context) {
         kind: ImageKind
     ): DocumentFile? {
         val suffixes = when (kind) {
-            ImageKind.Poster -> listOf("poster", "movie-poster", "$baseName-poster")
-            ImageKind.Fanart -> listOf("fanart", "movie-fanart", "$baseName-fanart")
-            ImageKind.Thumb -> listOf("thumb", "$baseName-thumb", "fanart", "movie-fanart", "$baseName-fanart")
+            ImageKind.Poster -> listOf("$baseName-poster", "poster", "movie-poster")
+            ImageKind.Fanart -> listOf("$baseName-fanart", "fanart", "movie-fanart")
+            ImageKind.Thumb -> listOf("$baseName-thumb", "thumb", "$baseName-fanart", "fanart", "movie-fanart")
         }
         val extensions = listOf("jpg", "jpeg", "png", "webp")
         val candidates = suffixes.flatMap { suffix -> extensions.map { ext -> "$suffix.$ext" } }

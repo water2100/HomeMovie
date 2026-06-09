@@ -21,6 +21,13 @@ class MovieNumberUtilsTest {
     }
 
     @Test
+    fun prefersSeparatedNumberBeforeBracketedCodeAndTitleText() {
+        val identity = extractMovieSourceIdentity("IDBD-317(idbd00317)[IDEAPOCKET]IPSUPERGIRLSBEST100人16時間.strm")
+
+        assertEquals("IDBD-317", identity?.number)
+    }
+
+    @Test
     fun parsesFourKVersion() {
         val identity = extractMovieSourceIdentity("4k2.me@fns-128-4k.mp4")
 
@@ -70,5 +77,31 @@ class MovieNumberUtilsTest {
         assertEquals(MovieVariant.SixtyFps, extractMovieSourceIdentity("HMN-645_60FPS.mp4")?.variant)
         assertEquals(MovieVariant.FourK60Fps, extractMovieSourceIdentity("HMN-645_4K60FPS.mp4")?.variant)
         assertEquals(MovieVariant.FourK, extractMovieSourceIdentity("START-155_4Ks.mp4")?.variant)
+    }
+
+    @Test
+    fun parsesMgstageNumberWithNumericPrefix() {
+        val identity = extractMovieSourceIdentity("300MIUM-111.mp4")
+
+        assertEquals("300MIUM-111", identity?.number)
+        assertEquals(MovieVariant.Standard, identity?.variant)
+        assertEquals("300MIUM-111", identity?.sourceKey)
+    }
+
+    @Test
+    fun ignoresConfiguredTrailingNoiseSuffix() {
+        val identity = extractMovieSourceIdentity("meyd00772hhb.strm")
+
+        assertEquals("MEYD-772", identity?.number)
+        assertEquals(MovieVariant.Standard, identity?.variant)
+        assertEquals("MEYD-772", identity?.sourceKey)
+    }
+
+    @Test
+    fun keepsRealTrailingLetterSuffixAsPartOfNumber() {
+        val identity = extractMovieSourceIdentity("DANDY-852A.strm")
+
+        assertEquals("DANDY-852A", identity?.number)
+        assertEquals(null, identity?.partLabel)
     }
 }

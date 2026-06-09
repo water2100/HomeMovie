@@ -19,6 +19,7 @@ class MissavCookieRequiredException(
 
 class MissavScraper(
     private val cookieProvider: () -> String = { "" },
+    private val languageProvider: () -> MissavScrapeLanguage = { MissavScrapeLanguage.Default },
     private val client: OkHttpClient = OkHttpClient(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : MovieScraper {
@@ -26,8 +27,9 @@ class MissavScraper(
 
     override suspend fun scrape(number: String): ScrapedMovieInfo = withContext(ioDispatcher) {
         val normalized = normalizeNumber(number)
-        val url = "https://missav.ai/cn/${normalized.lowercase(Locale.ROOT)}"
-        val html = fetch(url)
+        val language = languageProvider()
+        val url = language.movieUrl(normalized)
+        val html = fetch(url, language)
         if (isCloudflareChallenge(html)) {
             throw MissavCookieRequiredException(
                 hasCookie = cookieProvider().trim().isNotBlank(),
@@ -43,7 +45,7 @@ class MissavScraper(
 
     fun scrapeFromHtml(number: String, html: String): ScrapedMovieInfo {
         val normalized = normalizeNumber(number)
-        val url = "https://missav.ai/cn/${normalized.lowercase(Locale.ROOT)}"
+        val url = languageProvider().movieUrl(normalized)
         if (isCloudflareChallenge(html)) {
             throw MissavCookieRequiredException(
                 hasCookie = cookieProvider().trim().isNotBlank(),
@@ -85,14 +87,14 @@ class MissavScraper(
         )
     }
 
-    private fun fetch(url: String): String {
+    private fun fetch(url: String, language: MissavScrapeLanguage): String {
         val cookie = cookieProvider().trim()
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-            .header("Accept-Language", "zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7")
-            .header("Referer", "https://missav.ai/cn")
+            .header("Accept-Language", language.acceptLanguage)
+            .header("Referer", language.referer)
             .header("Origin", "https://missav.ai")
             .header("Upgrade-Insecure-Requests", "1")
             .header("Sec-Fetch-Dest", "document")

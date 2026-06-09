@@ -86,6 +86,22 @@ class JavzimuSubtitleRepository(
             (documentFiles + localFiles).distinctBy { it.uri.toString() }.sortedBy { it.name.lowercase(Locale.ROOT) }
         }
 
+    suspend fun deleteLocalSubtitle(subtitle: LocalSubtitleFile): Boolean = withContext(Dispatchers.IO) {
+        when (subtitle.uri.scheme) {
+            "file", null -> {
+                val path = subtitle.uri.path ?: return@withContext false
+                File(path).takeIf { it.isFile }?.delete() == true
+            }
+            "content" -> {
+                DocumentFile.fromSingleUri(appContext, subtitle.uri)?.delete() == true ||
+                    runCatching {
+                        appContext.contentResolver.delete(subtitle.uri, null, null) > 0
+                    }.getOrDefault(false)
+            }
+            else -> false
+        }
+    }
+
     suspend fun search(number: String, videoDurationMs: Long): List<JavzimuSubtitleResult> =
         withContext(Dispatchers.IO) {
             val normalized = normalizeJavzimuSubtitleNumber(number)

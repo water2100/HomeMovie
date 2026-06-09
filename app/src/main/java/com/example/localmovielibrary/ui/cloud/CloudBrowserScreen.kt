@@ -42,6 +42,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,6 +84,7 @@ fun CloudBrowserScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var pendingBatchFolder by remember { mutableStateOf<Cloud115FileItem?>(null) }
     val currentFolderCid = uiState.path.lastOrNull()?.cid ?: 0L
     val initialScrollPosition = remember(currentFolderCid) {
         viewModel.scrollPositionFor(currentFolderCid)
@@ -172,6 +174,32 @@ fun CloudBrowserScreen(
                 }
             )
         }
+        pendingBatchFolder?.let { folder ->
+            AlertDialog(
+                onDismissRequest = { pendingBatchFolder = null },
+                title = { Text("添加整个文件夹？") },
+                text = {
+                    Text(
+                        "确认后会递归读取“${folder.name}”内的视频，并按当前默认刮削方式逐个加入队列。无法提取番号、命中排除名单或小于设置大小阈值的视频会直接跳过。"
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            pendingBatchFolder = null
+                            viewModel.addFolderVideosToLibrary(folder)
+                        }
+                    ) {
+                        Text("开始添加")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingBatchFolder = null }) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
         Column(modifier = Modifier.fillMaxSize()) {
             CloudTopBar(
                 path = uiState.path,
@@ -198,9 +226,12 @@ fun CloudBrowserScreen(
                     isDomesticRoot = viewModel.domesticRootCid()?.let { currentFolderCid == it } == true,
                     addingDomesticFolderCids = uiState.addingDomesticFolderCids,
                     addedDomesticFolderCids = uiState.addedDomesticFolderCids,
+                    addingFolderCids = uiState.addingFolderCids,
+                    addedFolderCids = uiState.addedFolderCids,
                     onOpenFolder = viewModel::openFolder,
                     onPlayVideo = onPlayVideo,
                     onAddVideo = viewModel::addVideoToLibrary,
+                    onAddFolder = { pendingBatchFolder = it },
                     onAddDomesticFolder = viewModel::addDomesticFolder
                 )
             }
@@ -315,9 +346,12 @@ private fun CloudFileList(
     isDomesticRoot: Boolean,
     addingDomesticFolderCids: Set<Long>,
     addedDomesticFolderCids: Set<Long>,
+    addingFolderCids: Set<Long>,
+    addedFolderCids: Set<Long>,
     onOpenFolder: (Cloud115FileItem) -> Unit,
     onPlayVideo: (Cloud115FileItem) -> Unit,
     onAddVideo: (Cloud115FileItem) -> Unit,
+    onAddFolder: (Cloud115FileItem) -> Unit,
     onAddDomesticFolder: (Cloud115FileItem) -> Unit
 ) {
     LazyColumn(
@@ -345,9 +379,12 @@ private fun CloudFileList(
                 showDomesticAdd = isDomesticRoot && item.isDirectory && item.cid != null,
                 isDomesticAdding = item.cid != null && item.cid in addingDomesticFolderCids,
                 isDomesticAdded = item.cid != null && item.cid in addedDomesticFolderCids,
+                isFolderAdding = item.cid != null && item.cid in addingFolderCids,
+                isFolderAdded = item.cid != null && item.cid in addedFolderCids,
                 onOpenFolder = { onOpenFolder(item) },
                 onPlayVideo = { onPlayVideo(item) },
                 onAddVideo = { onAddVideo(item) },
+                onAddFolder = { onAddFolder(item) },
                 onAddDomesticFolder = { onAddDomesticFolder(item) }
             )
         }
@@ -364,9 +401,12 @@ private fun CloudFileRow(
     showDomesticAdd: Boolean,
     isDomesticAdding: Boolean,
     isDomesticAdded: Boolean,
+    isFolderAdding: Boolean,
+    isFolderAdded: Boolean,
     onOpenFolder: () -> Unit,
     onPlayVideo: () -> Unit,
     onAddVideo: () -> Unit,
+    onAddFolder: () -> Unit,
     onAddDomesticFolder: () -> Unit
 ) {
     val context = LocalContext.current
@@ -439,7 +479,11 @@ private fun CloudFileRow(
                     isAdded = isDomesticAdded,
                     onAddVideo = onAddDomesticFolder
                 )
-                item.isDirectory -> Unit
+                item.isDirectory && item.cid != null -> AddVideoButton(
+                    isAdding = isFolderAdding,
+                    isAdded = isFolderAdded,
+                    onAddVideo = onAddFolder
+                )
                 item.isVideoFile() && !isExcludedVideo -> AddVideoButton(isAdding = isAdding, isAdded = isAdded, onAddVideo = onAddVideo)
             }
         }

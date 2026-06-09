@@ -1,9 +1,12 @@
 package com.example.localmovielibrary.ui.shared
 
 import android.content.Context
+import android.database.Cursor
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
 import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -36,7 +39,8 @@ fun UriImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     alignment: Alignment = Alignment.Center,
-    maxDecodeSize: Int = 1200
+    maxDecodeSize: Int = 1200,
+    cacheKey: Any? = null
 ) {
     if (uri.isNullOrBlank()) {
         Box(
@@ -48,10 +52,10 @@ fun UriImage(
     }
 
     val context = LocalContext.current
-    val image = produceState<ImageBitmap?>(initialValue = null, uri, maxDecodeSize) {
+    val image = produceState<ImageBitmap?>(initialValue = null, uri, maxDecodeSize, cacheKey) {
         repeat(VISIBLE_IMAGE_RETRY_COUNT) { attempt ->
             value = withContext(Dispatchers.IO) {
-                loadUriImageWithRetry(context, uri, maxDecodeSize)
+                loadUriImageWithRetry(context, uri, maxDecodeSize, cacheKey?.toString())
             }
             if (value != null) return@produceState
             delay(VISIBLE_IMAGE_RETRY_DELAYS_MS.getOrElse(attempt) { VISIBLE_IMAGE_RETRY_DELAYS_MS.last() })
@@ -117,29 +121,80 @@ private fun CenterCropImage(bitmap: ImageBitmap, modifier: Modifier) {
 private suspend fun loadUriImageWithRetry(
     context: Context,
     uriString: String,
-    maxDecodeSize: Int
+    maxDecodeSize: Int,
+    cacheKey: String?
 ): ImageBitmap? {
-    ImageMemoryCache.get(uriString, maxDecodeSize)?.let { return it }
-    if (ImageFailureCache.isRecentlyFailed(uriString, maxDecodeSize)) return null
+    val resolvedCacheKey = imageCacheKey(context, uriString, maxDecodeSize, cacheKey)
+    ImageMemoryCache.get(resolvedCacheKey)?.let { return it }
+    if (ImageFailureCache.isRecentlyFailed(resolvedCacheKey)) return null
     repeat(DECODE_RETRY_COUNT) { attempt ->
         val decoded = ImageDecodeLimiter.withPermit {
-            if (ImageFailureCache.isRecentlyFailed(uriString, maxDecodeSize)) return null
-            ImageMemoryCache.get(uriString, maxDecodeSize)
-                ?: runCatching { loadDiskCachedImage(context, uriString, maxDecodeSize) }.getOrNull()
+            if (ImageFailureCache.isRecentlyFailed(resolvedCacheKey)) return null
+            ImageMemoryCache.get(resolvedCacheKey)
+                ?: runCatching { loadDiskCachedImage(context, resolvedCacheKey) }.getOrNull()
                 ?: runCatching {
                     decodeUriImage(context.contentResolver, Uri.parse(uriString), maxDecodeSize).also { bitmap ->
-                        writeDiskCachedImage(context, uriString, maxDecodeSize, bitmap)
+                        writeDiskCachedImage(context, resolvedCacheKey, bitmap)
                     }.asImageBitmap()
                 }.getOrNull()
         }
         if (decoded != null) {
-            ImageMemoryCache.put(uriString, maxDecodeSize, decoded)
+            ImageMemoryCache.put(resolvedCacheKey, decoded)
             return decoded
         }
         delay(DECODE_RETRY_DELAYS_MS.getOrElse(attempt) { DECODE_RETRY_DELAYS_MS.last() })
     }
-    ImageFailureCache.markFailed(uriString, maxDecodeSize)
+    ImageFailureCache.markFailed(resolvedCacheKey)
     return null
+}
+
+private fun imageCacheKey(
+    context: Context,
+    uriString: String,
+    maxDecodeSize: Int,
+    cacheKey: String?
+): String {
+    val sourceVersion = uriSourceVersion(context, uriString)
+    return listOf(uriString, maxDecodeSize.toString(), cacheKey.orEmpty(), sourceVersion).joinToString("#")
+}
+
+private fun uriSourceVersion(context: Context, uriString: String): String {
+    val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return ""
+    return when (uri.scheme?.lowercase()) {
+        "file" -> uri.path
+            ?.let { File(it) }
+            ?.takeIf { it.exists() }
+            ?.let { file -> "file:${file.length()}:${file.lastModified()}" }
+            .orEmpty()
+        "content" -> queryContentVersion(context, uri)
+        else -> ""
+    }
+}
+
+private fun queryContentVersion(context: Context, uri: Uri): String {
+    val projections = listOf(
+        arrayOf(OpenableColumns.SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+        null
+    )
+    projections.forEach { projection ->
+        val cursor = runCatching {
+            context.contentResolver.query(uri, projection, null, null, null)
+        }.getOrNull() ?: return@forEach
+        cursor.use {
+            if (it.moveToFirst()) {
+                val size = it.longOrNull(OpenableColumns.SIZE) ?: -1L
+                val modified = it.longOrNull(DocumentsContract.Document.COLUMN_LAST_MODIFIED) ?: -1L
+                return "content:$size:$modified"
+            }
+        }
+    }
+    return ""
+}
+
+private fun Cursor.longOrNull(columnName: String): Long? {
+    val index = getColumnIndex(columnName)
+    if (index < 0 || isNull(index)) return null
+    return runCatching { getLong(index) }.getOrNull()
 }
 
 private fun decodeUriImage(
@@ -163,10 +218,9 @@ private fun decodeUriImage(
 
 private fun loadDiskCachedImage(
     context: Context,
-    uriString: String,
-    maxDecodeSize: Int
+    cacheKey: String
 ): ImageBitmap? {
-    val file = diskCacheFile(context, uriString, maxDecodeSize)
+    val file = diskCacheFile(context, cacheKey)
     if (!file.exists() || file.length() <= 0L) return null
     file.setLastModified(System.currentTimeMillis())
     return BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
@@ -174,11 +228,10 @@ private fun loadDiskCachedImage(
 
 private fun writeDiskCachedImage(
     context: Context,
-    uriString: String,
-    maxDecodeSize: Int,
+    cacheKey: String,
     bitmap: Bitmap
 ) {
-    val file = diskCacheFile(context, uriString, maxDecodeSize)
+    val file = diskCacheFile(context, cacheKey)
     if (file.exists() && file.length() > 0L) return
     file.parentFile?.mkdirs()
     val temp = File(file.parentFile, "${file.name}.tmp")
@@ -194,8 +247,8 @@ private fun writeDiskCachedImage(
     }
 }
 
-private fun diskCacheFile(context: Context, uriString: String, maxDecodeSize: Int): File {
-    val key = "$uriString#$maxDecodeSize".sha256()
+private fun diskCacheFile(context: Context, cacheKey: String): File {
+    val key = cacheKey.sha256()
     return File(File(context.cacheDir, DISK_CACHE_DIR), "$key.jpg")
 }
 
@@ -235,35 +288,32 @@ private object ImageMemoryCache {
                 .toInt()
     }
 
-    fun get(uri: String, maxDecodeSize: Int): ImageBitmap? = cache.get(key(uri, maxDecodeSize))
+    fun get(cacheKey: String): ImageBitmap? = cache.get(cacheKey)
 
-    fun put(uri: String, maxDecodeSize: Int, image: ImageBitmap) {
-        cache.put(key(uri, maxDecodeSize), image)
+    fun put(cacheKey: String, image: ImageBitmap) {
+        cache.put(cacheKey, image)
     }
 
     fun clear() {
         cache.evictAll()
     }
-
-    private fun key(uri: String, maxDecodeSize: Int): String = "$uri#$maxDecodeSize"
 }
 
 private object ImageFailureCache {
     private val failedAtMs = linkedMapOf<String, Long>()
 
     @Synchronized
-    fun isRecentlyFailed(uri: String, maxDecodeSize: Int): Boolean {
-        val key = key(uri, maxDecodeSize)
-        val failedAt = failedAtMs[key] ?: return false
+    fun isRecentlyFailed(cacheKey: String): Boolean {
+        val failedAt = failedAtMs[cacheKey] ?: return false
         val now = System.currentTimeMillis()
         if (now - failedAt <= FAILURE_CACHE_TTL_MS) return true
-        failedAtMs.remove(key)
+        failedAtMs.remove(cacheKey)
         return false
     }
 
     @Synchronized
-    fun markFailed(uri: String, maxDecodeSize: Int) {
-        failedAtMs[key(uri, maxDecodeSize)] = System.currentTimeMillis()
+    fun markFailed(cacheKey: String) {
+        failedAtMs[cacheKey] = System.currentTimeMillis()
         trim()
     }
 
@@ -278,8 +328,6 @@ private object ImageFailureCache {
             failedAtMs.remove(oldestKey)
         }
     }
-
-    private fun key(uri: String, maxDecodeSize: Int): String = "$uri#$maxDecodeSize"
 }
 
 object MovieImageCacheStore {

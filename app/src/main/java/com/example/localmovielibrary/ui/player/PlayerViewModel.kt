@@ -2,6 +2,7 @@
 
 import android.app.Application
 import android.net.Uri
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -42,18 +43,24 @@ import com.example.localmovielibrary.subtitle.LiveSubtitleStore
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.subtitle.XunleiSubtitleRepository
 import com.example.localmovielibrary.subtitle.normalizeJavzimuSubtitleNumber
+import com.example.localmovielibrary.subtitle.normalizeXunleiSubtitleNumber
 import com.example.localmovielibrary.translate.TranslationClient
 import com.example.localmovielibrary.util.normalizeMovieNumber
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import java.io.IOException
+import java.net.SocketTimeoutException
 import kotlin.math.abs
 
 class PlayerViewModel(
@@ -80,6 +87,7 @@ class PlayerViewModel(
     private var subtitleStorageSourceUri: Uri? = null
     private val progressPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var progressJob: Job? = null
+    private var initialSubtitleJob: Job? = null
     private var savedSubtitleJob: Job? = null
     private var liveSubtitleClearJob: Job? = null
     private var pendingJavzimuAction: PendingJavzimuAction? = null
@@ -96,6 +104,7 @@ class PlayerViewModel(
     private val _uiState = MutableStateFlow(
         PlayerUiState(
             isLoading = true,
+            loadingMessage = initialPlaybackLoadingMessage(),
             externalSubtitleStyle = externalSubtitleStyleSettings(),
             vrMode = vrModeSettings.getMode(mediaKey),
             vrControlMode = vrModeSettings.getControlMode(mediaKey)
@@ -108,32 +117,41 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch {
-            resolver.resolve(videoUri.toString(), this@PlayerViewModel.title, fileName)
+            val startedAtMs = SystemClock.elapsedRealtime()
+            showLoading(initialPlaybackLoadingMessage())
+            resolvePlayback()
                 .onSuccess { request ->
-                    val resolvedStorageUri = resolveSubtitleStorageSourceUri(request)
-                    subtitleStorageSourceUri = resolvedStorageUri
-                    mediaKey = resolvedStorageUri?.toString() ?: videoUri.toString()
+                    val resolveElapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+                    if (resolveElapsedMs >= SLOW_PLAYBACK_RESOLVE_LOG_MS) {
+                        logPlaybackStage("player.resolve.slow", resolveElapsedMs)
+                    }
+                    showLoading("正在启动播放器...")
+                    val subtitleFeaturesEnabled = canUseLibrarySubtitleFeatures(request)
                     val resumePositionMs = playbackProgressRepository.getResumePosition(mediaKey)
-                    val localSubtitles = listLocalExternalSubtitles()
-                    val preferredSubtitle = preferredExternalSubtitle(localSubtitles)
-                    val player = createPlayer(request, resumePositionMs, preferredSubtitle)
+                    val player = createPlayer(request, resumePositionMs)
                     _uiState.value = PlayerUiState(
                         playbackRequest = request,
                         player = player,
                         isLoading = false,
+                        subtitleFeaturesEnabled = subtitleFeaturesEnabled,
                         externalSubtitleStyle = externalSubtitleStyleSettings(),
                         vrMode = vrModeSettings.getMode(mediaKey),
-                        vrControlMode = vrModeSettings.getControlMode(mediaKey),
-                        localSubtitles = localSubtitles,
-                        activeExternalSubtitleName = preferredSubtitle?.name,
-                        externalSubtitleEnabled = preferredSubtitle != null
+                        vrControlMode = vrModeSettings.getControlMode(mediaKey)
                     )
+                    if (subtitleFeaturesEnabled) {
+                        loadInitialExternalSubtitles(request)
+                    }
                 }
                 .onFailure { error ->
+                    logPlaybackStage(
+                        event = "player.resolve.failed",
+                        elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
+                        error = error
+                    )
                     _uiState.value = PlayerUiState(
                         isLoading = false,
                         externalSubtitleStyle = externalSubtitleStyleSettings(),
-                        errorMessage = error.message ?: "Unable to fetch playback address"
+                        errorMessage = playbackResolveErrorMessage(error)
                     )
                 }
         }
@@ -222,6 +240,122 @@ class PlayerViewModel(
             backgroundAlphaPercent = settingsRepository.getExternalSubtitleBackgroundAlphaPercent()
         )
 
+    private suspend fun resolvePlayback(forceRefresh: Boolean = false): Result<PlaybackRequest> =
+        try {
+            Result.success(
+                withTimeout(PLAYBACK_RESOLVE_TIMEOUT_MS) {
+                    resolver.resolve(videoUri.toString(), title, fileName, forceRefresh)
+                        .getOrThrow()
+                }
+            )
+        } catch (error: TimeoutCancellationException) {
+            Result.failure(error)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+
+    private fun playbackResolveErrorMessage(error: Throwable, refreshing: Boolean = false): String =
+        when (error) {
+            is TimeoutCancellationException,
+            is SocketTimeoutException -> "解析播放地址超时，请检查网络、代理或 115 登录状态后再试"
+            is IOException -> "解析播放地址失败，请检查网络、代理或 115 登录状态后再试：${error.message ?: "网络请求失败"}"
+            else -> error.message ?: if (refreshing) "刷新 115 播放地址失败" else "解析播放地址失败"
+        }
+
+    private fun showLoading(message: String, clearPlayer: Boolean = false) {
+        _uiState.update {
+            it.copy(
+                playbackRequest = if (clearPlayer) null else it.playbackRequest,
+                player = if (clearPlayer) null else it.player,
+                isLoading = true,
+                errorMessage = null,
+                loadingMessage = message
+            )
+        }
+    }
+
+    private fun initialPlaybackLoadingMessage(forceRefresh: Boolean = false): String =
+        when {
+            PickcodeExtractor.extract(videoUri.toString()) != null -> {
+                if (forceRefresh) "正在刷新 115 播放直链..." else "正在向 115 请求播放直链..."
+            }
+            isStrmSource(videoUri, fileName) -> "正在读取 STRM 播放入口..."
+            else -> "正在解析播放地址..."
+        }
+
+    private suspend fun canUseLibrarySubtitleFeatures(request: PlaybackRequest): Boolean {
+        if (isStrmSource(videoUri, fileName)) return true
+        val pickcode = request.pickcode
+            ?: PickcodeExtractor.extract(videoUri.toString())
+            ?: return true
+        return cloudStrmRecordRepository.getCached(pickcode) != null
+    }
+
+    private fun loadInitialExternalSubtitles(request: PlaybackRequest) {
+        initialSubtitleJob?.cancel()
+        if (!_uiState.value.subtitleFeaturesEnabled) return
+        initialSubtitleJob = viewModelScope.launch {
+            val startedAtMs = SystemClock.elapsedRealtime()
+            runCatching {
+                val resolvedStorageUri = resolveSubtitleStorageSourceUri(request)
+                subtitleStorageSourceUri = resolvedStorageUri
+                mediaKey = resolvedStorageUri?.toString() ?: mediaKey
+                val localSubtitles = listLocalExternalSubtitles()
+                val preferredSubtitle = preferredExternalSubtitle(localSubtitles)
+                localSubtitles to preferredSubtitle
+            }.onSuccess { (localSubtitles, preferredSubtitle) ->
+                val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+                if (elapsedMs >= SLOW_SUBTITLE_LOAD_LOG_MS) {
+                    logPlaybackStage("player.subtitle.scan.slow", elapsedMs)
+                }
+                _uiState.update {
+                    it.copy(
+                        localSubtitles = localSubtitles,
+                        vrMode = vrModeSettings.getMode(mediaKey),
+                        vrControlMode = vrModeSettings.getControlMode(mediaKey)
+                    )
+                }
+                preferredSubtitle?.let { applyExternalSubtitle(it, closePanel = false) }
+            }.onFailure { error ->
+                logPlaybackStage(
+                    event = "player.subtitle.scan.failed",
+                    elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
+                    error = error
+                )
+            }
+        }
+    }
+
+    private fun logPlaybackStage(
+        event: String,
+        elapsedMs: Long,
+        extra: Map<String, String?> = emptyMap(),
+        error: Throwable? = null
+    ) {
+        errorLog.append(
+            event = event,
+            details = playbackLogDetails() + mapOf("elapsedMs" to elapsedMs.toString()) + extra,
+            error = error
+        )
+    }
+
+    private fun playbackLogDetails(): Map<String, String?> =
+        mapOf(
+            "source" to playbackSourceLabel(),
+            "videoUri" to videoUri.toString().take(600),
+            "fileName" to fileName,
+            "title" to title
+        )
+
+    private fun playbackSourceLabel(): String =
+        when {
+            PickcodeExtractor.extract(videoUri.toString()) != null -> "cloud115"
+            isStrmSource(videoUri, fileName) -> "strm"
+            else -> videoUri.scheme.orEmpty().ifBlank { "direct" }
+        }
+
     private fun retryAfterForbidden(pickcode: String) {
         retriedAfterForbidden = true
         viewModelScope.launch {
@@ -230,34 +364,43 @@ class PlayerViewModel(
                 ?: playbackProgressRepository.getResumePosition(mediaKey)
             previousPlayer?.let { persistProgress(it, force = true) }
             progressJob?.cancel()
+            initialSubtitleJob?.cancel()
             previousPlayer?.release()
-            _uiState.value = _uiState.value.copy(player = null, isLoading = true, errorMessage = null)
+            showLoading(initialPlaybackLoadingMessage(forceRefresh = true), clearPlayer = true)
             resolver.invalidatePickcode(pickcode)
-            resolver.resolve(videoUri.toString(), title, fileName, forceRefresh = true)
+            val startedAtMs = SystemClock.elapsedRealtime()
+            resolvePlayback(forceRefresh = true)
                 .onSuccess { request ->
-                    val resolvedStorageUri = resolveSubtitleStorageSourceUri(request)
-                    subtitleStorageSourceUri = resolvedStorageUri
-                    mediaKey = resolvedStorageUri?.toString() ?: mediaKey
-                    val localSubtitles = listLocalExternalSubtitles()
-                    val preferredSubtitle = preferredExternalSubtitle(localSubtitles)
-                    val player = createPlayer(request, resumePositionMs, preferredSubtitle)
+                    val resolveElapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+                    if (resolveElapsedMs >= SLOW_PLAYBACK_RESOLVE_LOG_MS) {
+                        logPlaybackStage("player.resolve.refresh.slow", resolveElapsedMs)
+                    }
+                    showLoading("正在重新启动播放器...")
+                    val subtitleFeaturesEnabled = canUseLibrarySubtitleFeatures(request)
+                    val player = createPlayer(request, resumePositionMs)
                     _uiState.value = PlayerUiState(
                         playbackRequest = request,
                         player = player,
                         isLoading = false,
+                        subtitleFeaturesEnabled = subtitleFeaturesEnabled,
                         externalSubtitleStyle = externalSubtitleStyleSettings(),
                         vrMode = vrModeSettings.getMode(mediaKey),
-                        vrControlMode = vrModeSettings.getControlMode(mediaKey),
-                        localSubtitles = localSubtitles,
-                        activeExternalSubtitleName = preferredSubtitle?.name,
-                        externalSubtitleEnabled = preferredSubtitle != null
+                        vrControlMode = vrModeSettings.getControlMode(mediaKey)
                     )
+                    if (subtitleFeaturesEnabled) {
+                        loadInitialExternalSubtitles(request)
+                    }
                 }
                 .onFailure { error ->
+                    logPlaybackStage(
+                        event = "player.resolve.refresh.failed",
+                        elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
+                        error = error
+                    )
                     _uiState.value = PlayerUiState(
                         isLoading = false,
                         externalSubtitleStyle = externalSubtitleStyleSettings(),
-                        errorMessage = error.message ?: "Unable to refresh 115 playback address"
+                        errorMessage = playbackResolveErrorMessage(error, refreshing = true)
                     )
                 }
         }
@@ -325,13 +468,15 @@ class PlayerViewModel(
     fun isPlayerLiveSubtitleEnabled(): Boolean = settingsRepository.isPlayerLiveSubtitleEnabled()
 
     fun openExternalSubtitlePanel(videoDurationMs: Long) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         val number = normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title)
-        val subtitleNumber = number?.let { normalizeJavzimuSubtitleNumber(it) }
+        val provider = settingsRepository.getSubtitleSearchProvider()
+        val subtitleNumber = number?.let { normalizeSubtitleSearchNumber(it, provider) }
         _uiState.update {
             it.copy(
                 externalSubtitlePanelVisible = true,
                 externalSubtitleQueryNumber = subtitleNumber.orEmpty(),
-                externalSubtitleProviderLabel = settingsRepository.getSubtitleSearchProvider().label,
+                externalSubtitleProviderLabel = provider.label,
                 externalSubtitleMessage = null,
                 externalSubtitleError = null,
                 externalSubtitleSearching = false,
@@ -368,9 +513,11 @@ class PlayerViewModel(
     }
 
     fun searchExternalSubtitles(videoDurationMs: Long) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
+        val provider = settingsRepository.getSubtitleSearchProvider()
         val number = _uiState.value.externalSubtitleQueryNumber.ifBlank {
             (normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title))
-                ?.let { normalizeJavzimuSubtitleNumber(it) }
+                ?.let { normalizeSubtitleSearchNumber(it, provider) }
                 .orEmpty()
         }
         if (number.isBlank()) {
@@ -393,7 +540,7 @@ class PlayerViewModel(
         }
         viewModelScope.launch {
             runCatching {
-                when (settingsRepository.getSubtitleSearchProvider()) {
+                when (provider) {
                     SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.search(number, videoDurationMs)
@@ -440,10 +587,43 @@ class PlayerViewModel(
     }
 
     fun loadLocalSubtitle(subtitle: LocalSubtitleFile) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         applyExternalSubtitle(subtitle)
     }
 
+    fun deleteLocalSubtitle(subtitle: LocalSubtitleFile) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
+        viewModelScope.launch {
+            runCatching {
+                val wasActive = subtitle.name == _uiState.value.activeExternalSubtitleName
+                if (wasActive) {
+                    settingsRepository.saveExternalSubtitleEnabled(mediaKey, false)
+                    clearExternalSubtitleTrack(closePanel = false)
+                }
+                val deleted = javzimuSubtitleRepository.deleteLocalSubtitle(subtitle)
+                if (!deleted) error("字幕文件删除失败")
+                listLocalExternalSubtitles()
+            }.onSuccess { localFiles ->
+                _uiState.update {
+                    it.copy(
+                        localSubtitles = localFiles,
+                        externalSubtitleMessage = "已删除字幕：${subtitle.name}",
+                        externalSubtitleError = null
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        externalSubtitleMessage = null,
+                        externalSubtitleError = error.message ?: "字幕文件删除失败"
+                    )
+                }
+            }
+        }
+    }
+
     fun setExternalSubtitleEnabled(enabled: Boolean) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         if (!enabled) {
             settingsRepository.saveExternalSubtitleEnabled(mediaKey, false)
             clearExternalSubtitleTrack(closePanel = false)
@@ -476,6 +656,7 @@ class PlayerViewModel(
     }
 
     fun downloadAndLoadSubtitle(result: JavzimuSubtitleResult) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         if (_uiState.value.externalSubtitleDownloading) return
         _uiState.update {
             it.copy(
@@ -585,7 +766,7 @@ class PlayerViewModel(
         val pickcode = request?.pickcode
             ?: PickcodeExtractor.extract(videoUri.toString())
             ?: return null
-        val strmUri = cloudStrmRecordRepository.findSubtitleStorageRecord(pickcode, fileName, title)?.strmUri
+        val strmUri = cloudStrmRecordRepository.getCached(pickcode)?.strmUri
             ?.takeIf { it.isNotBlank() }
             ?: return null
         return runCatching { Uri.parse(strmUri) }.getOrNull()
@@ -739,6 +920,7 @@ class PlayerViewModel(
     }
 
     fun toggleLiveSubtitleRecognition() {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         if (_uiState.value.liveSubtitleEnabled) {
             stopLiveSubtitleRecognition()
         } else {
@@ -747,10 +929,12 @@ class PlayerViewModel(
     }
 
     fun startLiveSubtitleRecognition() {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         startLiveSubtitleFromMicrophone()
     }
 
     fun startLiveSubtitleFromMicrophone() {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         if (_uiState.value.liveSubtitleListening) return
         if (!subtitleRecognizer.hasModelAssets()) {
             _uiState.update {
@@ -801,6 +985,7 @@ class PlayerViewModel(
     }
 
     fun startLiveSubtitleFromPlayerAudio() {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         if (_uiState.value.liveSubtitleListening) return
         clearExternalSubtitleTrack()
         savedSubtitleJob?.cancel()
@@ -815,6 +1000,7 @@ class PlayerViewModel(
     }
 
     private fun startLiveSubtitleCaptureFromPlayerAudio() {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
         if (_uiState.value.liveSubtitleListening) return
         if (!subtitleRecognizer.hasModelAssets()) {
             _uiState.update {
@@ -1120,6 +1306,7 @@ class PlayerViewModel(
     override fun onCleared() {
         val player = uiState.value.player
         progressJob?.cancel()
+        initialSubtitleJob?.cancel()
         savedSubtitleJob?.cancel()
         liveSubtitleClearJob?.cancel()
         subtitleRecognizer.release()
@@ -1134,6 +1321,9 @@ class PlayerViewModel(
         private const val PROGRESS_SAVE_INTERVAL_MS = 15_000L
         private const val PROGRESS_SAVE_POSITION_DELTA_MS = 10_000L
         private const val MIN_AUTOSAVE_POSITION_MS = 5_000L
+        private const val PLAYBACK_RESOLVE_TIMEOUT_MS = 45_000L
+        private const val SLOW_PLAYBACK_RESOLVE_LOG_MS = 8_000L
+        private const val SLOW_SUBTITLE_LOAD_LOG_MS = 3_000L
 
         fun factory(
             application: Application,
@@ -1185,7 +1375,9 @@ data class PlayerUiState(
     val liveSubtitleSourceText: String = "",
     val liveSubtitleTranslatedText: String = "",
     val liveSubtitleError: String? = null,
+    val subtitleFeaturesEnabled: Boolean = true,
     val isLoading: Boolean = false,
+    val loadingMessage: String? = null,
     val errorMessage: String? = null
 )
 
@@ -1199,6 +1391,13 @@ private sealed interface PendingJavzimuAction {
     data class Search(val videoDurationMs: Long) : PendingJavzimuAction
     data class Download(val result: JavzimuSubtitleResult) : PendingJavzimuAction
 }
+
+private fun normalizeSubtitleSearchNumber(number: String, provider: SubtitleSearchProvider): String =
+    when (provider) {
+        SubtitleSearchProvider.Xunlei -> normalizeXunleiSubtitleNumber(number)
+        SubtitleSearchProvider.Javzimu,
+        SubtitleSearchProvider.Avsubtitles -> normalizeJavzimuSubtitleNumber(number)
+    }
 
 private fun LocalSubtitleFile.mimeType(): String {
     return when (name.substringAfterLast('.', "").lowercase()) {
