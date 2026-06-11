@@ -1,13 +1,15 @@
 {
-  "versionCode": 13,
-  "versionName": "1.3.7",
-  "apkUrl": "https://v4.gh-proxy.org/https://github.com/water2100/HomeMovie/releases/download/v1.3.7/HomeMovie-v1.3.7-debug.apk",
-  "sha256": "E4740AE3F961404DC73C8306F00E0D45660799C92F97AF7F5557341DB1D476ED",
-  "size": 58310324,
+  "versionCode": 14,
+  "versionName": "1.3.8",
+  "apkUrl": "https://v4.gh-proxy.org/https://github.com/water2100/HomeMovie/releases/download/v1.3.8/HomeMovie-v1.3.8-debug.apk",
+  "sha256": "B6A40D3115375B3101928F0932AE5B8B3D64AEB5CFBFE24AD6F9DD72F02D8E4E",
+  "size": 58310320,
   "notes": [
-    "播放器播放时保持屏幕常亮，避免不触摸屏幕后随系统息屏。",
-    "网盘直接播放未入库视频时只解析 115 直链并播放，不再查找 STRM、扫描字幕或提供字幕下载。",
-    "115 播放直链解析增加超时和中文状态提示，网络异常时不再无限停留在解析中。",
-    "影视库影片播放时拿到播放地址后立即启动播放器，字幕和库内存储位置在后台加载。"
+    "新增 JavDB 刮削来源，并在默认刮削说明中补充 JavDB 节点提示。",
+    "新增 MGStage 热更新规则和自定义前缀设置，支持 GANA、MIUM 等数字前缀搜索规则。",
+    "新增番号识别规则页面，RESTORED 会作为播放版本显示，支持 RESTORED-A 等版本标签。",
+    "优化网盘文件夹添加任务，新增任务进度页面、手动开始/暂停和未完成任务提醒。",
+    "优化设置页面滚动体验，返回设置首页时保留原来的下拉位置，应用更新页默认滚动到底部。",
+    "优化应用内更新选项，支持代理更新开关、启动后自动检测更新开关和安装后自动删除旧 APK。"
   ]
 }
