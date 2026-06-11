@@ -2,8 +2,8 @@
   "versionCode": 13,
   "versionName": "1.3.7",
   "apkUrl": "https://v4.gh-proxy.org/https://github.com/water2100/HomeMovie/releases/download/v1.3.7/HomeMovie-v1.3.7-debug.apk",
-  "sha256": "986D24B764A93CE2AA3EE3C718A5E3F269CCDE0E52F076FEE75392AFBA2CF608",
-  "size": 58228404,
+  "sha256": "E4740AE3F961404DC73C8306F00E0D45660799C92F97AF7F5557341DB1D476ED",
+  "size": 58310324,
   "notes": [
     "播放器播放时保持屏幕常亮，避免不触摸屏幕后随系统息屏。",
     "网盘直接播放未入库视频时只解析 115 直链并播放，不再查找 STRM、扫描字幕或提供字幕下载。",

@@ -374,7 +374,7 @@ private val MGSTAGE_SEARCH_PREFIX_ALIASES = mapOf(
     "SHN" to "116SHN",
     "DANDY" to "104DANDY",
     "GANA" to "200GANA",
-    "CUTE" to "229SCUTE",
+    "SCUTE" to "229SCUTE",
     "LUXU" to "259LUXU",
     "ARA" to "261ARA",
     "DCV" to "277DCV",

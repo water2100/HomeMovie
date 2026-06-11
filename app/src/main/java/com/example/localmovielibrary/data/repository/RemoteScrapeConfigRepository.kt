@@ -49,7 +49,9 @@ class RemoteScrapeConfigRepository(
             settingsRepository.saveCachedMgstageNumberPrefixes(rules.prefixes)
             settingsRepository.saveCachedMgstageSearchPrefixAliases(rules.searchPrefixAliases)
             settingsRepository.saveCachedNumberRecognitionIgnoredSuffixes(rules.numberRecognitionIgnoredSuffixes)
-            return@withContext rules.prefixes + custom
+            settingsRepository.saveCachedNumberRecognitionPartMarkers(rules.numberRecognitionPartMarkers)
+            NumberRecognitionRules.updateNumericPrefixAliases(settingsRepository.getMergedMgstageSearchPrefixAliases())
+            return@withContext settingsRepository.getMergedMgstageNumberPrefixes()
         }.onFailure {
             settingsRepository.saveRemoteScrapeConfigLastFetchMillis(now)
         }
@@ -58,10 +60,11 @@ class RemoteScrapeConfigRepository(
     }
 
     fun getCachedMgstageSearchPrefixAliases(): Map<String, String> =
-        settingsRepository.getCachedMgstageSearchPrefixAliases()
+        settingsRepository.getMergedMgstageSearchPrefixAliases()
 
     suspend fun refreshNumberRecognitionRules(forceRefresh: Boolean = false): Set<String> {
         getMgstageNumberPrefixes(forceRefresh = forceRefresh)
+        NumberRecognitionRules.updatePartMarkers(settingsRepository.getCachedNumberRecognitionPartMarkers())
         return settingsRepository.getCachedNumberRecognitionIgnoredSuffixes()
     }
 
@@ -72,25 +75,37 @@ class RemoteScrapeConfigRepository(
             return MgstageRules(
                 prefixes = emptySet(),
                 searchPrefixAliases = emptyMap(),
-                numberRecognitionIgnoredSuffixes = parseNumberRecognitionIgnoredSuffixes(json)
+                numberRecognitionIgnoredSuffixes = parseNumberRecognitionIgnoredSuffixes(json),
+                numberRecognitionPartMarkers = parseNumberRecognitionPartMarkers(json)
             )
         }
         val array = mgstage?.optJSONArray("prefixes")
             ?: json.optJSONArray("mgstagePrefixes")
             ?: json.optJSONArray("mgstage_number_prefixes")
             ?: JSONArray()
-        val searchPrefixAliases = (
+        val legacySearchPrefixAliases = (
             mgstage?.optJSONObject("searchPrefixAliases")
                 ?: mgstage?.optJSONObject("numberPrefixAliases")
                 ?: json.optJSONObject("mgstageSearchPrefixAliases")
                 ?: json.optJSONObject("mgstage_search_prefix_aliases")
                 ?: JSONObject()
             ).toPrefixAliasMap()
-        val prefixes = array.toPrefixSet() + searchPrefixAliases.keys + searchPrefixAliases.values
+        val prefixNumberMappings = (
+            mgstage?.optJSONObject("prefixNumberMappings")
+                ?: mgstage?.optJSONObject("prefix_number_mappings")
+                ?: json.optJSONObject("mgstagePrefixNumberMappings")
+                ?: json.optJSONObject("mgstage_prefix_number_mappings")
+                ?: JSONObject()
+            ).toPrefixNumberAliasMap()
+        val searchPrefixAliases = legacySearchPrefixAliases + prefixNumberMappings
+        val prefixes = (array.toPrefixSet() + searchPrefixAliases.keys)
+            .filterNot { it == LEGACY_CUTE_PREFIX || it.firstOrNull()?.isDigit() == true }
+            .toSet()
         return MgstageRules(
             prefixes = prefixes,
             searchPrefixAliases = searchPrefixAliases,
-            numberRecognitionIgnoredSuffixes = parseNumberRecognitionIgnoredSuffixes(json)
+            numberRecognitionIgnoredSuffixes = parseNumberRecognitionIgnoredSuffixes(json),
+            numberRecognitionPartMarkers = parseNumberRecognitionPartMarkers(json)
         )
     }
 
@@ -107,6 +122,21 @@ class RemoteScrapeConfigRepository(
         )
     }
 
+    private fun parseNumberRecognitionPartMarkers(json: JSONObject): Set<String> {
+        val numberRecognition = json.optJSONObject("numberRecognition")
+            ?: json.optJSONObject("number_recognition")
+        val array = numberRecognition?.optJSONArray("partMarkers")
+            ?: numberRecognition?.optJSONArray("part_markers")
+            ?: numberRecognition?.optJSONArray("segmentMarkers")
+            ?: numberRecognition?.optJSONArray("segment_markers")
+            ?: json.optJSONArray("numberRecognitionPartMarkers")
+            ?: json.optJSONArray("number_recognition_part_markers")
+            ?: JSONArray()
+        return NumberRecognitionRules.normalizePartMarkers(
+            (0 until array.length()).map { array.optString(it) }
+        )
+    }
+
     private fun JSONArray.toPrefixSet(): Set<String> =
         (0 until length())
             .mapNotNull { optString(it).normalizedNumberPrefixOrNull() }
@@ -117,7 +147,19 @@ class RemoteScrapeConfigRepository(
             .mapNotNull { key ->
                 val normalizedKey = key.normalizedNumberPrefixOrNull() ?: return@mapNotNull null
                 val normalizedValue = optString(key).normalizedNumberPrefixOrNull() ?: return@mapNotNull null
-                normalizedKey to normalizedValue
+                val numericPrefix = normalizedValue.takeWhile(Char::isDigit)
+                val valuePrefix = normalizedValue.drop(numericPrefix.length).normalizedNumberPrefixOrNull()
+                val canonicalPrefix = if (numericPrefix.isNotEmpty() && valuePrefix != null) valuePrefix else normalizedKey
+                canonicalPrefix to if (numericPrefix.isEmpty()) canonicalPrefix else "$numericPrefix$canonicalPrefix"
+            }
+            .toMap()
+
+    private fun JSONObject.toPrefixNumberAliasMap(): Map<String, String> =
+        keys().asSequence()
+            .mapNotNull { key ->
+                val prefix = key.normalizedNumberPrefixOrNull() ?: return@mapNotNull null
+                val numericPrefix = optString(key).filter(Char::isDigit)
+                prefix to "$numericPrefix$prefix"
             }
             .toMap()
 
@@ -146,11 +188,13 @@ class RemoteScrapeConfigRepository(
 
     private companion object {
         const val REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+        const val LEGACY_CUTE_PREFIX = "CUTE"
     }
 }
 
 data class MgstageRules(
     val prefixes: Set<String>,
     val searchPrefixAliases: Map<String, String>,
-    val numberRecognitionIgnoredSuffixes: Set<String>
+    val numberRecognitionIgnoredSuffixes: Set<String>,
+    val numberRecognitionPartMarkers: Set<String>
 )

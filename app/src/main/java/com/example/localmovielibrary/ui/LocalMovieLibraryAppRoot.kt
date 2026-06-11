@@ -27,6 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -70,10 +71,16 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
-    val unfinishedScrapeTaskCount by appContainer.movieRepository
+    val unfinishedMovieScrapeTaskCount by appContainer.movieRepository
         .observeUnfinishedScrapeTaskCount()
         .collectAsState(initial = 0)
+    val unfinishedFolderBatchTaskCount by appContainer.cloudFolderBatchTaskRepository
+        .observeUnfinishedTaskCount()
+        .collectAsState(initial = 0)
+    val unfinishedScrapeTaskCount = unfinishedMovieScrapeTaskCount + unfinishedFolderBatchTaskCount
+    val latestUnfinishedScrapeTaskCount by rememberUpdatedState(unfinishedScrapeTaskCount)
     var scrapeTaskPromptDismissed by remember { mutableStateOf(false) }
+    var showStartupScrapeTaskPrompt by remember { mutableStateOf(false) }
     var startupUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     val showBottomBar = currentRoute == Route.Home ||
         currentRoute == Route.Movies ||
@@ -97,6 +104,13 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     startupUpdateInfo = result.latest
                 }
             }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(800)
+        if (latestUnfinishedScrapeTaskCount > 0) {
+            showStartupScrapeTaskPrompt = true
+        }
     }
 
     Scaffold(
@@ -182,7 +196,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             settingsRepository = appContainer.settingsRepository,
                             movieRepository = appContainer.movieRepository,
                             scrapeRepository = appContainer.strmScrapeRepository,
-                            domesticMovieRepository = appContainer.domesticMovieRepository
+                            domesticMovieRepository = appContainer.domesticMovieRepository,
+                            folderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
+                            folderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
                     )
                     CloudBrowserScreen(
@@ -204,7 +220,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager
+                            asrModelManager = appContainer.asrModelManager,
+                            cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
                     )
                     SettingsScreen(
@@ -222,7 +240,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager
+                            asrModelManager = appContainer.asrModelManager,
+                            cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
                     )
                     SettingsScreen(
@@ -242,14 +262,16 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager
+                            asrModelManager = appContainer.asrModelManager,
+                            cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
                     )
                     SettingsScreen(
                         viewModel = viewModel,
                         onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
                         onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) },
-                        openScrapePage = true,
+                        openScrapeTasksPage = true,
                         onBack = { navController.popBackStack() }
                     )
                 }
@@ -266,7 +288,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager
+                            asrModelManager = appContainer.asrModelManager,
+                            cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
                     )
                     MissavCookieWebViewScreen(
@@ -429,12 +453,28 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
         }
     }
 
-    if (unfinishedScrapeTaskCount > 0 && !scrapeTaskPromptDismissed) {
+    if (showStartupScrapeTaskPrompt && unfinishedScrapeTaskCount > 0 && !scrapeTaskPromptDismissed) {
         AlertDialog(
             onDismissRequest = { scrapeTaskPromptDismissed = true },
-            title = { Text("刮削任务未完成") },
+            title = { Text("有未完成任务") },
             text = {
-                Text("您有未完成的刮削任务，请挂节点后到刮削任务中启动刮削。")
+                Text(
+                    buildString {
+                        append("检测到您有未完成任务")
+                        if (unfinishedMovieScrapeTaskCount > 0 || unfinishedFolderBatchTaskCount > 0) {
+                            append("：")
+                            val parts = mutableListOf<String>()
+                            if (unfinishedMovieScrapeTaskCount > 0) {
+                                parts += "影片刮削 $unfinishedMovieScrapeTaskCount 个"
+                            }
+                            if (unfinishedFolderBatchTaskCount > 0) {
+                                parts += "网盘文件夹任务 $unfinishedFolderBatchTaskCount 个"
+                            }
+                            append(parts.joinToString("，"))
+                        }
+                        append("。请挂节点后到刮削任务中手动启动，App 不会自动继续。")
+                    }
+                )
             },
             confirmButton = {
                 TextButton(

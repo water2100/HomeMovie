@@ -12,6 +12,8 @@ import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.AppUpdateRepository
 import com.example.localmovielibrary.data.repository.Cloud115StrmRepository
 import com.example.localmovielibrary.data.local.AppDatabase
+import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRepository
+import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRunner
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.DirectLinkRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
@@ -38,7 +40,8 @@ class AppContainer(context: Context) {
         MIGRATION_8_9,
         MIGRATION_9_10,
         MIGRATION_10_11,
-        MIGRATION_11_12
+        MIGRATION_11_12,
+        MIGRATION_12_13
     ).build()
 
     val scanner = LibraryScanner(appContext)
@@ -68,6 +71,7 @@ class AppContainer(context: Context) {
         cloud115Client = cloud115Client
     )
     val playbackProgressRepository = PlaybackProgressRepository(database.playbackProgressDao())
+    val cloudFolderBatchTaskRepository = CloudFolderBatchTaskRepository(database.cloudFolderBatchTaskDao())
     val domesticMovieRepository = DomesticMovieRepository(
         context = appContext,
         dao = database.domesticMovieDao(),
@@ -81,6 +85,14 @@ class AppContainer(context: Context) {
         cloudStrmRecordDao = database.cloudStrmRecordDao(),
         scanner = scanner,
         contentResolver = appContext.contentResolver
+    )
+    val cloudFolderBatchTaskRunner = CloudFolderBatchTaskRunner(
+        taskRepository = cloudFolderBatchTaskRepository,
+        strmRepository = cloud115StrmRepository,
+        recordRepository = cloudStrmRecordRepository,
+        settingsRepository = settingsRepository,
+        movieRepository = movieRepository,
+        scrapeRepository = strmScrapeRepository
     )
 
     private companion object {
@@ -237,6 +249,36 @@ class AppContainer(context: Context) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE movies ADD COLUMN scrapeTaskStatus TEXT NOT NULL DEFAULT 'None'")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_movies_scrapeTaskStatus` ON `movies` (`scrapeTaskStatus`)")
+            }
+        }
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `cloud_folder_batch_tasks` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `folderCid` INTEGER NOT NULL,
+                        `folderName` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `currentPath` TEXT,
+                        `currentFileName` TEXT,
+                        `queuedVideos` INTEGER NOT NULL,
+                        `processedVideos` INTEGER NOT NULL,
+                        `addedVideos` INTEGER NOT NULL,
+                        `scrapeFailedVideos` INTEGER NOT NULL,
+                        `skippedVideos` INTEGER NOT NULL,
+                        `failedVideos` INTEGER NOT NULL,
+                        `failedFolders` INTEGER NOT NULL,
+                        `failureMessage` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_folder_batch_tasks_status` ON `cloud_folder_batch_tasks` (`status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_folder_batch_tasks_folderCid` ON `cloud_folder_batch_tasks` (`folderCid`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_folder_batch_tasks_updatedAt` ON `cloud_folder_batch_tasks` (`updatedAt`)")
             }
         }
     }

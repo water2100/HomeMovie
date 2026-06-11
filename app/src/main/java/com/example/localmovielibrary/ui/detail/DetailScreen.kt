@@ -191,12 +191,14 @@ fun DetailScreen(
                     onScrapeDmm2 = viewModel::scrapeWithDmm2,
                     onScrapeOfficial = viewModel::scrapeWithOfficial,
                     onScrapeJavbus = viewModel::scrapeWithJavbus,
+                    onScrapeJavdb = viewModel::scrapeWithJavdb,
                     onScrapeMissav = viewModel::scrapeWithMissav,
                     onRescrapeDefault = viewModel::rescrapeWithDefault,
                     onRescrapeDmm = viewModel::rescrapeWithDmm,
                     onRescrapeDmm2 = viewModel::rescrapeWithDmm2,
                     onRescrapeOfficial = viewModel::rescrapeWithOfficial,
                     onRescrapeJavbus = viewModel::rescrapeWithJavbus,
+                    onRescrapeJavdb = viewModel::rescrapeWithJavdb,
                     onRescrapeMissav = viewModel::rescrapeWithMissav,
                     onClearScrapeRequest = { showClearScrapeConfirm = true },
                     onDeleteRequest = { showDeleteConfirm = true },
@@ -277,12 +279,14 @@ fun MovieDetailScreen(
     onScrapeDmm2: () -> Unit,
     onScrapeOfficial: () -> Unit,
     onScrapeJavbus: () -> Unit,
+    onScrapeJavdb: () -> Unit,
     onScrapeMissav: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
+    onRescrapeJavdb: () -> Unit,
     onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
@@ -346,12 +350,14 @@ fun MovieDetailScreen(
                     onScrapeDmm2 = onScrapeDmm2,
                     onScrapeOfficial = onScrapeOfficial,
                     onScrapeJavbus = onScrapeJavbus,
+                    onScrapeJavdb = onScrapeJavdb,
                     onScrapeMissav = onScrapeMissav,
                     onRescrapeDefault = onRescrapeDefault,
                     onRescrapeDmm = onRescrapeDmm,
                     onRescrapeDmm2 = onRescrapeDmm2,
                     onRescrapeOfficial = onRescrapeOfficial,
                     onRescrapeJavbus = onRescrapeJavbus,
+                    onRescrapeJavdb = onRescrapeJavdb,
                     onRescrapeMissav = onRescrapeMissav,
                     onClearScrapeRequest = onClearScrapeRequest
                 )
@@ -593,12 +599,14 @@ private fun MobileActionBar(
     onScrapeDmm2: () -> Unit,
     onScrapeOfficial: () -> Unit,
     onScrapeJavbus: () -> Unit,
+    onScrapeJavdb: () -> Unit,
     onScrapeMissav: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
+    onRescrapeJavdb: () -> Unit,
     onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit
 ) {
@@ -680,6 +688,13 @@ private fun MobileActionBar(
                         }
                     )
                     DropdownMenuItem(
+                        text = { Text("从 JavDB 刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onScrapeJavdb()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("从 MissAV 刮削") },
                         onClick = {
                             moreExpanded = false
@@ -721,6 +736,13 @@ private fun MobileActionBar(
                         onClick = {
                             moreExpanded = false
                             onRescrapeJavbus()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("用 JavDB 重新刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onRescrapeJavdb()
                         }
                     )
                     DropdownMenuItem(

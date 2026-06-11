@@ -19,12 +19,19 @@ class MovieNumberExtractorTest {
 
     @Test
     fun extractsMgstageNumberWithNumericPrefix() {
-        assertEquals("300MIUM-111", MovieNumberExtractor.extract("300MIUM-111.strm"))
+        assertEquals("MIUM-111", MovieNumberExtractor.extract("300MIUM-111.strm"))
+        assertEquals("SCUTE-953", MovieNumberExtractor.extract("229SCUTE-953.mp4"))
     }
 
     @Test
     fun extractsNumberWithTrailingLetterSuffix() {
         assertEquals("DANDY-852A", MovieNumberExtractor.extract("DANDY-852A.strm"))
+    }
+
+    @Test
+    fun treatsConfiguredAttachedLettersAsSegments() {
+        assertEquals("NHDTC-190", MovieNumberExtractor.extract("nhdtc-190a.mp4"))
+        assertEquals("NHDTC-190", MovieNumberExtractor.extract("nhdtc-190b.mp4"))
     }
 
     @Test
@@ -35,5 +42,12 @@ class MovieNumberExtractorTest {
     @Test
     fun supportsRemoteTrailingNoiseSuffixRules() {
         assertEquals("MEYD-772", MovieNumberExtractor.extract("meyd00772xyz.strm", ignoredSuffixes = setOf("XYZ")))
+    }
+
+    @Test
+    fun extractsRestoredMovieNumbers() {
+        assertEquals("ABF-308", MovieNumberExtractor.extract("ABF-308.restored.mp4"))
+        assertEquals("JAC-233", MovieNumberExtractor.extract("390JAC-233.restored-A.mp4"))
+        assertEquals("ABF-029", MovieNumberExtractor.extract("ABF-029.restored_iris2_watermarked.mp4"))
     }
 }

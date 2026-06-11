@@ -20,6 +20,8 @@ class AppSettingsRepository(context: Context) {
 
     init {
         NumberRecognitionRules.updateIgnoredSuffixes(getCachedNumberRecognitionIgnoredSuffixes())
+        NumberRecognitionRules.updatePartMarkers(getCachedNumberRecognitionPartMarkers())
+        NumberRecognitionRules.updateNumericPrefixAliases(getMergedMgstageSearchPrefixAliases())
     }
 
     fun getCookies(): String = prefs.getString(Cloud115CookieProvider.KEY_COOKIES, null).orEmpty()
@@ -91,6 +93,13 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putString(KEY_UPDATE_PROXY_BASE_URL, normalizeUpdateProxyBaseUrl(value)).apply()
     }
 
+    fun isUpdateProxyEnabled(): Boolean =
+        prefs.getBoolean(KEY_UPDATE_PROXY_ENABLED, true)
+
+    fun saveUpdateProxyEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UPDATE_PROXY_ENABLED, enabled).apply()
+    }
+
     fun isUpdateAutoCheckOnStartupEnabled(): Boolean =
         prefs.getBoolean(KEY_UPDATE_AUTO_CHECK_ON_STARTUP_ENABLED, true)
 
@@ -125,20 +134,12 @@ class AppSettingsRepository(context: Context) {
             .apply()
     }
 
-    fun getStrmTreeUri(): String? = prefs.getString(KEY_STRM_TREE_URI, null)
+    fun getStrmTreeUri(): String? = getLibraryRootUri()
 
-    fun getStrmTreeDisplayName(): String = getTreeDisplayName(getStrmTreeUri()) ?: "尚未选择目录"
+    fun getStrmTreeDisplayName(): String = getLibraryRootDisplayName()
 
     fun saveStrmTreeUri(uri: Uri) {
-        appContext.contentResolver.takePersistableUriPermission(
-            uri,
-            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        )
-        val uriString = uri.toString()
-        prefs.edit()
-            .putString(KEY_STRM_TREE_URI, uriString)
-            .putStringSet(KEY_STRM_TREE_URI_HISTORY, getKnownStrmTreeUris() + uriString)
-            .apply()
+        saveLibraryRootUri(uri)
     }
 
     fun getLibraryRootUri(): String? = prefs.getString(KEY_LIBRARY_ROOT_URI, null)
@@ -153,14 +154,14 @@ class AppSettingsRepository(context: Context) {
         val uriString = uri.toString()
         prefs.edit()
             .putString(KEY_LIBRARY_ROOT_URI, uriString)
+            .putString(KEY_STRM_TREE_URI, uriString)
             .putStringSet(KEY_LIBRARY_ROOT_URI_HISTORY, getKnownLibraryRootUris() + uriString)
+            .putStringSet(KEY_STRM_TREE_URI_HISTORY, getKnownStrmTreeUris() + uriString)
             .apply()
         syncNoMediaForLibraryRoot(uriString)
     }
 
-    fun getKnownStrmTreeUris(): Set<String> =
-        (prefs.getStringSet(KEY_STRM_TREE_URI_HISTORY, emptySet()) ?: emptySet()) +
-            listOfNotNull(getStrmTreeUri())
+    fun getKnownStrmTreeUris(): Set<String> = getKnownLibraryRootUris()
 
     fun getKnownLibraryRootUris(): Set<String> =
         (prefs.getStringSet(KEY_LIBRARY_ROOT_URI_HISTORY, emptySet()) ?: emptySet()) +
@@ -266,10 +267,12 @@ class AppSettingsRepository(context: Context) {
     }
 
     fun getCachedMgstageNumberPrefixes(): Set<String> =
-        prefs.getStringSet(KEY_CACHED_MGSTAGE_NUMBER_PREFIXES, DEFAULT_MGSTAGE_NUMBER_PREFIXES)
+        (DEFAULT_MGSTAGE_NUMBER_PREFIXES + prefs.getStringSet(KEY_CACHED_MGSTAGE_NUMBER_PREFIXES, emptySet()).orEmpty())
             .orEmpty()
             .mapNotNull { it.normalizedNumberPrefixOrNull() }
+            .filterNot { it == "CUTE" || it.firstOrNull()?.isDigit() == true }
             .toSet()
+            .plus(getCachedMgstageSearchPrefixAliases().keys)
 
     fun saveCachedMgstageNumberPrefixes(prefixes: Set<String>) {
         prefs.edit()
@@ -278,18 +281,19 @@ class AppSettingsRepository(context: Context) {
     }
 
     fun getCachedMgstageSearchPrefixAliases(): Map<String, String> =
-        prefs.getString(KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES, null)
+        DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES + (prefs.getString(KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES, null)
             ?.let { parseMgstageSearchPrefixAliases(it) }
-            ?.takeIf { it.isNotEmpty() }
-            ?: DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES
+            .orEmpty())
 
     fun saveCachedMgstageSearchPrefixAliases(aliases: Map<String, String>) {
+        val normalized = normalizeMgstageSearchPrefixAliases(aliases)
         prefs.edit()
             .putString(
                 KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES,
-                normalizeMgstageSearchPrefixAliases(aliases).toJsonObjectString()
+                normalized.toJsonObjectString()
             )
             .apply()
+        NumberRecognitionRules.updateNumericPrefixAliases(getMergedMgstageSearchPrefixAliases())
     }
 
     fun getCachedNumberRecognitionIgnoredSuffixes(): Set<String> =
@@ -307,30 +311,83 @@ class AppSettingsRepository(context: Context) {
         NumberRecognitionRules.updateIgnoredSuffixes(normalized)
     }
 
-    fun getCustomMgstageNumberPrefixes(): Set<String> =
-        prefs.getStringSet(KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES, emptySet())
+    fun getCachedNumberRecognitionPartMarkers(): Set<String> =
+        prefs.getStringSet(KEY_CACHED_NUMBER_RECOGNITION_PART_MARKERS, DEFAULT_NUMBER_RECOGNITION_PART_MARKERS)
             .orEmpty()
-            .mapNotNull { it.normalizedMgstageNumberPrefixOrNull() }
-            .toSet()
+            .let(NumberRecognitionRules::normalizePartMarkers)
+            .ifEmpty { DEFAULT_NUMBER_RECOGNITION_PART_MARKERS }
 
-    fun saveCustomMgstageNumberPrefixes(prefixes: Set<String>) {
+    fun saveCachedNumberRecognitionPartMarkers(markers: Set<String>) {
+        val normalized = NumberRecognitionRules.normalizePartMarkers(markers)
+            .ifEmpty { DEFAULT_NUMBER_RECOGNITION_PART_MARKERS }
         prefs.edit()
-            .putStringSet(KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES, prefixes.mapNotNull { it.normalizedMgstageNumberPrefixOrNull() }.toSet())
+            .putStringSet(KEY_CACHED_NUMBER_RECOGNITION_PART_MARKERS, normalized)
             .apply()
+        NumberRecognitionRules.updatePartMarkers(normalized)
     }
 
-    fun addCustomMgstageNumberPrefix(prefix: String) {
+    fun getCustomMgstageSearchPrefixAliases(): Map<String, String> {
+        val saved = prefs.getString(KEY_CUSTOM_MGSTAGE_SEARCH_PREFIX_ALIASES, null)
+            ?.let { parseMgstageSearchPrefixAliases(it) }
+            .orEmpty()
+        if (saved.isNotEmpty()) return saved
+        return normalizeMgstageSearchPrefixAliases(
+            prefs.getStringSet(KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES, emptySet())
+                .orEmpty()
+                .mapNotNull { it.normalizedMgstageNumberPrefixOrNull() }
+                .associateWith { it }
+        )
+    }
+
+    fun saveCustomMgstageSearchPrefixAliases(aliases: Map<String, String>) {
+        val normalized = normalizeMgstageSearchPrefixAliases(aliases)
+        prefs.edit()
+            .putString(KEY_CUSTOM_MGSTAGE_SEARCH_PREFIX_ALIASES, normalized.toJsonObjectString())
+            .remove(KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES)
+            .apply()
+        NumberRecognitionRules.updateNumericPrefixAliases(getMergedMgstageSearchPrefixAliases())
+    }
+
+    fun addCustomMgstageNumberPrefix(prefix: String, numericPrefix: String = "") {
         val normalized = prefix.normalizedMgstageNumberPrefixOrNull() ?: return
-        saveCustomMgstageNumberPrefixes(getCustomMgstageNumberPrefixes() + normalized)
+        val numeric = numericPrefix.filter(Char::isDigit)
+        saveCustomMgstageSearchPrefixAliases(
+            getCustomMgstageSearchPrefixAliases() + (normalized to "$numeric$normalized")
+        )
     }
 
     fun removeCustomMgstageNumberPrefix(prefix: String) {
         val normalized = prefix.normalizedMgstageNumberPrefixOrNull() ?: return
-        saveCustomMgstageNumberPrefixes(getCustomMgstageNumberPrefixes() - normalized)
+        saveCustomMgstageSearchPrefixAliases(getCustomMgstageSearchPrefixAliases() - normalized)
     }
+
+    fun getCustomMgstageNumberPrefixes(): Set<String> = getCustomMgstageSearchPrefixAliases().keys
 
     fun getMergedMgstageNumberPrefixes(): Set<String> =
         getCachedMgstageNumberPrefixes() + getCustomMgstageNumberPrefixes()
+
+    fun getMergedMgstageSearchPrefixAliases(): Map<String, String> =
+        getCachedMgstageSearchPrefixAliases() + getCustomMgstageSearchPrefixAliases()
+
+    fun getCustomMgstagePrefixNumberMappings(): Map<String, String> =
+        getCustomMgstageSearchPrefixAliases().toPrefixNumberMappings()
+
+    fun getCachedMgstagePrefixNumberMappings(): Map<String, String> =
+        getCachedMgstageNumberPrefixes().associateWith { "" } +
+            getCachedMgstageSearchPrefixAliases().toPrefixNumberMappings()
+
+    fun getMergedMgstagePrefixNumberMappings(): Map<String, String> =
+        getMergedMgstageNumberPrefixes().associateWith { "" } +
+            getMergedMgstageSearchPrefixAliases().toPrefixNumberMappings()
+
+    fun saveCustomMgstagePrefixNumberMappings(mappings: Map<String, String>) {
+        saveCustomMgstageSearchPrefixAliases(
+            mappings.mapNotNull { (prefix, numericPrefix) ->
+                val normalizedPrefix = prefix.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
+                normalizedPrefix to "${numericPrefix.filter(Char::isDigit)}$normalizedPrefix"
+            }.toMap()
+        )
+    }
 
     fun getRemoteScrapeConfigLastFetchMillis(): Long =
         prefs.getLong(KEY_REMOTE_SCRAPE_CONFIG_LAST_FETCH_MILLIS, 0L)
@@ -672,20 +729,30 @@ class AppSettingsRepository(context: Context) {
     private fun parseMgstageSearchPrefixAliases(jsonText: String): Map<String, String>? =
         runCatching {
             val json = JSONObject(jsonText)
-            json.keys().asSequence()
+            normalizeMgstageSearchPrefixAliases(
+                json.keys().asSequence()
                 .mapNotNull { key ->
                     val normalizedKey = key.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
                     val normalizedValue = json.optString(key).normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
                     normalizedKey to normalizedValue
                 }
                 .toMap()
+            )
         }.getOrNull()
 
     private fun normalizeMgstageSearchPrefixAliases(aliases: Map<String, String>): Map<String, String> =
         aliases.mapNotNull { (key, value) ->
             val normalizedKey = key.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
             val normalizedValue = value.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
-            normalizedKey to normalizedValue
+            val numericPrefix = normalizedValue.takeWhile(Char::isDigit)
+            val valuePrefix = normalizedValue.drop(numericPrefix.length)
+                .normalizedMgstageNumberPrefixOrNull()
+            val canonicalPrefix = if (numericPrefix.isNotEmpty() && valuePrefix != null) {
+                valuePrefix
+            } else {
+                normalizedKey
+            }
+            canonicalPrefix to if (numericPrefix.isEmpty()) canonicalPrefix else "$numericPrefix$canonicalPrefix"
         }.toMap()
 
     private fun Map<String, String>.toJsonObjectString(): String {
@@ -693,6 +760,11 @@ class AppSettingsRepository(context: Context) {
         forEach { (key, value) -> json.put(key, value) }
         return json.toString()
     }
+
+    private fun Map<String, String>.toPrefixNumberMappings(): Map<String, String> =
+        mapValues { (prefix, searchPrefix) ->
+            searchPrefix.removeSuffix(prefix).filter(Char::isDigit)
+        }
 
     private fun String.sha256(): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(toByteArray(Charsets.UTF_8))
@@ -727,6 +799,7 @@ class AppSettingsRepository(context: Context) {
             "https://github.com/water2100/HomeMovie/releases/latest/download/latest.json"
         const val KEY_UPDATE_PROXY_BASE_URL = "update_proxy_base_url"
         const val DEFAULT_UPDATE_PROXY_BASE_URL = "https://v4.gh-proxy.org/"
+        const val KEY_UPDATE_PROXY_ENABLED = "update_proxy_enabled"
         const val KEY_UPDATE_AUTO_CHECK_ON_STARTUP_ENABLED = "update_auto_check_on_startup_enabled"
         const val KEY_UPDATE_AUTO_DELETE_INSTALLED_APK_ENABLED = "update_auto_delete_installed_apk_enabled"
         const val KEY_PENDING_UPDATE_INSTALL_VERSION_CODE = "pending_update_install_version_code"
@@ -742,7 +815,9 @@ class AppSettingsRepository(context: Context) {
         const val KEY_CACHED_MGSTAGE_NUMBER_PREFIXES = "cached_mgstage_number_prefixes"
         const val KEY_CACHED_MGSTAGE_SEARCH_PREFIX_ALIASES = "cached_mgstage_search_prefix_aliases"
         const val KEY_CACHED_NUMBER_RECOGNITION_IGNORED_SUFFIXES = "cached_number_recognition_ignored_suffixes"
+        const val KEY_CACHED_NUMBER_RECOGNITION_PART_MARKERS = "cached_number_recognition_part_markers"
         const val KEY_CUSTOM_MGSTAGE_NUMBER_PREFIXES = "custom_mgstage_number_prefixes"
+        const val KEY_CUSTOM_MGSTAGE_SEARCH_PREFIX_ALIASES = "custom_mgstage_search_prefix_aliases"
         const val KEY_REMOTE_SCRAPE_CONFIG_LAST_FETCH_MILLIS = "remote_scrape_config_last_fetch_millis"
         const val KEY_HOME_SORT_OPTION = "home_sort_option"
         const val KEY_HOME_SORT_DIRECTION = "home_sort_direction"
@@ -782,15 +857,16 @@ class AppSettingsRepository(context: Context) {
             ScrapeSource.Official,
             ScrapeSource.Mgstage,
             ScrapeSource.Javbus,
+            ScrapeSource.Javdb,
             ScrapeSource.Missav
         )
-        val DEFAULT_PRIORITY_SCRAPE_SOURCES = listOf(ScrapeSource.Dmm2, ScrapeSource.Dmm, ScrapeSource.Javbus)
+        val DEFAULT_PRIORITY_SCRAPE_SOURCES = listOf(ScrapeSource.Dmm2, ScrapeSource.Dmm, ScrapeSource.Javbus, ScrapeSource.Javdb)
         val DEFAULT_DMM2_SKIPPED_NUMBER_PREFIXES = setOf("ABF", "ABW", "ABP", "REBDB", "TRE", "PPT", "CHN", "BGN")
         val DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES = mapOf(
             "SHN" to "116SHN",
             "DANDY" to "104DANDY",
             "GANA" to "200GANA",
-            "CUTE" to "229SCUTE",
+            "SCUTE" to "229SCUTE",
             "LUXU" to "259LUXU",
             "ARA" to "261ARA",
             "DCV" to "277DCV",
@@ -821,8 +897,9 @@ class AppSettingsRepository(context: Context) {
             "STCV" to "529STCV"
         )
         val DEFAULT_MGSTAGE_NUMBER_PREFIXES =
-            DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.keys + DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.values + setOf("SIRO")
+            DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.keys + setOf("SIRO")
         val DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES = NumberRecognitionRules.DEFAULT_IGNORED_SUFFIXES
+        val DEFAULT_NUMBER_RECOGNITION_PART_MARKERS = NumberRecognitionRules.DEFAULT_PART_MARKERS
         const val DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 22
         const val MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 14
         const val MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 40

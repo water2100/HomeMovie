@@ -241,6 +241,9 @@ class AppUpdateRepository(
 
     private fun updateRequestUrl(url: String): String {
         val normalizedUrl = url.trim()
+        if (!settingsRepository.isUpdateProxyEnabled()) {
+            return normalizedUrl
+        }
         val proxyBaseUrl = settingsRepository.getUpdateProxyBaseUrl()
             .trim()
             .trimEnd('/')

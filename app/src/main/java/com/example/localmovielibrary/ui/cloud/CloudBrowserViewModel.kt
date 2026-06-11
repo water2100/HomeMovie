@@ -7,6 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.example.localmovielibrary.cloud115.Cloud115FileItem
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.Cloud115StrmRepository
+import com.example.localmovielibrary.data.local.CloudFolderBatchTaskStatus
+import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRepository
+import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRunner
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
@@ -28,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 
 class CloudBrowserViewModel(
     private val strmRepository: Cloud115StrmRepository,
@@ -35,7 +39,9 @@ class CloudBrowserViewModel(
     private val settingsRepository: AppSettingsRepository,
     private val movieRepository: MovieRepository,
     private val scrapeRepository: StrmScrapeRepository,
-    private val domesticMovieRepository: DomesticMovieRepository
+    private val domesticMovieRepository: DomesticMovieRepository,
+    private val folderBatchTaskRepository: CloudFolderBatchTaskRepository,
+    private val folderBatchTaskRunner: CloudFolderBatchTaskRunner
 ) : ViewModel() {
     private val backStack = mutableListOf(CloudPathItem(ROOT_CID, ROOT_NAME))
     private val _uiState = MutableStateFlow(CloudBrowserUiState(path = backStack.toList(), isLoading = true))
@@ -52,6 +58,7 @@ class CloudBrowserViewModel(
 
     init {
         loadCurrent()
+        observeFolderBatchTasks()
     }
 
     fun domesticRootCid(): Long? = settingsRepository.getDomesticRootCid()
@@ -283,29 +290,52 @@ class CloudBrowserViewModel(
             _uiState.update { it.copy(message = "这个文件夹没有 CID，无法批量添加") }
             return
         }
-        if (cid in _uiState.value.addingFolderCids) {
-            _uiState.update { it.copy(message = "这个文件夹正在批量添加") }
-            return
+        viewModelScope.launch {
+            runCatching {
+                folderBatchTaskRepository.enqueueFolder(folder)
+            }.onSuccess {
+                scrapeRepository.appendLog("网盘文件夹任务已加入：${folder.name} / $cid")
+                folderBatchTaskRunner.start()
+                _uiState.update { state ->
+                    state.copy(
+                        addingFolderCids = state.addingFolderCids + cid,
+                        message = progressMessage("已加入网盘文件夹任务，可到设置-刮削队列查看进度：${folder.name}")
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        message = error.message ?: "文件夹任务创建失败"
+                    )
+                }
+            }
         }
-        val waitingAhead = synchronized(folderBatchQueueLock) {
-            val ahead = folderBatchQueue.size + if (isFolderBatchRunning) 1 else 0
-            folderBatchQueue.addLast(PendingFolderBatchAdd(folder = folder, cid = cid))
-            ahead
-        }
-        scrapeRepository.appendLog("网盘文件夹批量添加入队：${folder.name} / $cid，前面等待=$waitingAhead")
-        _uiState.update {
-            it.copy(
-                addingFolderCids = it.addingFolderCids + cid,
-                message = progressMessage(
-                    if (waitingAhead == 0) {
-                        "正在读取文件夹：${folder.name}"
-                    } else {
-                        "已加入文件夹批量添加队列：${folder.name}，前面还有 $waitingAhead 个文件夹"
-                    }
+    }
+
+    private fun observeFolderBatchTasks() {
+        viewModelScope.launch {
+            folderBatchTaskRepository.observeTasks().collect { tasks ->
+                val addingStatuses = setOf(
+                    CloudFolderBatchTaskStatus.Pending.name,
+                    CloudFolderBatchTaskStatus.Running.name,
+                    CloudFolderBatchTaskStatus.Paused.name
                 )
-            )
+                val addingCids = tasks
+                    .filter { it.status in addingStatuses }
+                    .map { it.folderCid }
+                    .toSet()
+                val addedCids = tasks
+                    .filter { it.status == CloudFolderBatchTaskStatus.Completed.name }
+                    .map { it.folderCid }
+                    .toSet()
+                _uiState.update {
+                    it.copy(
+                        addingFolderCids = addingCids,
+                        addedFolderCids = addedCids
+                    )
+                }
+            }
         }
-        startNextFolderBatchAdd()
     }
 
     private fun startNextFolderBatchAdd() {
@@ -451,6 +481,16 @@ class CloudBrowserViewModel(
             return
         }
         viewModelScope.launch {
+            if (recordRepository.get(pickcode) != null) {
+                _uiState.update {
+                    it.copy(
+                        addingPickcodes = it.addingPickcodes - pickcode,
+                        addedPickcodes = it.addedPickcodes + pickcode,
+                        message = "影片已经添加"
+                    )
+                }
+                return@launch
+            }
             val number = withContext(Dispatchers.IO) {
                 CloudAddNumberChecker().extract(item.name)
             }
@@ -726,7 +766,7 @@ class CloudBrowserViewModel(
             return
         }
         if (delayBeforeRequest) {
-            delay(CHILD_FOLDER_LIST_DELAY_MS)
+            delay(Random.nextLong(CHILD_FOLDER_LIST_DELAY_MIN_MS, CHILD_FOLDER_LIST_DELAY_MAX_MS + 1))
         }
         val children = runCatching {
             strmRepository.listFiles(cid)
@@ -775,6 +815,10 @@ class CloudBrowserViewModel(
         pickcode: String,
         forceDistinct: Boolean
     ): CloudAddResult {
+        if (recordRepository.get(pickcode) != null) {
+            scrapeRepository.appendLog("网盘添加跳过：${item.name} / $pickcode，原因：影片已经添加")
+            return CloudAddResult(pickcode = pickcode, message = "影片已经添加")
+        }
         scrapeRepository.appendLog("开始处理网盘添加队列：${item.name} / $pickcode")
         val generated = strmRepository.generateStrmForVideo(item, forceDistinct = forceDistinct)
         val libraryRoot = settingsRepository.getLibraryRootUri()
@@ -1036,7 +1080,8 @@ class CloudBrowserViewModel(
     }
 
     companion object {
-        private const val CHILD_FOLDER_LIST_DELAY_MS = 1_500L
+        private const val CHILD_FOLDER_LIST_DELAY_MIN_MS = 1_500L
+        private const val CHILD_FOLDER_LIST_DELAY_MAX_MS = 3_000L
         private const val ROOT_CID = 0L
         private const val ROOT_NAME = "根目录"
 
@@ -1046,12 +1091,23 @@ class CloudBrowserViewModel(
             settingsRepository: AppSettingsRepository,
             movieRepository: MovieRepository,
             scrapeRepository: StrmScrapeRepository,
-            domesticMovieRepository: DomesticMovieRepository
+            domesticMovieRepository: DomesticMovieRepository,
+            folderBatchTaskRepository: CloudFolderBatchTaskRepository,
+            folderBatchTaskRunner: CloudFolderBatchTaskRunner
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    CloudBrowserViewModel(strmRepository, recordRepository, settingsRepository, movieRepository, scrapeRepository, domesticMovieRepository) as T
+                    CloudBrowserViewModel(
+                        strmRepository,
+                        recordRepository,
+                        settingsRepository,
+                        movieRepository,
+                        scrapeRepository,
+                        domesticMovieRepository,
+                        folderBatchTaskRepository,
+                        folderBatchTaskRunner
+                    ) as T
             }
     }
 }

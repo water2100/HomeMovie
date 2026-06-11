@@ -7,6 +7,7 @@ import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.scraper.ActorAvatarStore
 import com.example.localmovielibrary.scraper.Dmm2Scraper
 import com.example.localmovielibrary.scraper.DmmScraper
+import com.example.localmovielibrary.scraper.JavdbScraper
 import com.example.localmovielibrary.scraper.JavbusScraper
 import com.example.localmovielibrary.scraper.MgstageScraper
 import com.example.localmovielibrary.scraper.MissavScraper
@@ -59,6 +60,7 @@ class StrmScrapeRepository(
     private val officialScraper: OfficialScraper = OfficialScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val mgstageScraper: MgstageScraper = MgstageScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javbusScraper: JavbusScraper = JavbusScraper(client = httpClient, ioDispatcher = ioDispatcher),
+    private val javdbScraper: JavdbScraper = JavdbScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val missavScraper: MissavScraper = MissavScraper(
         cookieProvider = settingsRepository::getMissavCookies,
         languageProvider = settingsRepository::getMissavScrapeLanguage,
@@ -66,7 +68,7 @@ class StrmScrapeRepository(
         ioDispatcher = ioDispatcher
     ),
     private val scraperRegistry: MovieScraperRegistry = MovieScraperRegistry(
-        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, missavScraper)
+        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, javdbScraper, missavScraper)
     ),
     private val imageDownloadService: ImageDownloadService = ImageDownloadService(
         httpClient = httpClient,
@@ -1097,6 +1099,7 @@ class StrmScrapeRepository(
             ScrapeSource.Official -> "Official"
             ScrapeSource.Mgstage -> "MGStage"
             ScrapeSource.Javbus -> "JavBus"
+            ScrapeSource.Javdb -> "JavDB"
             ScrapeSource.Missav -> "MissAV"
         }
 

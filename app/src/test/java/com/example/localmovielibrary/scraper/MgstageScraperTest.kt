@@ -9,7 +9,7 @@ class MgstageScraperTest {
         val cases = mapOf(
             "SHN-045" to "116SHN-045",
             "GANA-2556" to "200GANA-2556",
-            "CUTE-953" to "229SCUTE-953",
+            "SCUTE-953" to "229SCUTE-953",
             "LUXU-2556" to "259LUXU-2556",
             "ARA-094" to "261ARA-094",
             "DCV-102" to "277DCV-102",
@@ -50,6 +50,7 @@ class MgstageScraperTest {
     fun normalizesMiumSearchNumberWithNumericMakerPrefix() {
         assertEquals("300MIUM-001", normalizeMgstageSearchNumber("MIUM-001"))
         assertEquals("300MIUM-001", normalizeMgstageSearchNumber("mium001"))
+        assertEquals("CUTE-953", normalizeMgstageSearchNumber("CUTE-953"))
     }
 
     @Test
@@ -61,6 +62,7 @@ class MgstageScraperTest {
     @Test
     fun keepsAlreadyPrefixedMgstageSearchNumber() {
         assertEquals("300MIUM-001", normalizeMgstageSearchNumber("300MIUM-001"))
+        assertEquals("229SCUTE-953", normalizeMgstageSearchNumber("229SCUTE-953"))
         assertEquals("200GANA-3403", normalizeMgstageSearchNumber("200GANA-3403"))
     }
 

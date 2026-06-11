@@ -9,6 +9,7 @@ enum class ScrapeSource {
     Official,
     Mgstage,
     Javbus,
+    Javdb,
     Missav
 }
 

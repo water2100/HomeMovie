@@ -12,9 +12,12 @@ import com.example.localmovielibrary.cloud115.Cloud115QrLoginClient
 import com.example.localmovielibrary.cloud115.Cloud115QrLoginStatus
 import com.example.localmovielibrary.cloud115.Cloud115QrToken
 import com.example.localmovielibrary.cloud115.SavedCloud115Account
+import com.example.localmovielibrary.data.local.CloudFolderBatchTaskEntity
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.AppUpdateInfo
 import com.example.localmovielibrary.data.repository.AppUpdateRepository
+import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRepository
+import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRunner
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.ScrapeTaskSummary
@@ -25,6 +28,8 @@ import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.translate.TranslateProvider
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplate
 import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
+import com.example.localmovielibrary.util.NumberRecognitionRules
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +46,9 @@ class SettingsViewModel(
     private val scrapeRepository: StrmScrapeRepository,
     private val appUpdateRepository: AppUpdateRepository,
     private val cloud115QrLoginClient: Cloud115QrLoginClient,
-    private val asrModelManager: AsrModelManager
+    private val asrModelManager: AsrModelManager,
+    private val cloudFolderBatchTaskRepository: CloudFolderBatchTaskRepository,
+    private val cloudFolderBatchTaskRunner: CloudFolderBatchTaskRunner
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(loadState())
     val uiState: StateFlow<SettingsUiState> = _uiState
@@ -53,6 +60,8 @@ class SettingsViewModel(
 
     init {
         refreshScrapeTaskSummary()
+        observeCloudFolderBatchTasks()
+        observeCloudFolderBatchRunner()
     }
 
     fun refreshSavedCloud115Accounts() {
@@ -257,6 +266,17 @@ class SettingsViewModel(
         }
     }
 
+    fun updateUseUpdateProxyEnabled(enabled: Boolean) {
+        repository.saveUpdateProxyEnabled(enabled)
+        _uiState.update {
+            it.copy(
+                useUpdateProxyEnabled = enabled,
+                updateMessage = "",
+                savedMessage = if (enabled) "已开启代理更新" else "已关闭代理更新"
+            )
+        }
+    }
+
     fun updateAutoCheckUpdateOnStartupEnabled(enabled: Boolean) {
         repository.saveUpdateAutoCheckOnStartupEnabled(enabled)
         _uiState.update {
@@ -291,6 +311,7 @@ class SettingsViewModel(
         val url = _uiState.value.updateManifestUrl.trim()
         repository.saveUpdateManifestUrl(url)
         repository.saveUpdateProxyBaseUrl(_uiState.value.updateProxyBaseUrl)
+        repository.saveUpdateProxyEnabled(_uiState.value.useUpdateProxyEnabled)
         if (url.isBlank()) {
             _uiState.update { it.copy(updateMessage = "请先填写版本信息地址") }
             return
@@ -492,6 +513,15 @@ class SettingsViewModel(
         }
     }
 
+    fun updateNewMgstageNumericPrefix(value: String) {
+        _uiState.update {
+            it.copy(
+                newMgstageNumericPrefix = value.filter(Char::isDigit).take(4),
+                savedMessage = null
+            )
+        }
+    }
+
     fun addCustomMgstagePrefix() {
         val prefix = _uiState.value.newMgstagePrefix.trim()
         if (prefix.isBlank()) {
@@ -502,9 +532,16 @@ class SettingsViewModel(
             _uiState.update { it.copy(savedMessage = "MGStage 番号前缀需要包含字母") }
             return
         }
+        if (prefix.firstOrNull()?.isDigit() == true) {
+            _uiState.update { it.copy(savedMessage = "请填写不带附加数字的标准前缀，例如 MIUM 或 SCUTE") }
+            return
+        }
         repository.saveRemoteScrapeConfigUrl(_uiState.value.remoteScrapeConfigUrl)
-        repository.addCustomMgstageNumberPrefix(prefix)
-        _uiState.value = loadState().copy(savedMessage = "已添加 MGStage 前缀：${prefix.uppercase()}")
+        val numericPrefix = _uiState.value.newMgstageNumericPrefix
+        repository.addCustomMgstageNumberPrefix(prefix, numericPrefix)
+        _uiState.value = loadState().copy(
+            savedMessage = "已添加 MGStage 规则：${prefix.uppercase()} → ${numericPrefix.ifBlank { "无需附加" }}"
+        )
     }
 
     fun removeCustomMgstagePrefix(prefix: String) {
@@ -527,14 +564,14 @@ class SettingsViewModel(
                 .onSuccess { prefixes ->
                     _uiState.value = loadState().copy(
                         isRefreshingMgstageRules = false,
-                        savedMessage = "MGStage GitHub 规则已刷新，合并 ${prefixes.size} 个前缀"
+                        savedMessage = "GitHub 刮削规则已刷新，合并 ${prefixes.size} 个 MGStage 前缀"
                     )
                 }
                 .onFailure { error ->
                     _uiState.update {
                         it.copy(
                             isRefreshingMgstageRules = false,
-                            savedMessage = error.message ?: "MGStage GitHub 规则刷新失败"
+                            savedMessage = error.message ?: "GitHub 刮削规则刷新失败"
                         )
                     }
                 }
@@ -770,6 +807,7 @@ class SettingsViewModel(
         repository.saveMissavScrapeLanguage(state.missavScrapeLanguage)
         repository.saveUpdateManifestUrl(state.updateManifestUrl)
         repository.saveUpdateProxyBaseUrl(state.updateProxyBaseUrl)
+        repository.saveUpdateProxyEnabled(state.useUpdateProxyEnabled)
         repository.saveUpdateAutoCheckOnStartupEnabled(state.autoCheckUpdateOnStartupEnabled)
         repository.saveUpdateAutoDeleteInstalledApkEnabled(state.autoDeleteInstalledUpdateApkEnabled)
         repository.saveStrmBaseUrl(state.strmBaseUrl)
@@ -778,7 +816,7 @@ class SettingsViewModel(
         repository.saveScrapeConcurrencyLimit(state.scrapeConcurrencyLimitText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_SCRAPE_CONCURRENCY_LIMIT)
         repository.saveDmm2SkippedNumberPrefixes(state.dmm2SkippedPrefixes.toSet())
         repository.saveRemoteScrapeConfigUrl(state.remoteScrapeConfigUrl)
-        repository.saveCustomMgstageNumberPrefixes(state.mgstageCustomPrefixes.toSet())
+        repository.saveCustomMgstagePrefixNumberMappings(state.mgstageCustomPrefixes)
         repository.saveTranslateProvider(state.translateProvider)
         repository.saveBaiduTranslateAppId(state.baiduTranslateAppId)
         repository.saveBaiduTranslateSecretKey(state.baiduTranslateSecretKey)
@@ -802,11 +840,6 @@ class SettingsViewModel(
         _uiState.value = loadState().copy(savedMessage = "设置已保存")
     }
 
-    fun saveStrmDirectory(uri: Uri) {
-        repository.saveStrmTreeUri(uri)
-        _uiState.value = loadState().copy(savedMessage = "STRM 保存位置已更新")
-    }
-
     fun scanLibrary(uri: Uri) {
         repository.saveLibraryRootUri(uri)
         _uiState.update { it.copy(isScanning = true, savedMessage = null) }
@@ -821,42 +854,86 @@ class SettingsViewModel(
         }
     }
 
-    fun reorganizeExistingLibraries() {
-        _uiState.update { it.copy(isReorganizing = true, savedMessage = null) }
-        viewModelScope.launch {
-            val libraryRootUri = repository.getLibraryRootUri()
-            if (libraryRootUri.isNullOrBlank()) {
-                _uiState.value = loadState().copy(savedMessage = "请先选择影片库目录")
-                return@launch
-            }
-            runCatching { movieRepository.reorganizeLibraryByActorFolders(Uri.parse(libraryRootUri)) }
-                .onSuccess { result ->
-                    val message = if (result.hasFailures) {
-                        "整理完成：移动 ${result.movedFolders} 个文件夹，重新扫描 ${result.movieCount} 部影片，${result.failedRoots.size} 个目录失败"
-                    } else {
-                        "整理完成：移动 ${result.movedFolders} 个文件夹，重新扫描 ${result.movieCount} 部影片"
-                    }
-                    _uiState.value = loadState().copy(savedMessage = message)
-                }
-                .onFailure { error ->
-                    _uiState.value = loadState().copy(savedMessage = error.message ?: "影片库整理失败")
-                }
-        }
-    }
-
-    fun clearScrapeLog() {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                scrapeRepository.clearLogs()
-            }
-            _uiState.update { it.copy(scrapeLog = "") }
-        }
-    }
-
     fun refreshScrapeTaskSummary() {
         viewModelScope.launch {
             val summary = movieRepository.scrapeTaskSummary()
             _uiState.update { it.copy(scrapeTaskSummary = summary) }
+        }
+    }
+
+    private fun observeCloudFolderBatchTasks() {
+        viewModelScope.launch {
+            cloudFolderBatchTaskRepository.observeTasks().collect { tasks ->
+                _uiState.update { it.copy(cloudFolderBatchTasks = tasks) }
+            }
+        }
+    }
+
+    private fun observeCloudFolderBatchRunner() {
+        viewModelScope.launch {
+            cloudFolderBatchTaskRunner.isRunning.collect { running ->
+                _uiState.update {
+                    it.copy(
+                        isCloudFolderBatchRunning = running,
+                        isScraping = running || it.isManualScrapeRunning,
+                        cloudFolderBatchTaskMessage = if (running) {
+                            "正在执行网盘文件夹任务"
+                        } else {
+                            it.cloudFolderBatchTaskMessage
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun startCloudFolderBatchTasks() {
+        val unfinished = _uiState.value.cloudFolderBatchTasks.count { it.status != "Completed" }
+        if (unfinished <= 0) {
+            _uiState.update {
+                it.copy(
+                    cloudFolderBatchTaskMessage = "没有待执行的网盘文件夹任务",
+                    savedMessage = "没有待执行的网盘文件夹任务"
+                )
+            }
+            return
+        }
+        cloudFolderBatchTaskRunner.start()
+        _uiState.update {
+            it.copy(
+                cloudFolderBatchTaskMessage = "正在启动网盘文件夹任务...",
+                savedMessage = null
+            )
+        }
+    }
+
+    fun stopCloudFolderBatchTasks() {
+        cloudFolderBatchTaskRunner.stop()
+        _uiState.update {
+            it.copy(
+                cloudFolderBatchTaskMessage = "正在暂停网盘文件夹任务...",
+                savedMessage = "已请求暂停网盘文件夹任务"
+            )
+        }
+    }
+
+    fun refreshCloudFolderBatchTasks() {
+        _uiState.update {
+            it.copy(
+                cloudFolderBatchTaskMessage = "任务列表已刷新"
+            )
+        }
+    }
+
+    fun clearCompletedCloudFolderBatchTasks() {
+        viewModelScope.launch {
+            val count = cloudFolderBatchTaskRepository.clearCompletedTasks()
+            _uiState.update {
+                it.copy(
+                    cloudFolderBatchTaskMessage = "已清理 $count 个已完成文件夹任务",
+                    savedMessage = "已清理 $count 个已完成文件夹任务"
+                )
+            }
         }
     }
 
@@ -941,6 +1018,23 @@ class SettingsViewModel(
         }
     }
 
+    fun stopManualScrapeTasks() {
+        if (manualScrapeJob?.isActive != true) return
+        manualScrapeJob?.cancel(CancellationException("已手动暂停刮削任务"))
+        viewModelScope.launch {
+            movieRepository.resetRunningScrapeTasks()
+            _uiState.update {
+                it.copy(
+                    isManualScrapeRunning = false,
+                    isScraping = it.isCloudFolderBatchRunning,
+                    scrapeTaskSummary = movieRepository.scrapeTaskSummary(),
+                    scrapeTaskMessage = "已暂停刮削任务，点击开始可继续处理剩余任务",
+                    savedMessage = "已暂停刮削任务"
+                )
+            }
+        }
+    }
+
     fun resetFailedScrapeTasks() {
         viewModelScope.launch {
             val count = movieRepository.resetFailedScrapeTasks()
@@ -996,6 +1090,7 @@ class SettingsViewModel(
             missavScrapeLanguageOptions = MissavScrapeLanguage.entries,
             updateManifestUrl = repository.getUpdateManifestUrl(),
             updateProxyBaseUrl = repository.getUpdateProxyBaseUrl(),
+            useUpdateProxyEnabled = repository.isUpdateProxyEnabled(),
             appVersionName = appUpdateRepository.currentVersionName,
             appVersionCode = appUpdateRepository.currentVersionCode,
             latestAppUpdate = lastUpdateResult?.latest,
@@ -1005,8 +1100,6 @@ class SettingsViewModel(
             updateApkDirectoryPath = appUpdateRepository.updateDirectoryPath,
             autoCheckUpdateOnStartupEnabled = repository.isUpdateAutoCheckOnStartupEnabled(),
             autoDeleteInstalledUpdateApkEnabled = repository.isUpdateAutoDeleteInstalledApkEnabled(),
-            strmTreeUri = repository.getStrmTreeUri(),
-            strmTreeDisplayName = repository.getStrmTreeDisplayName(),
             libraryRootUri = repository.getLibraryRootUri(),
             libraryRootDisplayName = repository.getLibraryRootDisplayName(),
             strmBaseUrl = repository.getStrmBaseUrl(),
@@ -1017,9 +1110,13 @@ class SettingsViewModel(
             scrapeConcurrencyLimitText = repository.getScrapeConcurrencyLimit().toString(),
             dmm2SkippedPrefixes = repository.getDmm2SkippedNumberPrefixes().toList().sorted(),
             remoteScrapeConfigUrl = repository.getRemoteScrapeConfigUrl(),
-            mgstageCustomPrefixes = repository.getCustomMgstageNumberPrefixes().toList().sorted(),
-            mgstageRemotePrefixes = repository.getCachedMgstageNumberPrefixes().toList().sorted(),
-            mgstageMergedPrefixes = repository.getMergedMgstageNumberPrefixes().toList().sorted(),
+            mgstageCustomPrefixes = repository.getCustomMgstagePrefixNumberMappings().toSortedMap(),
+            mgstageRemotePrefixes = repository.getCachedMgstagePrefixNumberMappings().toSortedMap(),
+            mgstageMergedPrefixes = repository.getMergedMgstagePrefixNumberMappings().toSortedMap(),
+            numberRecognitionIgnoredSuffixes = repository.getCachedNumberRecognitionIgnoredSuffixes().toList().sorted(),
+            numberRecognitionPartMarkers = repository.getCachedNumberRecognitionPartMarkers().toList().sorted(),
+            numberRecognitionAttachedLetterPrefixes = NumberRecognitionRules.DEFAULT_ATTACHED_LETTER_SEGMENT_PREFIXES.toList().sorted(),
+            numberRecognitionNumericPrefixAliases = repository.getMergedMgstageSearchPrefixAliases().toSortedMap(),
             translateProvider = repository.getTranslateProvider(),
             baiduTranslateAppId = repository.getBaiduTranslateAppId(),
             baiduTranslateSecretKey = repository.getBaiduTranslateSecretKey(),
@@ -1051,8 +1148,7 @@ class SettingsViewModel(
             selectedCloud115LoginApp = Cloud115LoginApps.find(repository.getCloud115LoginApp()),
             savedCloud115Accounts = emptyList(),
             scrapeTaskSummary = scrapeTaskSummary,
-            scrapeTaskMessage = scrapeTaskMessage,
-            scrapeLog = ""
+            scrapeTaskMessage = scrapeTaskMessage
         )
     }
 
@@ -1066,7 +1162,9 @@ class SettingsViewModel(
             scrapeRepository: StrmScrapeRepository,
             appUpdateRepository: AppUpdateRepository,
             cloud115QrLoginClient: Cloud115QrLoginClient,
-            asrModelManager: AsrModelManager
+            asrModelManager: AsrModelManager,
+            cloudFolderBatchTaskRepository: CloudFolderBatchTaskRepository,
+            cloudFolderBatchTaskRunner: CloudFolderBatchTaskRunner
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -1078,7 +1176,9 @@ class SettingsViewModel(
                         scrapeRepository,
                         appUpdateRepository,
                         cloud115QrLoginClient,
-                        asrModelManager
+                        asrModelManager,
+                        cloudFolderBatchTaskRepository,
+                        cloudFolderBatchTaskRunner
                     ) as T
             }
 
@@ -1096,6 +1196,7 @@ data class SettingsUiState(
     val missavScrapeLanguageOptions: List<MissavScrapeLanguage> = MissavScrapeLanguage.entries,
     val updateManifestUrl: String = "",
     val updateProxyBaseUrl: String = AppSettingsRepository.DEFAULT_UPDATE_PROXY_BASE_URL,
+    val useUpdateProxyEnabled: Boolean = true,
     val appVersionName: String = "",
     val appVersionCode: Int = 0,
     val latestAppUpdate: AppUpdateInfo? = null,
@@ -1109,8 +1210,6 @@ data class SettingsUiState(
     val autoCheckUpdateOnStartupEnabled: Boolean = true,
     val autoDeleteInstalledUpdateApkEnabled: Boolean = true,
     val updateMessage: String = "",
-    val strmTreeUri: String? = null,
-    val strmTreeDisplayName: String = "尚未选择目录",
     val libraryRootUri: String? = null,
     val libraryRootDisplayName: String = "尚未选择目录",
     val strmBaseUrl: String = AppSettingsRepository.DEFAULT_STRM_BASE_URL,
@@ -1122,10 +1221,18 @@ data class SettingsUiState(
     val dmm2SkippedPrefixes: List<String> = emptyList(),
     val newDmm2SkippedPrefix: String = "",
     val remoteScrapeConfigUrl: String = AppSettingsRepository.DEFAULT_REMOTE_SCRAPE_CONFIG_URL,
-    val mgstageCustomPrefixes: List<String> = emptyList(),
-    val mgstageRemotePrefixes: List<String> = AppSettingsRepository.DEFAULT_MGSTAGE_NUMBER_PREFIXES.toList().sorted(),
-    val mgstageMergedPrefixes: List<String> = AppSettingsRepository.DEFAULT_MGSTAGE_NUMBER_PREFIXES.toList().sorted(),
+    val mgstageCustomPrefixes: Map<String, String> = emptyMap(),
+    val mgstageRemotePrefixes: Map<String, String> = AppSettingsRepository.DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES
+        .mapValues { (prefix, searchPrefix) -> searchPrefix.removeSuffix(prefix).filter(Char::isDigit) }
+        .plus("SIRO" to "")
+        .toSortedMap(),
+    val mgstageMergedPrefixes: Map<String, String> = mgstageRemotePrefixes,
     val newMgstagePrefix: String = "",
+    val newMgstageNumericPrefix: String = "",
+    val numberRecognitionIgnoredSuffixes: List<String> = AppSettingsRepository.DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES.toList().sorted(),
+    val numberRecognitionPartMarkers: List<String> = AppSettingsRepository.DEFAULT_NUMBER_RECOGNITION_PART_MARKERS.toList().sorted(),
+    val numberRecognitionAttachedLetterPrefixes: List<String> = NumberRecognitionRules.DEFAULT_ATTACHED_LETTER_SEGMENT_PREFIXES.toList().sorted(),
+    val numberRecognitionNumericPrefixAliases: Map<String, String> = AppSettingsRepository.DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.toSortedMap(),
     val isRefreshingMgstageRules: Boolean = false,
     val translateProvider: TranslateProvider = TranslateProvider.Baidu,
     val baiduTranslateAppId: String = AppSettingsRepository.DEFAULT_BAIDU_TRANSLATE_APP_ID,
@@ -1167,13 +1274,14 @@ data class SettingsUiState(
     val cloud115QrStatusText: String = "",
     val cloud115QrSavedFile: String? = null,
     val isScanning: Boolean = false,
-    val isReorganizing: Boolean = false,
     val isRebuildingStrmIndex: Boolean = false,
     val isScraping: Boolean = false,
     val isManualScrapeRunning: Boolean = false,
     val scrapeTaskSummary: ScrapeTaskSummary = ScrapeTaskSummary(),
     val scrapeTaskMessage: String = "",
-    val scrapeLog: String = "",
+    val cloudFolderBatchTasks: List<CloudFolderBatchTaskEntity> = emptyList(),
+    val isCloudFolderBatchRunning: Boolean = false,
+    val cloudFolderBatchTaskMessage: String = "",
     val savedMessage: String? = null
 ) {
     val hasMissavCookie: Boolean

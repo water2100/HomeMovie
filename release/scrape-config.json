@@ -2,6 +2,9 @@
   "numberRecognition": {
     "ignoredSuffixes": [
       "HHB"
+    ],
+    "partMarkers": [
+      "RESTORED"
     ]
   },
   "mgstage": {

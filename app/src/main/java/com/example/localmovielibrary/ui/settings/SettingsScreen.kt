@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.Article
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
@@ -58,15 +59,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,6 +80,8 @@ import coil.request.ImageRequest
 import com.example.localmovielibrary.cloud115.Cloud115LoginApp
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.cloud115.SavedCloud115Account
+import com.example.localmovielibrary.data.local.CloudFolderBatchTaskEntity
+import com.example.localmovielibrary.data.local.CloudFolderBatchTaskStatus
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.scraper.MissavScrapeLanguage
@@ -99,6 +102,8 @@ private enum class SettingsPage {
     Directory,
     Cloud,
     Scrape,
+    NumberRecognition,
+    ScrapeTasks,
     Subtitle,
     Translate,
     Player,
@@ -110,7 +115,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onOpenScrapeLogs: () -> Unit,
     onOpenMissavWeb: () -> Unit,
-    openScrapePage: Boolean = false,
+    openScrapeTasksPage: Boolean = false,
     openUpdatePage: Boolean = false,
     onBack: (() -> Unit)? = null
 ) {
@@ -118,12 +123,14 @@ fun SettingsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val strmDirectoryPicker = rememberTreePicker { uri -> viewModel.saveStrmDirectory(uri) }
     val libraryDirectoryPicker = rememberTreePicker { uri -> viewModel.scanLibrary(uri) }
+    val overviewScrollState = rememberScrollState()
+    val pageScrollState = rememberScrollState()
+    val updateScrollState = rememberScrollState()
     var currentPage by rememberSaveable {
         mutableStateOf<SettingsPage?>(
             when {
-                openScrapePage -> SettingsPage.Scrape
+                openScrapeTasksPage -> SettingsPage.ScrapeTasks
                 openUpdatePage -> SettingsPage.Update
                 else -> null
             }
@@ -132,9 +139,15 @@ fun SettingsScreen(
     var showImageCacheDialog by remember { mutableStateOf(false) }
     var showTranslateDialog by remember { mutableStateOf(false) }
     var imageCacheSizeText by remember { mutableStateOf("计算中...") }
+    var shouldScrollUpdateToBottom by remember { mutableStateOf(openUpdatePage) }
+    val contentScrollState = when (currentPage) {
+        null -> overviewScrollState
+        SettingsPage.Update -> updateScrollState
+        else -> pageScrollState
+    }
 
     BackHandler(enabled = currentPage != null) {
-        if ((openScrapePage || openUpdatePage) && onBack != null) {
+        if ((openScrapeTasksPage || openUpdatePage) && onBack != null) {
             onBack()
         } else {
             currentPage = null
@@ -164,21 +177,40 @@ fun SettingsScreen(
         refreshImageCacheSize()
     }
 
-    LaunchedEffect(openScrapePage) {
-        if (openScrapePage) {
-            currentPage = SettingsPage.Scrape
+    LaunchedEffect(openScrapeTasksPage) {
+        if (openScrapeTasksPage) {
+            currentPage = SettingsPage.ScrapeTasks
         }
     }
 
     LaunchedEffect(openUpdatePage) {
         if (openUpdatePage) {
             currentPage = SettingsPage.Update
+            shouldScrollUpdateToBottom = true
         }
     }
 
     LaunchedEffect(currentPage) {
         if (currentPage == SettingsPage.Cloud) {
             viewModel.refreshSavedCloud115Accounts()
+        }
+    }
+
+    LaunchedEffect(currentPage) {
+        when (currentPage) {
+            SettingsPage.Update -> shouldScrollUpdateToBottom = true
+            null -> Unit
+            else -> pageScrollState.scrollTo(0)
+        }
+    }
+
+    LaunchedEffect(currentPage, shouldScrollUpdateToBottom) {
+        if (currentPage != SettingsPage.Update || !shouldScrollUpdateToBottom) return@LaunchedEffect
+        snapshotFlow { updateScrollState.maxValue }.collect { maxValue ->
+            if (maxValue > 0) {
+                updateScrollState.scrollTo(maxValue)
+                shouldScrollUpdateToBottom = false
+            }
         }
     }
 
@@ -191,7 +223,7 @@ fun SettingsScreen(
             SettingsTopBar(
                 title = currentPage?.titleText() ?: "设置",
                 onBack = currentPage?.let {
-                    if ((openScrapePage || openUpdatePage) && onBack != null) {
+                    if ((openScrapeTasksPage || openUpdatePage) && onBack != null) {
                         onBack
                     } else {
                         { currentPage = null }
@@ -202,7 +234,7 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(contentScrollState)
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
@@ -218,9 +250,7 @@ fun SettingsScreen(
                     SettingsPage.Directory -> DirectorySettingsPage(
                         uiState = uiState,
                         onPickLibrary = { libraryDirectoryPicker.launch(null) },
-                        onPickStrmDirectory = { strmDirectoryPicker.launch(null) },
                         onNoMediaEnabledChange = viewModel::updateLibraryNoMediaEnabled,
-                        onReorganize = viewModel::reorganizeExistingLibraries,
                         onRebuildIndex = viewModel::rebuildCloudStrmIndex
                     )
 
@@ -244,6 +274,7 @@ fun SettingsScreen(
                     SettingsPage.Scrape -> ScrapeSettingsPage(
                         uiState = uiState,
                         imageCacheSizeText = imageCacheSizeText,
+                        onOpenNumberRules = { currentPage = SettingsPage.NumberRecognition },
                         onAddPrioritySource = viewModel::addPriorityScrapeSource,
                         onRemovePrioritySource = viewModel::removePriorityScrapeSource,
                         onMovePrioritySourceUp = viewModel::movePriorityScrapeSourceUp,
@@ -256,17 +287,28 @@ fun SettingsScreen(
                         onRemoveDmm2SkippedPrefix = viewModel::removeDmm2SkippedPrefix,
                         onRemoteScrapeConfigUrlChange = viewModel::updateRemoteScrapeConfigUrl,
                         onMgstagePrefixDraftChange = viewModel::updateNewMgstagePrefix,
+                        onMgstageNumericPrefixDraftChange = viewModel::updateNewMgstageNumericPrefix,
                         onAddMgstagePrefix = viewModel::addCustomMgstagePrefix,
                         onRemoveMgstagePrefix = viewModel::removeCustomMgstagePrefix,
                         onRefreshMgstageRules = viewModel::refreshMgstageRules,
+                        onRefreshCacheSize = ::refreshImageCacheSize,
+                        onClearImageCache = { showImageCacheDialog = true }
+                    )
+
+                    SettingsPage.NumberRecognition -> NumberRecognitionRulesPage(
+                        uiState = uiState,
+                        onRefreshRules = viewModel::refreshMgstageRules
+                    )
+
+                    SettingsPage.ScrapeTasks -> ScrapeTasksPage(
+                        uiState = uiState,
                         onStartManualScrapeTasks = viewModel::startManualScrapeTasks,
+                        onStopManualScrapeTasks = viewModel::stopManualScrapeTasks,
                         onRefreshScrapeTasks = viewModel::refreshScrapeTaskSummary,
                         onResetFailedScrapeTasks = viewModel::resetFailedScrapeTasks,
-                        onClearFinishedScrapeTasks = viewModel::clearFinishedScrapeTasks,
-                        onRefreshCacheSize = ::refreshImageCacheSize,
-                        onClearImageCache = { showImageCacheDialog = true },
-                        onOpenLogs = onOpenScrapeLogs,
-                        onClearLogs = viewModel::clearScrapeLog
+                        onStartCloudFolderBatchTasks = viewModel::startCloudFolderBatchTasks,
+                        onStopCloudFolderBatchTasks = viewModel::stopCloudFolderBatchTasks,
+                        onRefreshCloudFolderBatchTasks = viewModel::refreshCloudFolderBatchTasks
                     )
 
                     SettingsPage.Subtitle -> SubtitleSettingsPage(
@@ -296,6 +338,7 @@ fun SettingsScreen(
                         uiState = uiState,
                         onManifestUrlChange = viewModel::updateManifestUrl,
                         onProxyBaseUrlChange = viewModel::updateProxyBaseUrl,
+                        onUseProxyChange = viewModel::updateUseUpdateProxyEnabled,
                         onAutoCheckStartupChange = viewModel::updateAutoCheckUpdateOnStartupEnabled,
                         onAutoDeleteApkChange = viewModel::updateAutoDeleteInstalledUpdateApkEnabled,
                         onCheckUpdate = viewModel::checkForAppUpdate,
@@ -381,6 +424,8 @@ private fun SettingsPage.titleText(): String = when (this) {
     SettingsPage.Directory -> "目录设置"
     SettingsPage.Cloud -> "网盘设置"
     SettingsPage.Scrape -> "刮削设置"
+    SettingsPage.NumberRecognition -> "番号识别规则"
+    SettingsPage.ScrapeTasks -> "刮削任务"
     SettingsPage.Subtitle -> "字幕设置"
     SettingsPage.Translate -> "实时字幕翻译"
     SettingsPage.Player -> "播放器设置"
@@ -397,8 +442,8 @@ private fun SettingsOverviewPage(
 ) {
     SettingsGroupCard(title = "目录") {
         SettingsEntryRow(
-            title = "本地影片库与 STRM 目录",
-            subtitle = "影片库：${uiState.libraryRootDisplayName}\nSTRM：${uiState.strmTreeDisplayName}",
+            title = "本地影片库目录",
+            subtitle = "影片库与 STRM 保存共用：${uiState.libraryRootDisplayName}",
             onClick = { onOpenPage(SettingsPage.Directory) }
         )
     }
@@ -410,19 +455,33 @@ private fun SettingsOverviewPage(
         )
     }
     SettingsGroupCard(title = "刮削") {
-        val taskText = uiState.scrapeTaskSummary.unfinished
-            .takeIf { it > 0 }
-            ?.let { " · 待处理 $it" }
-            .orEmpty()
+        val movieTaskCount = uiState.scrapeTaskSummary.unfinished
+        val folderTaskCount = uiState.cloudFolderBatchTasks.count {
+            it.status != CloudFolderBatchTaskStatus.Completed.name
+        }
         SettingsEntryRow(
             title = "默认刮削与图片缓存",
-            subtitle = "${uiState.defaultScrapeSource.label} · 并发 ${uiState.scrapeConcurrencyLimitText} · 图片重试 ${uiState.imageDownloadRetryCountText} 次 · 缓存 $imageCacheSizeText$taskText",
+            subtitle = "${uiState.defaultScrapeSource.label} · 并发 ${uiState.scrapeConcurrencyLimitText} · 图片重试 ${uiState.imageDownloadRetryCountText} 次 · 缓存 $imageCacheSizeText",
             onClick = { onOpenPage(SettingsPage.Scrape) }
+        )
+        SettingsEntryRow(
+            title = "番号识别规则",
+            subtitle = "忽略后缀 ${uiState.numberRecognitionIgnoredSuffixes.size} · 分段标记 ${uiState.numberRecognitionPartMarkers.size}",
+            onClick = { onOpenPage(SettingsPage.NumberRecognition) }
         )
         SettingsEntryRow(
             title = "刮削日志",
             subtitle = "查看每天的刮削事件和失败原因",
             onClick = onOpenLogs
+        )
+        SettingsEntryRow(
+            title = "刮削任务",
+            subtitle = if (movieTaskCount + folderTaskCount > 0) {
+                "影片待处理 $movieTaskCount · 网盘文件夹待处理 $folderTaskCount"
+            } else {
+                "查看并手动启动影片刮削与网盘文件夹任务"
+            },
+            onClick = { onOpenPage(SettingsPage.ScrapeTasks) }
         )
     }
     SettingsGroupCard(title = "字幕") {
@@ -569,6 +628,7 @@ private fun AppUpdateSettingsPage(
     uiState: SettingsUiState,
     onManifestUrlChange: (String) -> Unit,
     onProxyBaseUrlChange: (String) -> Unit,
+    onUseProxyChange: (Boolean) -> Unit,
     onAutoCheckStartupChange: (Boolean) -> Unit,
     onAutoDeleteApkChange: (Boolean) -> Unit,
     onCheckUpdate: () -> Unit,
@@ -617,8 +677,14 @@ private fun AppUpdateSettingsPage(
         shape = RoundedCornerShape(18.dp),
         label = { Text("GitHub 代理地址") },
         placeholder = { Text(AppSettingsRepository.DEFAULT_UPDATE_PROXY_BASE_URL) },
-        supportingText = { Text("默认通过代理访问 GitHub；清空后直连，也可换成 https://gh-proxy.org/。") },
+        supportingText = { Text("开启代理更新时使用；关闭后会直接访问 GitHub。") },
         colors = settingsTextFieldColors()
+    )
+    UpdateSwitchRow(
+        title = "使用代理更新",
+        subtitle = "开启后检查版本和下载 APK 会经过上面的代理地址；关闭后直接访问 GitHub。",
+        checked = uiState.useUpdateProxyEnabled,
+        onCheckedChange = onUseProxyChange
     )
     UpdateSwitchRow(
         title = "启动 App 后自动检测更新",
@@ -913,12 +979,10 @@ private fun SubtitleSourceInfoRow(
 private fun DirectorySettingsPage(
     uiState: SettingsUiState,
     onPickLibrary: () -> Unit,
-    onPickStrmDirectory: () -> Unit,
     onNoMediaEnabledChange: (Boolean) -> Unit,
-    onReorganize: () -> Unit,
     onRebuildIndex: () -> Unit
 ) {
-    SettingsSectionTitle("影片库目录")
+    SettingsSectionTitle("影片库与 STRM 目录")
     DirectorySummary(
         title = uiState.libraryRootDisplayName,
         selected = uiState.libraryRootUri != null,
@@ -950,12 +1014,12 @@ private fun DirectorySettingsPage(
         Switch(
             checked = uiState.libraryNoMediaEnabled,
             onCheckedChange = onNoMediaEnabledChange,
-            enabled = uiState.libraryRootUri != null && !uiState.isScanning && !uiState.isReorganizing
+            enabled = uiState.libraryRootUri != null && !uiState.isScanning
         )
     }
     Button(
         onClick = onPickLibrary,
-        enabled = !uiState.isScanning && !uiState.isReorganizing && !uiState.isScraping,
+        enabled = !uiState.isScanning && !uiState.isScraping,
         shape = RoundedCornerShape(20.dp)
     ) {
         if (uiState.isScanning) {
@@ -969,41 +1033,6 @@ private fun DirectorySettingsPage(
         )
     }
 
-    OutlinedButton(
-        onClick = onReorganize,
-        enabled = !uiState.isScanning && !uiState.isReorganizing && !uiState.isScraping,
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        if (uiState.isReorganizing) {
-            CircularProgressIndicator(strokeWidth = 2.dp, color = Color.White)
-        } else {
-            Icon(Icons.Rounded.Article, contentDescription = null)
-        }
-        Text(
-            text = if (uiState.isReorganizing) "正在重新整理..." else "重新整理当前影片库",
-            modifier = Modifier.padding(start = 8.dp)
-        )
-    }
-    Text(
-        text = "按演员目录整理当前影片库，并重新扫描当前影片库。不会处理历史影片库目录。",
-        color = Color.White.copy(alpha = 0.56f),
-        style = MaterialTheme.typography.bodySmall
-    )
-
-    SettingsSectionTitle("STRM 保存位置")
-    DirectorySummary(
-        title = uiState.strmTreeDisplayName,
-        selected = uiState.strmTreeUri != null,
-        emptyText = "尚未选择 STRM 保存目录"
-    )
-    Button(
-        onClick = onPickStrmDirectory,
-        enabled = !uiState.isScraping,
-        shape = RoundedCornerShape(20.dp)
-    ) {
-        Icon(Icons.Rounded.FolderOpen, contentDescription = null)
-        Text("选择 STRM 保存目录", modifier = Modifier.padding(start = 8.dp))
-    }
     OutlinedButton(
         onClick = onRebuildIndex,
         enabled = !uiState.isScraping && !uiState.isRebuildingStrmIndex,
@@ -1277,6 +1306,7 @@ private fun ExcludedCloudVideosPanel(
 private fun ScrapeSettingsPage(
     uiState: SettingsUiState,
     imageCacheSizeText: String,
+    onOpenNumberRules: () -> Unit,
     onAddPrioritySource: (ScrapeSource) -> Unit,
     onRemovePrioritySource: (ScrapeSource) -> Unit,
     onMovePrioritySourceUp: (ScrapeSource) -> Unit,
@@ -1289,17 +1319,12 @@ private fun ScrapeSettingsPage(
     onRemoveDmm2SkippedPrefix: (String) -> Unit,
     onRemoteScrapeConfigUrlChange: (String) -> Unit,
     onMgstagePrefixDraftChange: (String) -> Unit,
+    onMgstageNumericPrefixDraftChange: (String) -> Unit,
     onAddMgstagePrefix: () -> Unit,
     onRemoveMgstagePrefix: (String) -> Unit,
     onRefreshMgstageRules: () -> Unit,
-    onStartManualScrapeTasks: () -> Unit,
-    onRefreshScrapeTasks: () -> Unit,
-    onResetFailedScrapeTasks: () -> Unit,
-    onClearFinishedScrapeTasks: () -> Unit,
     onRefreshCacheSize: () -> Unit,
-    onClearImageCache: () -> Unit,
-    onOpenLogs: () -> Unit,
-    onClearLogs: () -> Unit
+    onClearImageCache: () -> Unit
 ) {
     SettingsSectionTitle("默认刮削（优先级）")
     PriorityScrapeSourcePanel(
@@ -1322,14 +1347,39 @@ private fun ScrapeSettingsPage(
         remotePrefixes = uiState.mgstageRemotePrefixes,
         mergedPrefixes = uiState.mgstageMergedPrefixes,
         draft = uiState.newMgstagePrefix,
+        numericDraft = uiState.newMgstageNumericPrefix,
         remoteConfigUrl = uiState.remoteScrapeConfigUrl,
         isRefreshing = uiState.isRefreshingMgstageRules,
         onDraftChange = onMgstagePrefixDraftChange,
+        onNumericDraftChange = onMgstageNumericPrefixDraftChange,
         onRemoteConfigUrlChange = onRemoteScrapeConfigUrlChange,
         onAdd = onAddMgstagePrefix,
         onRemove = onRemoveMgstagePrefix,
         onRefresh = onRefreshMgstageRules
     )
+    SettingsSectionTitle("番号识别")
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .clickable(onClick = onOpenNumberRules)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "番号识别规则",
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "忽略后缀 ${uiState.numberRecognitionIgnoredSuffixes.size} · 分段标记 ${uiState.numberRecognitionPartMarkers.size}",
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
     SettingsSectionTitle("DMM2 跳过")
     Dmm2SkippedPrefixPanel(
         prefixes = uiState.dmm2SkippedPrefixes,
@@ -1338,7 +1388,7 @@ private fun ScrapeSettingsPage(
         onAdd = onAddDmm2SkippedPrefix,
         onRemove = onRemoveDmm2SkippedPrefix
     )
-    SettingsSectionTitle("刮削队列")
+    SettingsSectionTitle("刮削并发")
     OutlinedTextField(
         value = uiState.scrapeConcurrencyLimitText,
         onValueChange = onConcurrencyLimitChange,
@@ -1349,13 +1399,6 @@ private fun ScrapeSettingsPage(
         supportingText = { Text("范围 1 到 ${AppSettingsRepository.MAX_SCRAPE_CONCURRENCY_LIMIT}。建议 2，过高可能导致请求失败或图片下载失败。") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         colors = settingsTextFieldColors()
-    )
-    ManualScrapeTaskPanel(
-        uiState = uiState,
-        onStart = onStartManualScrapeTasks,
-        onRefresh = onRefreshScrapeTasks,
-        onResetFailed = onResetFailedScrapeTasks,
-        onClearFinished = onClearFinishedScrapeTasks
     )
     SettingsSectionTitle("图片下载")
     OutlinedTextField(
@@ -1374,16 +1417,132 @@ private fun ScrapeSettingsPage(
         onRefresh = onRefreshCacheSize,
         onClear = onClearImageCache
     )
-    SettingsSectionTitle("刮削日志")
-    Text(
-        text = "未刮削 STRM 可以在影片详情页的“更多”中手动刮削；网盘添加影片时会使用优先级刮削顺序。",
-        color = Color.White.copy(alpha = 0.62f),
-        style = MaterialTheme.typography.bodySmall
+}
+
+@Composable
+private fun NumberRecognitionRulesPage(
+    uiState: SettingsUiState,
+    onRefreshRules: () -> Unit
+) {
+    SettingsSectionTitle("热更新")
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "GitHub 规则地址",
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = uiState.remoteScrapeConfigUrl,
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis
+        )
+        Button(
+            onClick = onRefreshRules,
+            enabled = !uiState.isRefreshingMgstageRules,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskPrimaryButtonColors()
+        ) {
+            if (uiState.isRefreshingMgstageRules) {
+                CircularProgressIndicator(strokeWidth = 2.dp, color = Color.Black)
+            } else {
+                Icon(Icons.Rounded.Refresh, contentDescription = null)
+            }
+            Text(
+                text = if (uiState.isRefreshingMgstageRules) "正在刷新" else "刷新 GitHub 规则",
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+    }
+
+    SettingsSectionTitle("当前规则")
+    NumberRecognitionRuleCard(
+        title = "忽略后缀",
+        subtitle = "例如 HHB，识别番号时会先剥离这些尾部噪声。",
+        values = uiState.numberRecognitionIgnoredSuffixes
     )
-    ScrapeLogPanel(
-        log = uiState.scrapeLog,
-        onClear = onClearLogs,
-        onOpenLogs = onOpenLogs
+    NumberRecognitionRuleCard(
+        title = "分段标记",
+        subtitle = "例如 RESTORED 会识别为 RESTORED 版本，RESTORED-A 会识别为 RESTORED-A。",
+        values = uiState.numberRecognitionPartMarkers
+    )
+    NumberRecognitionRuleCard(
+        title = "连写字母分段前缀",
+        subtitle = "这些前缀后面直接跟 A/B 时会当作分段，不会并入番号。",
+        values = uiState.numberRecognitionAttachedLetterPrefixes
+    )
+}
+
+@Composable
+private fun NumberRecognitionRuleCard(
+    title: String,
+    subtitle: String,
+    values: List<String>
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = title,
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = subtitle,
+            color = Color.White.copy(alpha = 0.56f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            text = if (values.isEmpty()) "暂无规则" else values.joinToString("、"),
+            color = Color.White.copy(alpha = 0.72f),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 180.dp)
+                .verticalScroll(rememberScrollState())
+        )
+    }
+}
+
+@Composable
+private fun ScrapeTasksPage(
+    uiState: SettingsUiState,
+    onStartManualScrapeTasks: () -> Unit,
+    onStopManualScrapeTasks: () -> Unit,
+    onRefreshScrapeTasks: () -> Unit,
+    onResetFailedScrapeTasks: () -> Unit,
+    onStartCloudFolderBatchTasks: () -> Unit,
+    onStopCloudFolderBatchTasks: () -> Unit,
+    onRefreshCloudFolderBatchTasks: () -> Unit
+) {
+    SettingsSectionTitle("影片刮削任务")
+    ManualScrapeTaskPanel(
+        uiState = uiState,
+        onStart = onStartManualScrapeTasks,
+        onStop = onStopManualScrapeTasks,
+        onRefresh = onRefreshScrapeTasks,
+        onResetFailed = onResetFailedScrapeTasks
+    )
+    SettingsSectionTitle("网盘文件夹任务")
+    CloudFolderBatchTaskPanel(
+        uiState = uiState,
+        onStart = onStartCloudFolderBatchTasks,
+        onStop = onStopCloudFolderBatchTasks,
+        onRefresh = onRefreshCloudFolderBatchTasks
     )
 }
 
@@ -1445,13 +1604,15 @@ private fun MissavScrapeLanguagePanel(
 
 @Composable
 private fun MgstagePrefixPanel(
-    customPrefixes: List<String>,
-    remotePrefixes: List<String>,
-    mergedPrefixes: List<String>,
+    customPrefixes: Map<String, String>,
+    remotePrefixes: Map<String, String>,
+    mergedPrefixes: Map<String, String>,
     draft: String,
+    numericDraft: String,
     remoteConfigUrl: String,
     isRefreshing: Boolean,
     onDraftChange: (String) -> Unit,
+    onNumericDraftChange: (String) -> Unit,
     onRemoteConfigUrlChange: (String) -> Unit,
     onAdd: () -> Unit,
     onRemove: (String) -> Unit,
@@ -1480,7 +1641,7 @@ private fun MgstagePrefixPanel(
                     text = if (mergedPrefixes.isEmpty()) {
                         "未设置 MGStage 前缀。"
                     } else {
-                        "本地 ${customPrefixes.size} · GitHub ${remotePrefixes.size} · 合并 ${mergedPrefixes.size} 个：${mergedPrefixes.joinToString("、")}"
+                        "本地 ${customPrefixes.size} · GitHub ${remotePrefixes.size} · 合并 ${mergedPrefixes.size} 个：${mergedPrefixes.entries.joinToString("、") { it.toMgstageRuleLabel() }}"
                     },
                     color = Color.White.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall,
@@ -1537,26 +1698,31 @@ private fun MgstagePrefixPanel(
                             modifier = Modifier.padding(start = 8.dp)
                         )
                     }
-                    Row(
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = onDraftChange,
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("标准番号前缀") },
+                        placeholder = { Text("例如 MIUM、SCUTE") }
+                    )
+                    OutlinedTextField(
+                        value = numericDraft,
+                        onValueChange = onNumericDraftChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp),
+                        label = { Text("MGStage 搜索时附加的数字") },
+                        placeholder = { Text("例如 MIUM 填 300，SCUTE 填 229") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    Button(
+                        onClick = onAdd,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp)
                     ) {
-                        OutlinedTextField(
-                            value = draft,
-                            onValueChange = onDraftChange,
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            shape = RoundedCornerShape(18.dp),
-                            label = { Text("本地前缀") },
-                            placeholder = { Text("例如 300MIUM") }
-                        )
-                        Button(
-                            onClick = onAdd,
-                            shape = RoundedCornerShape(18.dp)
-                        ) {
-                            Text("添加")
-                        }
+                        Text("添加映射")
                     }
                     MgstagePrefixList(
                         title = "本地自定义",
@@ -1588,7 +1754,7 @@ private fun MgstagePrefixPanel(
 @Composable
 private fun MgstagePrefixList(
     title: String,
-    prefixes: List<String>,
+    prefixes: Map<String, String>,
     emptyText: String,
     onRemove: ((String) -> Unit)?
 ) {
@@ -1608,7 +1774,7 @@ private fun MgstagePrefixList(
             if (prefixes.isEmpty()) {
                 Text(emptyText)
             } else {
-                prefixes.forEach { prefix ->
+                prefixes.forEach { (prefix, numericPrefix) ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1617,7 +1783,7 @@ private fun MgstagePrefixList(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = prefix,
+                            text = "$prefix → ${numericPrefix.ifBlank { "无需附加" }}",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f),
                             maxLines = 1,
@@ -1635,16 +1801,18 @@ private fun MgstagePrefixList(
     }
 }
 
+private fun Map.Entry<String, String>.toMgstageRuleLabel(): String =
+    "$key→${value.ifBlank { "无" }}"
+
 @Composable
 private fun ManualScrapeTaskPanel(
     uiState: SettingsUiState,
     onStart: () -> Unit,
+    onStop: () -> Unit,
     onRefresh: () -> Unit,
-    onResetFailed: () -> Unit,
-    onClearFinished: () -> Unit
+    onResetFailed: () -> Unit
 ) {
     val summary = uiState.scrapeTaskSummary
-    val canStart = summary.unfinished > 0 && !uiState.isManualScrapeRunning
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1690,56 +1858,234 @@ private fun ManualScrapeTaskPanel(
             style = MaterialTheme.typography.bodySmall
         )
         Button(
-            onClick = onStart,
-            enabled = canStart,
+            onClick = if (uiState.isManualScrapeRunning) onStop else onStart,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
+            shape = RoundedCornerShape(18.dp),
+            colors = taskPrimaryButtonColors()
         ) {
-            Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+            Icon(
+                imageVector = if (uiState.isManualScrapeRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                contentDescription = null
+            )
             Text(
-                text = if (uiState.isManualScrapeRunning) "正在刮削" else "启动刮削任务",
+                text = if (uiState.isManualScrapeRunning) "暂停刮削任务" else "开始/继续刮削任务",
                 modifier = Modifier.padding(start = 8.dp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Row(
+        Button(
+            onClick = onResetFailed,
+            enabled = summary.failed > 0 && !uiState.isManualScrapeRunning,
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            shape = RoundedCornerShape(18.dp),
+            colors = manualTaskSecondaryButtonColors()
         ) {
-            Button(
-                onClick = onResetFailed,
-                enabled = summary.failed > 0 && !uiState.isManualScrapeRunning,
+            Icon(Icons.Rounded.Refresh, contentDescription = null)
+            Text(
+                text = "重置失败任务为待刮削",
+                modifier = Modifier.padding(start = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun CloudFolderBatchTaskPanel(
+    uiState: SettingsUiState,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val tasks = uiState.cloudFolderBatchTasks
+    val pending = tasks.count { it.status == CloudFolderBatchTaskStatus.Pending.name }
+    val running = tasks.count { it.status == CloudFolderBatchTaskStatus.Running.name }
+    val paused = tasks.count { it.status == CloudFolderBatchTaskStatus.Paused.name }
+    val failed = tasks.count { it.status == CloudFolderBatchTaskStatus.Failed.name }
+    val completed = tasks.count { it.status == CloudFolderBatchTaskStatus.Completed.name }
+    val unfinished = pending + running + paused + failed
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
                 modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(18.dp),
-                colors = manualTaskSecondaryButtonColors()
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = null)
                 Text(
-                    text = "重置失败",
-                    modifier = Modifier.padding(start = 6.dp),
-                    maxLines = 1,
+                    text = "网盘文件夹任务",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "待执行 $pending · 运行中 $running · 已暂停 $paused · 失败 $failed · 已完成 $completed",
+                    color = Color.White.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Button(
-                onClick = onClearFinished,
-                enabled = summary.completed > 0 && !uiState.isManualScrapeRunning,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(18.dp),
-                colors = manualTaskSecondaryButtonColors()
-            ) {
-                Icon(Icons.Rounded.DeleteSweep, contentDescription = null)
+            IconButton(onClick = onRefresh, enabled = !uiState.isCloudFolderBatchRunning) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "刷新网盘文件夹任务", tint = Color.White)
+            }
+        }
+        if (uiState.isCloudFolderBatchRunning) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        Text(
+            text = uiState.cloudFolderBatchTaskMessage.ifBlank {
+                if (unfinished > 0) {
+                    "文件夹添加任务已记录到数据库。重新进入 App 不会自动继续，需要在这里手动启动。"
+                } else {
+                    "暂无未完成的网盘文件夹任务。"
+                }
+            },
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Button(
+            onClick = if (uiState.isCloudFolderBatchRunning) onStop else onStart,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskPrimaryButtonColors()
+        ) {
+            Icon(
+                imageVector = if (uiState.isCloudFolderBatchRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                contentDescription = null
+            )
+            Text(
+                text = if (uiState.isCloudFolderBatchRunning) "暂停文件夹任务" else "开始/继续文件夹任务",
+                modifier = Modifier.padding(start = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 320.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (tasks.isEmpty()) {
                 Text(
-                    text = "清理完成",
-                    modifier = Modifier.padding(start = 6.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = "还没有文件夹任务。",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall
                 )
+            } else {
+                tasks.forEach { task ->
+                    CloudFolderBatchTaskRow(
+                        task = task,
+                        runnerRunning = uiState.isCloudFolderBatchRunning
+                    )
+                }
             }
         }
     }
 }
+
+@Composable
+private fun CloudFolderBatchTaskRow(
+    task: CloudFolderBatchTaskEntity,
+    runnerRunning: Boolean
+) {
+    val progress = if (task.queuedVideos > 0) {
+        task.processedVideos.coerceIn(0, task.queuedVideos).toFloat() / task.queuedVideos.toFloat()
+    } else {
+        0f
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = task.folderName,
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = task.statusLabel(runnerRunning),
+                color = Color.White.copy(alpha = 0.66f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1
+            )
+        }
+        if (task.queuedVideos > 0) {
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        Text(
+            text = if (task.queuedVideos > 0) {
+                "进度 ${task.processedVideos.coerceAtMost(task.queuedVideos)}/${task.queuedVideos}"
+            } else {
+                "正在收集候选视频"
+            },
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        val currentText = listOfNotNull(
+            task.currentPath?.takeIf { it.isNotBlank() },
+            task.currentFileName?.takeIf { it.isNotBlank() }
+        ).joinToString(" / ")
+        if (currentText.isNotBlank()) {
+            Text(
+                text = "当前：$currentText",
+                color = Color.White.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            text = "入库 ${task.addedVideos} · 跳过 ${task.skippedVideos} · 刮削失败 ${task.scrapeFailedVideos} · 失败 ${task.failedVideos + task.failedFolders}",
+            color = Color.White.copy(alpha = 0.54f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        task.failureMessage
+            ?.takeIf { it.isNotBlank() }
+            ?.let { message ->
+                Text(
+                    text = message,
+                    color = Color.White.copy(alpha = 0.50f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+    }
+}
+
+private fun CloudFolderBatchTaskEntity.statusLabel(runnerRunning: Boolean): String =
+    when (status) {
+        CloudFolderBatchTaskStatus.Pending.name -> "待执行"
+        CloudFolderBatchTaskStatus.Running.name -> if (runnerRunning) "运行中" else "中断待继续"
+        CloudFolderBatchTaskStatus.Paused.name -> "已暂停"
+        CloudFolderBatchTaskStatus.Completed.name -> "已完成"
+        CloudFolderBatchTaskStatus.Failed.name -> "失败"
+        else -> status
+    }
 
 @Composable
 private fun manualTaskSecondaryButtonColors() = ButtonDefaults.buttonColors(
@@ -1747,6 +2093,14 @@ private fun manualTaskSecondaryButtonColors() = ButtonDefaults.buttonColors(
     contentColor = Color.White,
     disabledContainerColor = Color.White.copy(alpha = 0.08f),
     disabledContentColor = Color.White.copy(alpha = 0.42f)
+)
+
+@Composable
+private fun taskPrimaryButtonColors() = ButtonDefaults.buttonColors(
+    containerColor = Color.White,
+    contentColor = Color.Black,
+    disabledContainerColor = Color.White.copy(alpha = 0.55f),
+    disabledContentColor = Color.Black.copy(alpha = 0.62f)
 )
 
 @Composable
@@ -1794,6 +2148,11 @@ private fun PriorityScrapeSourcePanel(
         }
         Text(
             text = "默认刮削会按这里的顺序依次尝试，成功一个就停止。手动指定 DMM、JavBus 等来源时不受这个顺序影响。",
+            color = Color.White.copy(alpha = 0.52f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            text = "使用 JavDB 接口刮削，日本节点仍然可用，下载图片需要日本节点。",
             color = Color.White.copy(alpha = 0.52f),
             style = MaterialTheme.typography.bodySmall
         )
@@ -2970,49 +3329,6 @@ private fun TranslateSettingsPanel(
 }
 
 @Composable
-private fun ScrapeLogPanel(
-    log: String,
-    onClear: () -> Unit,
-    onOpenLogs: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "最近日志",
-                color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedButton(onClick = onClear, shape = RoundedCornerShape(18.dp)) {
-                Icon(Icons.Rounded.DeleteSweep, contentDescription = null)
-                Text("清空", modifier = Modifier.padding(start = 6.dp))
-            }
-        }
-        OutlinedButton(onClick = onOpenLogs, shape = RoundedCornerShape(18.dp)) {
-            Icon(Icons.Rounded.Article, contentDescription = null)
-            Text("查看按日期日志", modifier = Modifier.padding(start = 8.dp))
-        }
-        Text(
-            text = log.ifBlank { "暂无日志" },
-            color = Color.White.copy(alpha = 0.68f),
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 80.dp, max = 220.dp)
-                .verticalScroll(rememberScrollState())
-        )
-    }
-}
-
-@Composable
 private fun SettingsTopBar(title: String = "设置", onBack: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
@@ -3118,6 +3434,7 @@ private val ScrapeSource.label: String
         ScrapeSource.Official -> "Official"
         ScrapeSource.Mgstage -> "MGStage"
         ScrapeSource.Javbus -> "JavBus"
+        ScrapeSource.Javdb -> "JavDB"
         ScrapeSource.Missav -> "MissAV"
     }
 

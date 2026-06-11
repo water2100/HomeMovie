@@ -592,6 +592,14 @@ class MovieRepository(
         )
     }
 
+    suspend fun resetRunningScrapeTasks(): Int = withContext(Dispatchers.IO) {
+        movieDao.updateScrapeTaskStatuses(
+            fromStatuses = listOf(ScrapeTaskStatus.Running.name),
+            toStatus = ScrapeTaskStatus.Pending.name,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
     suspend fun clearFinishedScrapeTasks(): Int = withContext(Dispatchers.IO) {
         movieDao.updateScrapeTaskStatuses(
             fromStatuses = listOf(ScrapeTaskStatus.Completed.name),

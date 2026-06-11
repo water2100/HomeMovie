@@ -50,7 +50,10 @@ fun extractMovieNumberInfo(text: String): MovieNumberInfo? {
         ?.takeIf { it.isNotBlank() }
         ?.uppercase(Locale.ROOT)
         .orEmpty()
-    val number = "${match.groupValues[1].uppercase(Locale.ROOT)}-$digits$attachedSuffix"
+    val prefix = NumberRecognitionRules.canonicalizePrefix(match.groupValues[1])
+    val attachedSuffixAsSegment = NumberRecognitionRules.isAttachedLetterSegment(prefix, attachedSuffix)
+    val number = "$prefix-$digits${if (attachedSuffixAsSegment) "" else attachedSuffix}"
+    val attachedLetterPart = attachedSuffix.takeIf { attachedSuffixAsSegment }
     val letterPart = match.groupValues.getOrNull(4)
         ?.takeIf { it.isNotBlank() }
         ?.uppercase(Locale.ROOT)
@@ -73,7 +76,8 @@ fun extractMovieNumberInfo(text: String): MovieNumberInfo? {
         ?.getOrNull(1)
         ?.takeIf { it.isNotBlank() }
         ?.let { "P${it.toInt()}" }
-    val part = numberedPart ?: normalizedNumberedPart ?: directNumberedPart ?: letterPart
+    val markerPart = NumberRecognitionRules.partAfterMarker(suffix)
+    val part = numberedPart ?: normalizedNumberedPart ?: markerPart ?: directNumberedPart ?: letterPart ?: attachedLetterPart
     return MovieNumberInfo(number = number, partLabel = part)
 }
 

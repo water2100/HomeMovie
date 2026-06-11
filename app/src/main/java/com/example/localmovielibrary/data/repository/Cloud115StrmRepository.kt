@@ -21,51 +21,32 @@ class Cloud115StrmRepository(
     suspend fun listFiles(cid: Long): List<Cloud115FileItem> = cloud115Client.listFiles(cid)
 
     suspend fun existingPickcodesForVisibleItems(items: List<Cloud115FileItem>): Set<String> = withContext(Dispatchers.IO) {
-        val videoItemsByPickcode = items
+        val pickcodes = items
             .filter { !it.isDirectory && it.isVideoFile() }
-            .mapNotNull { item ->
-                item.pickcode
-                    ?.takeIf { pickcode -> pickcode.isNotBlank() }
-                    ?.let { pickcode -> pickcode to item }
-            }
-            .toMap()
-        val records = recordRepository.existingRecordsForVisibleItems(videoItemsByPickcode.keys)
-        records
-            .filter { record ->
-                val itemNumber = videoItemsByPickcode[record.pickcode]
-                    ?.name
-                    ?.let { extractMovieNumberInfo(it)?.number }
-                itemNumber == null || record.movieNumber == itemNumber
-            }
-            .map { it.pickcode }
+            .mapNotNull { it.pickcode?.takeIf(String::isNotBlank) }
             .toSet()
+        recordRepository.existingPickcodesForVisibleItems(pickcodes)
     }
 
     suspend fun generateStrmForVideo(item: Cloud115FileItem, forceDistinct: Boolean = false): GeneratedStrmFile = withContext(Dispatchers.IO) {
         if (item.isDirectory) error("请选择一个视频文件")
         if (!item.isVideoFile()) error("当前文件不是支持的视频格式")
         val pickcode = item.pickcode?.takeIf { it.isNotBlank() } ?: error("这个文件没有 pickcode，无法生成 STRM")
-        val targetRoot = requireWritableStrmRoot()
+        recordRepository.getCached(pickcode)?.let { existing ->
+            return@withContext GeneratedStrmFile(
+                fileName = existing.fileName,
+                pickcode = pickcode,
+                strmUri = existing.strmUri,
+                created = false,
+                shouldScrape = false,
+                movieNumberHint = existing.movieNumber,
+                partLabel = existing.partLabel
+            )
+        }
 
+        val targetRoot = requireWritableStrmRoot()
         val segmentInfo = extractMovieNumberInfo(item.name)
         val variant = detectMovieVariant(item.name)
-
-        if (!forceDistinct) {
-            recordRepository.getCached(pickcode)
-                ?.takeIf { existing ->
-                    segmentInfo == null || existing.movieNumber == segmentInfo.number
-                }
-                ?.let { existing ->
-                return@withContext GeneratedStrmFile(
-                    fileName = existing.fileName,
-                    pickcode = pickcode,
-                    strmUri = existing.strmUri,
-                    created = false,
-                    movieNumberHint = existing.movieNumber,
-                    partLabel = existing.partLabel
-                )
-            }
-        }
 
         if (
             segmentInfo != null &&
@@ -152,10 +133,10 @@ class Cloud115StrmRepository(
 
     private fun requireWritableStrmRoot(): DocumentFile {
         val treeUri = settingsRepository.getStrmTreeUri()
-            ?: error("请先到设置页选择 STRM 文件保存位置")
+            ?: error("请先到设置页选择影片库目录")
         val targetRoot = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
-            ?: error("STRM 保存目录不可用")
-        if (!targetRoot.canWrite()) error("STRM 保存目录没有写入权限")
+            ?: error("影片库目录不可用")
+        if (!targetRoot.canWrite()) error("影片库目录没有写入权限")
         return targetRoot
     }
 

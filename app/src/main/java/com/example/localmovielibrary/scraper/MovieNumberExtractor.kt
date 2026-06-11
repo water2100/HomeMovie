@@ -28,7 +28,7 @@ object MovieNumberExtractor {
             )
             ?.match
             ?: return null
-        val prefix = match.groupValues[1].uppercase(Locale.ROOT)
+        val prefix = NumberRecognitionRules.canonicalizePrefix(match.groupValues[1])
         val separator = match.groupValues.getOrNull(2).orEmpty()
         val number = NumberRecognitionRules.normalizeDigits(
             digits = match.groupValues[3],
@@ -36,7 +36,8 @@ object MovieNumberExtractor {
             strippedIgnoredSuffix = stripResult.stripped
         )
         val suffix = match.groupValues[4].uppercase(Locale.ROOT)
-        return "$prefix-$number$suffix"
+        val suffixAsSegment = NumberRecognitionRules.isAttachedLetterSegment(prefix, suffix)
+        return "$prefix-$number${if (suffixAsSegment) "" else suffix}"
     }
 
     private data class NumberMatch(

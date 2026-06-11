@@ -83,9 +83,9 @@ class MovieNumberUtilsTest {
     fun parsesMgstageNumberWithNumericPrefix() {
         val identity = extractMovieSourceIdentity("300MIUM-111.mp4")
 
-        assertEquals("300MIUM-111", identity?.number)
+        assertEquals("MIUM-111", identity?.number)
         assertEquals(MovieVariant.Standard, identity?.variant)
-        assertEquals("300MIUM-111", identity?.sourceKey)
+        assertEquals("MIUM-111", identity?.sourceKey)
     }
 
     @Test
@@ -103,5 +103,35 @@ class MovieNumberUtilsTest {
 
         assertEquals("DANDY-852A", identity?.number)
         assertEquals(null, identity?.partLabel)
+    }
+
+    @Test
+    fun parsesConfiguredAttachedLetterSegments() {
+        val first = extractMovieSourceIdentity("nhdtc-190a.mp4")
+        val second = extractMovieSourceIdentity("nhdtc-190b.mp4")
+
+        assertEquals("NHDTC-190", first?.number)
+        assertEquals("A", first?.partLabel)
+        assertEquals("NHDTC-190-A", first?.sourceKey)
+        assertEquals("NHDTC-190", second?.number)
+        assertEquals("B", second?.partLabel)
+        assertEquals("NHDTC-190-B", second?.sourceKey)
+    }
+
+    @Test
+    fun parsesRestoredMarkerAndSegments() {
+        val restored = extractMovieSourceIdentity("ABF-308.restored.mp4")
+        val restoredPart = extractMovieSourceIdentity("390JAC-233.restored-A.mp4")
+        val watermarked = extractMovieSourceIdentity("ABF-029.restored_iris2_watermarked.mp4")
+
+        assertEquals("ABF-308", restored?.number)
+        assertEquals("RESTORED", restored?.partLabel)
+        assertEquals("ABF-308-RESTORED", restored?.sourceKey)
+        assertEquals("JAC-233", restoredPart?.number)
+        assertEquals("RESTORED-A", restoredPart?.partLabel)
+        assertEquals("JAC-233-RESTORED-A", restoredPart?.sourceKey)
+        assertEquals("ABF-029", watermarked?.number)
+        assertEquals("RESTORED", watermarked?.partLabel)
+        assertEquals("ABF-029-RESTORED", watermarked?.sourceKey)
     }
 }
