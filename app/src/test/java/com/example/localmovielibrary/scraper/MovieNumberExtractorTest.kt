@@ -24,6 +24,15 @@ class MovieNumberExtractorTest {
     }
 
     @Test
+    fun usesNumericPrefixRuleForDisplayNumberOnly() {
+        assertEquals("300MIUM-001", MovieNumberExtractor.extractDisplayNumber("300MIUM-001.mp4"))
+        assertEquals("229SCUTE-953", MovieNumberExtractor.extractDisplayNumber("229SCUTE-953.mp4"))
+        assertEquals("300MIUM-001", MovieNumberExtractor.extractDisplayNumber("MIUM-001.mp4"))
+        assertEquals("229SCUTE-953", MovieNumberExtractor.extractDisplayNumber("SCUTE-953.mp4"))
+        assertEquals("MIDV-001", MovieNumberExtractor.extractDisplayNumber("midv-001.mp4"))
+    }
+
+    @Test
     fun extractsNumberWithTrailingLetterSuffix() {
         assertEquals("DANDY-852A", MovieNumberExtractor.extract("DANDY-852A.strm"))
     }

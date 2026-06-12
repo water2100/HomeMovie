@@ -9,6 +9,17 @@ object MovieNumberExtractor {
     fun extract(
         fileName: String,
         ignoredSuffixes: Set<String> = NumberRecognitionRules.ignoredSuffixes()
+    ): String? = extractNumber(fileName, ignoredSuffixes, preserveNumericPrefixAlias = false)
+
+    fun extractDisplayNumber(
+        fileName: String,
+        ignoredSuffixes: Set<String> = NumberRecognitionRules.ignoredSuffixes()
+    ): String? = extractNumber(fileName, ignoredSuffixes, preserveNumericPrefixAlias = true)
+
+    private fun extractNumber(
+        fileName: String,
+        ignoredSuffixes: Set<String>,
+        preserveNumericPrefixAlias: Boolean
     ): String? {
         val rawBaseName = fileName.substringBeforeLast('.', fileName)
         val stripResult = NumberRecognitionRules.stripIgnoredSuffix(rawBaseName, ignoredSuffixes)
@@ -28,7 +39,13 @@ object MovieNumberExtractor {
             )
             ?.match
             ?: return null
-        val prefix = NumberRecognitionRules.canonicalizePrefix(match.groupValues[1])
+        val rawPrefix = match.groupValues[1]
+        val prefix = NumberRecognitionRules.canonicalizePrefix(rawPrefix)
+        val outputPrefix = if (preserveNumericPrefixAlias) {
+            NumberRecognitionRules.numericPrefixAliasFor(rawPrefix) ?: prefix
+        } else {
+            prefix
+        }
         val separator = match.groupValues.getOrNull(2).orEmpty()
         val number = NumberRecognitionRules.normalizeDigits(
             digits = match.groupValues[3],
@@ -37,7 +54,7 @@ object MovieNumberExtractor {
         )
         val suffix = match.groupValues[4].uppercase(Locale.ROOT)
         val suffixAsSegment = NumberRecognitionRules.isAttachedLetterSegment(prefix, suffix)
-        return "$prefix-$number${if (suffixAsSegment) "" else suffix}"
+        return "$outputPrefix-$number${if (suffixAsSegment) "" else suffix}"
     }
 
     private data class NumberMatch(

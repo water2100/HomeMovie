@@ -4,8 +4,6 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.localmovielibrary.asr.AsrModelManager
-import com.example.localmovielibrary.asr.AsrModelOption
 import com.example.localmovielibrary.cloud115.Cloud115LoginApp
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.cloud115.Cloud115QrLoginClient
@@ -24,10 +22,6 @@ import com.example.localmovielibrary.data.repository.ScrapeTaskSummary
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.scraper.MissavScrapeLanguage
-import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
-import com.example.localmovielibrary.translate.TranslateProvider
-import com.example.localmovielibrary.translate.DeepSeekPromptTemplate
-import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
 import com.example.localmovielibrary.util.NumberRecognitionRules
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -46,14 +40,12 @@ class SettingsViewModel(
     private val scrapeRepository: StrmScrapeRepository,
     private val appUpdateRepository: AppUpdateRepository,
     private val cloud115QrLoginClient: Cloud115QrLoginClient,
-    private val asrModelManager: AsrModelManager,
     private val cloudFolderBatchTaskRepository: CloudFolderBatchTaskRepository,
     private val cloudFolderBatchTaskRunner: CloudFolderBatchTaskRunner
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(loadState())
     val uiState: StateFlow<SettingsUiState> = _uiState
     private var qrLoginJob: Job? = null
-    private var asrDownloadJob: Job? = null
     private var manualScrapeJob: Job? = null
     private var appUpdateJob: Job? = null
     private var mgstageRuleJob: Job? = null
@@ -578,52 +570,6 @@ class SettingsViewModel(
         }
     }
 
-    fun updateBaiduTranslateAppId(value: String) {
-        _uiState.update { it.copy(baiduTranslateAppId = value.trim(), savedMessage = null) }
-    }
-
-    fun updateBaiduTranslateSecretKey(value: String) {
-        _uiState.update { it.copy(baiduTranslateSecretKey = value.trim(), savedMessage = null) }
-    }
-
-    fun updateTranslateProvider(provider: TranslateProvider) {
-        repository.saveTranslateProvider(provider)
-        _uiState.value = loadState().copy(savedMessage = "翻译服务已切换为：${provider.label}")
-    }
-
-    fun updateDeepSeekApiKey(value: String) {
-        _uiState.update { it.copy(deepSeekApiKey = value.trim(), savedMessage = null) }
-    }
-
-    fun updateDeepSeekBaseUrl(value: String) {
-        _uiState.update { it.copy(deepSeekBaseUrl = value.trim(), savedMessage = null) }
-    }
-
-    fun updateDeepSeekModel(value: String) {
-        _uiState.update { it.copy(deepSeekModel = value.trim(), savedMessage = null) }
-    }
-
-    fun updateDeepSeekThinkingEnabled(enabled: Boolean) {
-        _uiState.update { it.copy(deepSeekThinkingEnabled = enabled, savedMessage = null) }
-    }
-
-    fun updateDeepSeekPromptEnabled(enabled: Boolean) {
-        _uiState.update { it.copy(deepSeekPromptEnabled = enabled, savedMessage = null) }
-    }
-
-    fun updateDeepSeekPromptTemplate(template: DeepSeekPromptTemplate) {
-        _uiState.update {
-            it.copy(
-                deepSeekPromptTemplateId = template.id,
-                savedMessage = null
-            )
-        }
-    }
-
-    fun updateDeepSeekCustomPrompt(value: String) {
-        _uiState.update { it.copy(deepSeekCustomPrompt = value, savedMessage = null) }
-    }
-
     fun updateDomesticRootCid(value: String) {
         _uiState.update { it.copy(domesticRootCidText = value.filter { char -> char.isDigit() }, savedMessage = null) }
     }
@@ -676,25 +622,6 @@ class SettingsViewModel(
         _uiState.update { it.copy(cloudScrapeSkipBelowSizeMbText = cleaned, savedMessage = null) }
     }
 
-    fun updateAsrModel(model: AsrModelOption) {
-        repository.saveAsrModelId(model.id)
-        _uiState.value = loadState().copy(savedMessage = "ASR 模型已选择：${model.label}")
-    }
-
-    fun updateAsrModelBaseUrl(value: String) {
-        _uiState.update { it.copy(asrModelBaseUrl = value.trim(), savedMessage = null) }
-    }
-
-    fun updatePlayerLiveSubtitleEnabled(enabled: Boolean) {
-        repository.savePlayerLiveSubtitleEnabled(enabled)
-        _uiState.update {
-            it.copy(
-                playerLiveSubtitleEnabled = enabled,
-                savedMessage = if (enabled) "已开启播放器实时字幕" else "已关闭播放器实时字幕"
-            )
-        }
-    }
-
     fun updateExternalSubtitleFontSizeSp(value: Int) {
         repository.saveExternalSubtitleFontSizeSp(value)
         _uiState.update {
@@ -725,81 +652,6 @@ class SettingsViewModel(
         }
     }
 
-    fun updateSubtitleSearchProvider(provider: SubtitleSearchProvider) {
-        repository.saveSubtitleSearchProvider(provider)
-        _uiState.update {
-            it.copy(
-                subtitleSearchProvider = provider,
-                savedMessage = "在线字幕来源已切换为：${provider.label}"
-            )
-        }
-    }
-
-    fun downloadAsrModel() {
-        if (_uiState.value.isAsrModelDownloading) return
-        asrDownloadJob?.cancel()
-        _uiState.update {
-            it.copy(
-                isAsrModelDownloading = true,
-                asrModelDownloadProgress = 0,
-                asrModelDownloadMessage = "准备下载模型...",
-                savedMessage = null
-            )
-        }
-        asrDownloadJob = viewModelScope.launch {
-            runCatching {
-                asrModelManager.downloadCurrentModel { progress, message ->
-                    _uiState.update {
-                        it.copy(
-                            asrModelDownloadProgress = progress,
-                            asrModelDownloadMessage = message
-                        )
-                    }
-                }
-            }.onSuccess { status ->
-                _uiState.value = loadState().copy(
-                    isAsrModelDownloading = false,
-                    asrModelDownloadProgress = 100,
-                    asrModelDownloadMessage = "模型已下载：${formatBytes(status.sizeBytes)}",
-                    savedMessage = "ASR 模型下载完成"
-                )
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        isAsrModelDownloading = false,
-                        asrModelDownloadMessage = error.message ?: "ASR 模型下载失败",
-                        savedMessage = error.message ?: "ASR 模型下载失败"
-                    )
-                }
-            }
-        }
-    }
-
-    fun saveBaiduTranslateSettings() {
-        val state = _uiState.value
-        repository.saveTranslateProvider(state.translateProvider)
-        repository.saveBaiduTranslateAppId(state.baiduTranslateAppId)
-        repository.saveBaiduTranslateSecretKey(state.baiduTranslateSecretKey)
-        repository.saveDeepSeekApiKey(state.deepSeekApiKey)
-        repository.saveDeepSeekBaseUrl(state.deepSeekBaseUrl)
-        repository.saveDeepSeekModel(state.deepSeekModel)
-        repository.saveDeepSeekThinkingEnabled(state.deepSeekThinkingEnabled)
-        repository.saveDeepSeekPromptEnabled(state.deepSeekPromptEnabled)
-        repository.saveDeepSeekPromptTemplateId(state.deepSeekPromptTemplateId)
-        repository.saveDeepSeekCustomPrompt(state.deepSeekCustomPrompt)
-        repository.saveDomesticRootCid(state.domesticRootCidText)
-        repository.saveDomesticPageEnabled(state.domesticPageEnabled)
-        repository.saveLibraryNoMediaEnabled(state.libraryNoMediaEnabled)
-        repository.saveCloudAddButtonMessageEnabled(state.cloudAddButtonMessageEnabled)
-        repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
-        repository.saveCloudScrapeSkipBelowSizeMb(state.cloudScrapeSkipBelowSizeMbText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
-        repository.saveAsrModelId(state.selectedAsrModelId)
-        repository.saveAsrModelBaseUrl(state.asrModelBaseUrl)
-        repository.savePlayerLiveSubtitleEnabled(state.playerLiveSubtitleEnabled)
-        repository.saveSubtitleSearchProvider(state.subtitleSearchProvider)
-        _uiState.value = loadState().copy(savedMessage = "翻译配置已保存")
-    }
-
     fun save() {
         val state = _uiState.value
         repository.saveCookies(state.cookies)
@@ -817,26 +669,12 @@ class SettingsViewModel(
         repository.saveDmm2SkippedNumberPrefixes(state.dmm2SkippedPrefixes.toSet())
         repository.saveRemoteScrapeConfigUrl(state.remoteScrapeConfigUrl)
         repository.saveCustomMgstagePrefixNumberMappings(state.mgstageCustomPrefixes)
-        repository.saveTranslateProvider(state.translateProvider)
-        repository.saveBaiduTranslateAppId(state.baiduTranslateAppId)
-        repository.saveBaiduTranslateSecretKey(state.baiduTranslateSecretKey)
-        repository.saveDeepSeekApiKey(state.deepSeekApiKey)
-        repository.saveDeepSeekBaseUrl(state.deepSeekBaseUrl)
-        repository.saveDeepSeekModel(state.deepSeekModel)
-        repository.saveDeepSeekThinkingEnabled(state.deepSeekThinkingEnabled)
-        repository.saveDeepSeekPromptEnabled(state.deepSeekPromptEnabled)
-        repository.saveDeepSeekPromptTemplateId(state.deepSeekPromptTemplateId)
-        repository.saveDeepSeekCustomPrompt(state.deepSeekCustomPrompt)
         repository.saveDomesticRootCid(state.domesticRootCidText)
         repository.saveDomesticPageEnabled(state.domesticPageEnabled)
         repository.saveLibraryNoMediaEnabled(state.libraryNoMediaEnabled)
         repository.saveCloudAddButtonMessageEnabled(state.cloudAddButtonMessageEnabled)
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
         repository.saveCloudScrapeSkipBelowSizeMb(state.cloudScrapeSkipBelowSizeMbText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
-        repository.saveAsrModelId(state.selectedAsrModelId)
-        repository.saveAsrModelBaseUrl(state.asrModelBaseUrl)
-        repository.savePlayerLiveSubtitleEnabled(state.playerLiveSubtitleEnabled)
-        repository.saveSubtitleSearchProvider(state.subtitleSearchProvider)
         _uiState.value = loadState().copy(savedMessage = "设置已保存")
     }
 
@@ -1117,34 +955,15 @@ class SettingsViewModel(
             numberRecognitionPartMarkers = repository.getCachedNumberRecognitionPartMarkers().toList().sorted(),
             numberRecognitionAttachedLetterPrefixes = NumberRecognitionRules.DEFAULT_ATTACHED_LETTER_SEGMENT_PREFIXES.toList().sorted(),
             numberRecognitionNumericPrefixAliases = repository.getMergedMgstageSearchPrefixAliases().toSortedMap(),
-            translateProvider = repository.getTranslateProvider(),
-            baiduTranslateAppId = repository.getBaiduTranslateAppId(),
-            baiduTranslateSecretKey = repository.getBaiduTranslateSecretKey(),
-            deepSeekApiKey = repository.getDeepSeekApiKey(),
-            deepSeekBaseUrl = repository.getDeepSeekBaseUrl(),
-            deepSeekModel = repository.getDeepSeekModel(),
-            deepSeekThinkingEnabled = repository.isDeepSeekThinkingEnabled(),
-            deepSeekPromptEnabled = repository.isDeepSeekPromptEnabled(),
-            deepSeekPromptOptions = DeepSeekPromptTemplates.options,
-            deepSeekPromptTemplateId = repository.getDeepSeekPromptTemplateId(),
-            deepSeekCustomPrompt = repository.getDeepSeekCustomPrompt(),
             domesticRootCidText = repository.getDomesticRootCidText(),
             domesticPageEnabled = repository.isDomesticPageEnabled(),
             libraryNoMediaEnabled = repository.isLibraryNoMediaEnabled(),
             cloudAddButtonMessageEnabled = repository.isCloudAddButtonMessageEnabled(),
             cloudExcludedVideoNames = repository.getCloudExcludedVideoNames().toList().sorted(),
             cloudScrapeSkipBelowSizeMbText = repository.getCloudScrapeSkipBelowSizeMb().toString(),
-            asrModelOptions = asrModelManager.availableModels(),
-            selectedAsrModelId = repository.getAsrModelId(),
-            asrModelBaseUrl = repository.getAsrModelBaseUrl(),
-            isAsrModelReady = asrModelManager.currentStatus().isReady,
-            asrModelSizeText = formatBytes(asrModelManager.currentStatus().sizeBytes),
-            playerLiveSubtitleEnabled = repository.isPlayerLiveSubtitleEnabled(),
             externalSubtitleFontSizeSp = repository.getExternalSubtitleFontSizeSp(),
             externalSubtitleBottomPaddingPercent = repository.getExternalSubtitleBottomPaddingPercent(),
             externalSubtitleBackgroundAlphaPercent = repository.getExternalSubtitleBackgroundAlphaPercent(),
-            subtitleSearchProvider = repository.getSubtitleSearchProvider(),
-            subtitleSearchProviderOptions = SubtitleSearchProvider.entries,
             selectedCloud115LoginApp = Cloud115LoginApps.find(repository.getCloud115LoginApp()),
             savedCloud115Accounts = emptyList(),
             scrapeTaskSummary = scrapeTaskSummary,
@@ -1162,7 +981,6 @@ class SettingsViewModel(
             scrapeRepository: StrmScrapeRepository,
             appUpdateRepository: AppUpdateRepository,
             cloud115QrLoginClient: Cloud115QrLoginClient,
-            asrModelManager: AsrModelManager,
             cloudFolderBatchTaskRepository: CloudFolderBatchTaskRepository,
             cloudFolderBatchTaskRunner: CloudFolderBatchTaskRunner
         ): ViewModelProvider.Factory =
@@ -1176,16 +994,10 @@ class SettingsViewModel(
                         scrapeRepository,
                         appUpdateRepository,
                         cloud115QrLoginClient,
-                        asrModelManager,
                         cloudFolderBatchTaskRepository,
                         cloudFolderBatchTaskRunner
                     ) as T
             }
-
-        private fun formatBytes(bytes: Long): String {
-            val mb = bytes / 1024.0 / 1024.0
-            return if (mb >= 1.0) String.format("%.1f MB", mb) else "${bytes / 1024} KB"
-        }
     }
 }
 
@@ -1234,17 +1046,6 @@ data class SettingsUiState(
     val numberRecognitionAttachedLetterPrefixes: List<String> = NumberRecognitionRules.DEFAULT_ATTACHED_LETTER_SEGMENT_PREFIXES.toList().sorted(),
     val numberRecognitionNumericPrefixAliases: Map<String, String> = AppSettingsRepository.DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES.toSortedMap(),
     val isRefreshingMgstageRules: Boolean = false,
-    val translateProvider: TranslateProvider = TranslateProvider.Baidu,
-    val baiduTranslateAppId: String = AppSettingsRepository.DEFAULT_BAIDU_TRANSLATE_APP_ID,
-    val baiduTranslateSecretKey: String = AppSettingsRepository.DEFAULT_BAIDU_TRANSLATE_SECRET_KEY,
-    val deepSeekApiKey: String = "",
-    val deepSeekBaseUrl: String = AppSettingsRepository.DEFAULT_DEEPSEEK_BASE_URL,
-    val deepSeekModel: String = AppSettingsRepository.DEFAULT_DEEPSEEK_MODEL,
-    val deepSeekThinkingEnabled: Boolean = false,
-    val deepSeekPromptEnabled: Boolean = true,
-    val deepSeekPromptOptions: List<DeepSeekPromptTemplate> = DeepSeekPromptTemplates.options,
-    val deepSeekPromptTemplateId: String = DeepSeekPromptTemplates.DEFAULT_ID,
-    val deepSeekCustomPrompt: String = "",
     val domesticRootCidText: String = "",
     val domesticPageEnabled: Boolean = false,
     val libraryNoMediaEnabled: Boolean = true,
@@ -1252,20 +1053,9 @@ data class SettingsUiState(
     val cloudExcludedVideoNames: List<String> = emptyList(),
     val newExcludedVideoName: String = "",
     val cloudScrapeSkipBelowSizeMbText: String = AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB.toString(),
-    val asrModelOptions: List<AsrModelOption> = emptyList(),
-    val selectedAsrModelId: String = AppSettingsRepository.DEFAULT_ASR_MODEL_ID,
-    val asrModelBaseUrl: String = AppSettingsRepository.DEFAULT_ASR_MODEL_BASE_URL,
-    val isAsrModelReady: Boolean = false,
-    val asrModelSizeText: String = "0 KB",
-    val playerLiveSubtitleEnabled: Boolean = false,
     val externalSubtitleFontSizeSp: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP,
     val externalSubtitleBottomPaddingPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT,
     val externalSubtitleBackgroundAlphaPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT,
-    val subtitleSearchProvider: SubtitleSearchProvider = SubtitleSearchProvider.Xunlei,
-    val subtitleSearchProviderOptions: List<SubtitleSearchProvider> = SubtitleSearchProvider.entries,
-    val isAsrModelDownloading: Boolean = false,
-    val asrModelDownloadProgress: Int = 0,
-    val asrModelDownloadMessage: String = "",
     val selectedCloud115LoginApp: Cloud115LoginApp = Cloud115LoginApps.default,
     val savedCloud115Accounts: List<SavedCloud115Account> = emptyList(),
     val selectedCloud115AccountFileName: String? = null,

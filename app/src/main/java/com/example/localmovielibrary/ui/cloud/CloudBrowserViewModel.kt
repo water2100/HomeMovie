@@ -7,7 +7,6 @@ import androidx.lifecycle.viewModelScope
 import com.example.localmovielibrary.cloud115.Cloud115FileItem
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.Cloud115StrmRepository
-import com.example.localmovielibrary.data.local.CloudFolderBatchTaskStatus
 import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRepository
 import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRunner
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
@@ -58,7 +57,6 @@ class CloudBrowserViewModel(
 
     init {
         loadCurrent()
-        observeFolderBatchTasks()
     }
 
     fun domesticRootCid(): Long? = settingsRepository.getDomesticRootCid()
@@ -296,9 +294,8 @@ class CloudBrowserViewModel(
             }.onSuccess {
                 scrapeRepository.appendLog("网盘文件夹任务已加入：${folder.name} / $cid")
                 folderBatchTaskRunner.start()
-                _uiState.update { state ->
-                    state.copy(
-                        addingFolderCids = state.addingFolderCids + cid,
+                _uiState.update {
+                    it.copy(
                         message = progressMessage("已加入网盘文件夹任务，可到设置-刮削队列查看进度：${folder.name}")
                     )
                 }
@@ -306,32 +303,6 @@ class CloudBrowserViewModel(
                 _uiState.update {
                     it.copy(
                         message = error.message ?: "文件夹任务创建失败"
-                    )
-                }
-            }
-        }
-    }
-
-    private fun observeFolderBatchTasks() {
-        viewModelScope.launch {
-            folderBatchTaskRepository.observeTasks().collect { tasks ->
-                val addingStatuses = setOf(
-                    CloudFolderBatchTaskStatus.Pending.name,
-                    CloudFolderBatchTaskStatus.Running.name,
-                    CloudFolderBatchTaskStatus.Paused.name
-                )
-                val addingCids = tasks
-                    .filter { it.status in addingStatuses }
-                    .map { it.folderCid }
-                    .toSet()
-                val addedCids = tasks
-                    .filter { it.status == CloudFolderBatchTaskStatus.Completed.name }
-                    .map { it.folderCid }
-                    .toSet()
-                _uiState.update {
-                    it.copy(
-                        addingFolderCids = addingCids,
-                        addedFolderCids = addedCids
                     )
                 }
             }
@@ -362,8 +333,6 @@ class CloudBrowserViewModel(
                 }
                 _uiState.update { state ->
                     state.copy(
-                        addingFolderCids = state.addingFolderCids - pending.cid,
-                        addedFolderCids = if (summary.addedVideos > 0) state.addedFolderCids + pending.cid else state.addedFolderCids,
                         message = progressMessage(summary.toUserMessage())
                     )
                 }
@@ -375,7 +344,6 @@ class CloudBrowserViewModel(
                 scrapeRepository.appendLog("网盘文件夹批量添加失败：${pending.folder.name} / ${pending.cid}，原因：$message")
                 _uiState.update {
                     it.copy(
-                        addingFolderCids = it.addingFolderCids - pending.cid,
                         message = message
                     )
                 }
@@ -480,55 +448,72 @@ class CloudBrowserViewModel(
             _uiState.update { it.copy(message = "这个视频已经添加或正在添加") }
             return
         }
+        _uiState.update {
+            it.copy(
+                addingPickcodes = it.addingPickcodes + pickcode,
+                message = progressMessage("正在检查 ${item.name}")
+            )
+        }
         viewModelScope.launch {
-            if (recordRepository.get(pickcode) != null) {
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - pickcode,
-                        addedPickcodes = it.addedPickcodes + pickcode,
-                        message = "影片已经添加"
-                    )
-                }
-                return@launch
-            }
-            val number = withContext(Dispatchers.IO) {
-                CloudAddNumberChecker().extract(item.name)
-            }
-            if (number == null) {
-                scrapeRepository.appendLog("网盘添加跳过：${item.name}，原因：无法提取番号")
-                _uiState.update {
-                    it.copy(
-                        message = "无法提取番号，已跳过：${item.name}"
-                    )
-                }
-                return@launch
-            }
-            if (pickcode in _uiState.value.addedPickcodes || pickcode in _uiState.value.addingPickcodes) {
-                _uiState.update { it.copy(message = "这个视频已经添加或正在添加") }
-                return@launch
-            }
-            _uiState.update {
-                it.copy(
-                    addingPickcodes = it.addingPickcodes + pickcode,
-                    message = progressMessage("\u6b63\u5728\u68c0\u67e5 ${item.name}")
-                )
-            }
-            val conflict = recordRepository.findStandardSameNumberCandidate(item.name, pickcode)
-            if (conflict != null) {
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - pickcode,
-                        pendingReplaceConflict = PendingReplaceConflict(
-                            item = item,
-                            oldPickcode = conflict.pickcode,
-                            oldFileName = conflict.fileName,
-                            movieNumber = conflict.movieNumber.orEmpty()
+            try {
+                if (recordRepository.get(pickcode) != null) {
+                    _uiState.update {
+                        it.copy(
+                            addingPickcodes = it.addingPickcodes - pickcode,
+                            addedPickcodes = it.addedPickcodes + pickcode,
+                            message = "影片已经添加"
                         )
+                    }
+                    return@launch
+                }
+                val number = withContext(Dispatchers.IO) {
+                    CloudAddNumberChecker().extract(item.name)
+                }
+                if (number == null) {
+                    scrapeRepository.appendLog("网盘添加跳过：${item.name}，原因：无法提取番号")
+                    _uiState.update {
+                        it.copy(
+                            addingPickcodes = it.addingPickcodes - pickcode,
+                            message = "无法提取番号，已跳过：${item.name}"
+                        )
+                    }
+                    return@launch
+                }
+                if (pickcode in _uiState.value.addedPickcodes) {
+                    _uiState.update {
+                        it.copy(
+                            addingPickcodes = it.addingPickcodes - pickcode,
+                            message = "这个视频已经添加或正在添加"
+                        )
+                    }
+                    return@launch
+                }
+                val conflict = recordRepository.findStandardSameNumberCandidate(item.name, pickcode)
+                if (conflict != null) {
+                    _uiState.update {
+                        it.copy(
+                            addingPickcodes = it.addingPickcodes - pickcode,
+                            pendingReplaceConflict = PendingReplaceConflict(
+                                item = item,
+                                oldPickcode = conflict.pickcode,
+                                oldFileName = conflict.fileName,
+                                movieNumber = conflict.movieNumber.orEmpty()
+                            )
+                        )
+                    }
+                    return@launch
+                }
+                enqueueAddVideo(item, forceDistinct = false, alreadyMarkedAdding = true)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        addingPickcodes = it.addingPickcodes - pickcode,
+                        message = error.message ?: "添加前检查失败"
                     )
                 }
-                return@launch
             }
-            enqueueAddVideo(item, forceDistinct = false, alreadyMarkedAdding = true)
         }
     }
 
@@ -1147,8 +1132,6 @@ data class CloudBrowserUiState(
     val excludedVideoNames: Set<String> = emptySet(),
     val addingDomesticFolderCids: Set<Long> = emptySet(),
     val addedDomesticFolderCids: Set<Long> = emptySet(),
-    val addingFolderCids: Set<Long> = emptySet(),
-    val addedFolderCids: Set<Long> = emptySet(),
     val hiddenMissavRequest: HiddenMissavWebRequest? = null,
     val pendingMissavScrape: PendingMissavScrape? = null,
     val pendingReplaceConflict: PendingReplaceConflict? = null,

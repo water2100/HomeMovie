@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
-import com.example.localmovielibrary.asr.AsrModelManager
 import com.example.localmovielibrary.cloud115.Cloud115ApiClient
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115QrLoginClient
@@ -47,7 +46,6 @@ class AppContainer(context: Context) {
     val scanner = LibraryScanner(appContext)
     val settingsRepository = AppSettingsRepository(appContext)
     val appUpdateRepository = AppUpdateRepository(appContext, settingsRepository)
-    val asrModelManager = AsrModelManager(appContext, settingsRepository)
     val cloud115Client = Cloud115ApiClient(Cloud115CookieProvider(appContext))
     val cloud115QrLoginClient = Cloud115QrLoginClient(appContext, settingsRepository)
     val cloudStrmRecordRepository = CloudStrmRecordRepository(

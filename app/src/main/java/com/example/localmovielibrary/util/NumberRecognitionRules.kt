@@ -74,6 +74,18 @@ object NumberRecognitionRules {
             ?: normalized
     }
 
+    fun numericPrefixAliasFor(value: String): String? {
+        val normalized = value.normalizedPrefixOrNull() ?: return null
+        numericPrefixAliases[normalized]
+            ?.takeIf { it.any(Char::isDigit) }
+            ?.let { return it }
+        return numericPrefixAliases.entries
+            .firstOrNull { (_, searchPrefix) ->
+                searchPrefix == normalized && searchPrefix.any(Char::isDigit)
+            }
+            ?.value
+    }
+
     fun isAttachedLetterSegment(prefix: String, suffix: String): Boolean {
         val normalizedSuffix = suffix.trim().uppercase().filter(Char::isLetter)
         if (normalizedSuffix.length != 1) return false

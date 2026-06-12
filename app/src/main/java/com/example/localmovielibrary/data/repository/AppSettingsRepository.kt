@@ -8,8 +8,6 @@ import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
-import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
-import com.example.localmovielibrary.translate.TranslateProvider
 import com.example.localmovielibrary.util.NumberRecognitionRules
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -414,104 +412,6 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putString(KEY_HOME_IMAGE_MODE, value).apply()
     }
 
-    fun getBaiduTranslateAppId(): String =
-        prefs.getString(KEY_BAIDU_TRANSLATE_APP_ID, null)
-            ?.takeIf { it.isNotBlank() }
-            .orEmpty()
-
-    fun saveBaiduTranslateAppId(value: String) {
-        prefs.edit().putString(KEY_BAIDU_TRANSLATE_APP_ID, value.trim()).apply()
-    }
-
-    fun getBaiduTranslateSecretKey(): String =
-        prefs.getString(KEY_BAIDU_TRANSLATE_SECRET_KEY, null)
-            ?.takeIf { it.isNotBlank() }
-            .orEmpty()
-
-    fun saveBaiduTranslateSecretKey(value: String) {
-        prefs.edit().putString(KEY_BAIDU_TRANSLATE_SECRET_KEY, value.trim()).apply()
-    }
-
-    fun getTranslateProvider(): TranslateProvider =
-        TranslateProvider.fromId(prefs.getString(KEY_TRANSLATE_PROVIDER, null))
-
-    fun saveTranslateProvider(provider: TranslateProvider) {
-        prefs.edit().putString(KEY_TRANSLATE_PROVIDER, provider.id).apply()
-    }
-
-    fun getDeepSeekApiKey(): String =
-        prefs.getString(KEY_DEEPSEEK_API_KEY, null)
-            ?.takeIf { it.isNotBlank() }
-            .orEmpty()
-
-    fun saveDeepSeekApiKey(value: String) {
-        prefs.edit().putString(KEY_DEEPSEEK_API_KEY, value.trim()).apply()
-    }
-
-    fun getDeepSeekBaseUrl(): String =
-        prefs.getString(KEY_DEEPSEEK_BASE_URL, null)
-            ?.trim()
-            ?.trimEnd('/')
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_DEEPSEEK_BASE_URL
-
-    fun saveDeepSeekBaseUrl(value: String) {
-        val normalized = value.trim().trimEnd('/').ifBlank { DEFAULT_DEEPSEEK_BASE_URL }
-        prefs.edit().putString(KEY_DEEPSEEK_BASE_URL, normalized).apply()
-    }
-
-    fun getDeepSeekModel(): String =
-        prefs.getString(KEY_DEEPSEEK_MODEL, null)
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_DEEPSEEK_MODEL
-
-    fun saveDeepSeekModel(value: String) {
-        prefs.edit().putString(KEY_DEEPSEEK_MODEL, value.trim().ifBlank { DEFAULT_DEEPSEEK_MODEL }).apply()
-    }
-
-    fun isDeepSeekThinkingEnabled(): Boolean =
-        prefs.getBoolean(KEY_DEEPSEEK_THINKING_ENABLED, false)
-
-    fun saveDeepSeekThinkingEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_DEEPSEEK_THINKING_ENABLED, enabled).apply()
-    }
-
-    fun isDeepSeekPromptEnabled(): Boolean =
-        prefs.getBoolean(KEY_DEEPSEEK_PROMPT_ENABLED, true)
-
-    fun saveDeepSeekPromptEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_DEEPSEEK_PROMPT_ENABLED, enabled).apply()
-    }
-
-    fun getDeepSeekPromptTemplateId(): String =
-        DeepSeekPromptTemplates.find(prefs.getString(KEY_DEEPSEEK_PROMPT_TEMPLATE_ID, null)).id
-
-    fun saveDeepSeekPromptTemplateId(value: String) {
-        prefs.edit().putString(KEY_DEEPSEEK_PROMPT_TEMPLATE_ID, DeepSeekPromptTemplates.find(value).id).apply()
-    }
-
-    fun getDeepSeekCustomPrompt(): String =
-        prefs.getString(KEY_DEEPSEEK_CUSTOM_PROMPT, null).orEmpty()
-
-    fun saveDeepSeekCustomPrompt(value: String) {
-        prefs.edit().putString(KEY_DEEPSEEK_CUSTOM_PROMPT, value.trim()).apply()
-    }
-
-    fun getDeepSeekTranslatePrompt(): String {
-        val template = DeepSeekPromptTemplates.find(getDeepSeekPromptTemplateId())
-        if (template.id == DeepSeekPromptTemplates.CUSTOM_ID) {
-            return getDeepSeekCustomPrompt().ifBlank { DEFAULT_DEEPSEEK_TRANSLATE_PROMPT }
-        }
-        val assetPath = template.assetPath ?: return DEFAULT_DEEPSEEK_TRANSLATE_PROMPT
-        return runCatching {
-            appContext.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
-        }.getOrNull()
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_DEEPSEEK_TRANSLATE_PROMPT
-    }
-
     fun getDomesticRootCid(): Long? =
         prefs.getString(KEY_DOMESTIC_ROOT_CID, null)
             ?.trim()
@@ -626,37 +526,6 @@ class AppSettingsRepository(context: Context) {
 
     fun getCloudScrapeSkipBelowSizeBytes(): Long =
         getCloudScrapeSkipBelowSizeMb().toLong() * 1024L * 1024L
-
-    fun getAsrModelId(): String =
-        prefs.getString(KEY_ASR_MODEL_ID, null)
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_ASR_MODEL_ID
-
-    fun saveAsrModelId(value: String) {
-        prefs.edit().putString(KEY_ASR_MODEL_ID, value.trim().ifBlank { DEFAULT_ASR_MODEL_ID }).apply()
-    }
-
-    fun getAsrModelBaseUrl(): String =
-        prefs.getString(KEY_ASR_MODEL_BASE_URL, null)
-            ?.trim()
-            ?.trimEnd('/')
-            ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_ASR_MODEL_BASE_URL
-
-    fun saveAsrModelBaseUrl(value: String) {
-        prefs.edit().putString(
-            KEY_ASR_MODEL_BASE_URL,
-            value.trim().trimEnd('/').ifBlank { DEFAULT_ASR_MODEL_BASE_URL }
-        ).apply()
-    }
-
-    fun isPlayerLiveSubtitleEnabled(): Boolean =
-        prefs.getBoolean(KEY_PLAYER_LIVE_SUBTITLE_ENABLED, false)
-
-    fun savePlayerLiveSubtitleEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_PLAYER_LIVE_SUBTITLE_ENABLED, enabled).apply()
-    }
 
     fun getExternalSubtitleFontSizeSp(): Int =
         prefs.getInt(KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP, DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP)
@@ -822,25 +691,12 @@ class AppSettingsRepository(context: Context) {
         const val KEY_HOME_SORT_OPTION = "home_sort_option"
         const val KEY_HOME_SORT_DIRECTION = "home_sort_direction"
         const val KEY_HOME_IMAGE_MODE = "home_image_mode"
-        const val KEY_BAIDU_TRANSLATE_APP_ID = "baidu_translate_app_id"
-        const val KEY_BAIDU_TRANSLATE_SECRET_KEY = "baidu_translate_secret_key"
-        const val KEY_TRANSLATE_PROVIDER = "translate_provider"
-        const val KEY_DEEPSEEK_API_KEY = "deepseek_api_key"
-        const val KEY_DEEPSEEK_BASE_URL = "deepseek_base_url"
-        const val KEY_DEEPSEEK_MODEL = "deepseek_model"
-        const val KEY_DEEPSEEK_THINKING_ENABLED = "deepseek_thinking_enabled"
-        const val KEY_DEEPSEEK_PROMPT_ENABLED = "deepseek_prompt_enabled"
-        const val KEY_DEEPSEEK_PROMPT_TEMPLATE_ID = "deepseek_prompt_template_id"
-        const val KEY_DEEPSEEK_CUSTOM_PROMPT = "deepseek_custom_prompt"
         const val KEY_DOMESTIC_ROOT_CID = "domestic_root_cid"
         const val KEY_DOMESTIC_PAGE_ENABLED = "domestic_page_enabled"
         const val KEY_LIBRARY_NOMEDIA_ENABLED = "library_nomedia_enabled"
         const val KEY_CLOUD_ADD_BUTTON_MESSAGE_ENABLED = "cloud_add_button_message_enabled"
         const val KEY_CLOUD_EXCLUDED_VIDEO_NAMES = "cloud_excluded_video_names"
         const val KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = "cloud_scrape_skip_below_size_mb"
-        const val KEY_ASR_MODEL_ID = "asr_model_id"
-        const val KEY_ASR_MODEL_BASE_URL = "asr_model_base_url"
-        const val KEY_PLAYER_LIVE_SUBTITLE_ENABLED = "player_live_subtitle_enabled"
         const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
         const val KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = "external_subtitle_bottom_padding_percent"
         const val KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = "external_subtitle_background_alpha_percent"
@@ -909,14 +765,6 @@ class AppSettingsRepository(context: Context) {
         const val DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
         const val MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
         const val MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 80
-        const val DEFAULT_BAIDU_TRANSLATE_APP_ID = ""
-        const val DEFAULT_BAIDU_TRANSLATE_SECRET_KEY = ""
-        const val DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-        const val DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
-        const val DEFAULT_DEEPSEEK_TRANSLATE_PROMPT =
-            "你是专业影视字幕翻译引擎。请把输入的日文字幕翻译成自然、简洁、口语化的简体中文。只输出译文，不要解释。"
-        const val DEFAULT_ASR_MODEL_ID = "sense-voice-zh-en-ja-ko-yue-int8"
-        const val DEFAULT_ASR_MODEL_BASE_URL = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
         private const val NOMEDIA_FILE_NAME = ".nomedia"
         private const val NOMEDIA_TEMP_FILE_NAME = "nomedia.tmp"
         val DEFAULT_CLOUD_EXCLUDED_VIDEO_NAMES = setOf(

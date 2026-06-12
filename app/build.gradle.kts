@@ -20,8 +20,8 @@ android {
         applicationId = "com.example.localmovielibrary"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.3.8"
+        versionCode = 15
+        versionName = "2.0.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -30,10 +30,6 @@ android {
 
     buildFeatures {
         compose = true
-    }
-
-    androidResources {
-        noCompress += listOf("onnx", "txt")
     }
 
     compileOptions {

@@ -1,15 +1,13 @@
 {
-  "versionCode": 14,
-  "versionName": "1.3.8",
-  "apkUrl": "https://v4.gh-proxy.org/https://github.com/water2100/HomeMovie/releases/download/v1.3.8/HomeMovie-v1.3.8-debug.apk",
-  "sha256": "B6A40D3115375B3101928F0932AE5B8B3D64AEB5CFBFE24AD6F9DD72F02D8E4E",
-  "size": 58310320,
+  "versionCode": 15,
+  "versionName": "2.0.0",
+  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v2.0.0/HomeMovie-v2.0.0-debug.apk",
+  "sha256": "3C8D5B9790F02760DDB678C1A44538BAF38EA8A3F6F521EBF42DC7CFFF88C574",
+  "size": 22951579,
   "notes": [
-    "新增 JavDB 刮削来源，并在默认刮削说明中补充 JavDB 节点提示。",
-    "新增 MGStage 热更新规则和自定义前缀设置，支持 GANA、MIUM 等数字前缀搜索规则。",
-    "新增番号识别规则页面，RESTORED 会作为播放版本显示，支持 RESTORED-A 等版本标签。",
-    "优化网盘文件夹添加任务，新增任务进度页面、手动开始/暂停和未完成任务提醒。",
-    "优化设置页面滚动体验，返回设置首页时保留原来的下拉位置，应用更新页默认滚动到底部。",
-    "优化应用内更新选项，支持代理更新开关、启动后自动检测更新开关和安装后自动删除旧 APK。"
+    "移除实时字幕与本地 ASR 识别功能，删除设置页独立字幕栏，保留播放器内在线字幕/本地字幕面板。",
+    "移除 sherpa-onnx/onnxruntime native 库和翻译提示词资源，APK 体积明显减小。",
+    "播放器字幕入口统一为播放器内字幕面板，设置页仅保留外挂字幕样式设置。",
+    "修复并保留近期的网盘字幕搜索、网盘文件夹任务、MGStage/JavDB 刮削、番号识别和播放器体验优化。"
   ]
 }

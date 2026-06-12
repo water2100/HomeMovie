@@ -13,12 +13,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import com.example.localmovielibrary.asr.SherpaOnnxSubtitleRecognizer
+import com.example.localmovielibrary.cloud115.Cloud115Client
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.DirectLinkRepository
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
@@ -28,23 +30,21 @@ import com.example.localmovielibrary.playback.DEFAULT_USER_AGENT
 import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.playback.PlaybackRequest
 import com.example.localmovielibrary.playback.PlaybackResolver
-import com.example.localmovielibrary.playback.SubtitleRenderersFactory
 import com.example.localmovielibrary.playback.vr.VrControlMode
 import com.example.localmovielibrary.playback.vr.VrMode
 import com.example.localmovielibrary.playback.vr.VrModeSettings
 import com.example.localmovielibrary.subtitle.AvsubtitlesCloudflareException
 import com.example.localmovielibrary.subtitle.AvsubtitlesSubtitleRepository
+import com.example.localmovielibrary.subtitle.Cloud115SubtitleRepository
 import com.example.localmovielibrary.subtitle.JavzimuSubtitleRepository
 import com.example.localmovielibrary.subtitle.JavzimuCloudflareException
 import com.example.localmovielibrary.subtitle.JavzimuSubtitleResult
 import com.example.localmovielibrary.subtitle.LocalSubtitleFile
-import com.example.localmovielibrary.subtitle.SavedSubtitleCue
-import com.example.localmovielibrary.subtitle.LiveSubtitleStore
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.subtitle.XunleiSubtitleRepository
+import com.example.localmovielibrary.subtitle.normalizeCloud115SubtitleNumber
 import com.example.localmovielibrary.subtitle.normalizeJavzimuSubtitleNumber
 import com.example.localmovielibrary.subtitle.normalizeXunleiSubtitleNumber
-import com.example.localmovielibrary.translate.TranslationClient
 import com.example.localmovielibrary.util.normalizeMovieNumber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -69,6 +69,7 @@ class PlayerViewModel(
     title: String,
     private val fileName: String,
     directLinkRepository: DirectLinkRepository,
+    cloud115Client: Cloud115Client,
     private val cloudStrmRecordRepository: CloudStrmRecordRepository,
     private val settingsRepository: AppSettingsRepository,
     private val playbackProgressRepository: PlaybackProgressRepository
@@ -76,23 +77,17 @@ class PlayerViewModel(
     private val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f)
     private var speedIndex = 1
     private val resolver = PlaybackResolver(application.contentResolver, directLinkRepository)
-    private val translateClient = TranslationClient(settingsRepository)
-    private val liveSubtitleStore = LiveSubtitleStore(application, settingsRepository)
     private val javzimuSubtitleRepository = JavzimuSubtitleRepository(application, settingsRepository)
     private val avsubtitlesSubtitleRepository = AvsubtitlesSubtitleRepository(application, settingsRepository)
     private val xunleiSubtitleRepository = XunleiSubtitleRepository(application, settingsRepository)
+    private val cloud115SubtitleRepository = Cloud115SubtitleRepository(application, settingsRepository, cloud115Client)
     private val errorLog = RuntimeErrorLog(application)
-    private val subtitleRecognizer = SherpaOnnxSubtitleRecognizer(application, settingsRepository)
     private var mediaKey = videoUri.toString()
     private var subtitleStorageSourceUri: Uri? = null
     private val progressPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var progressJob: Job? = null
     private var initialSubtitleJob: Job? = null
-    private var savedSubtitleJob: Job? = null
-    private var liveSubtitleClearJob: Job? = null
     private var pendingJavzimuAction: PendingJavzimuAction? = null
-    private var lastTranslatedSource = ""
-    private var lastTranslationStartedAtMs = 0L
     private var lastPersistedPositionMs = Long.MIN_VALUE
     private var lastPersistedDurationMs = 0L
     private var lastPersistedAtMs = 0L
@@ -114,6 +109,9 @@ class PlayerViewModel(
 
     val playbackSpeed: Float
         get() = speeds[speedIndex]
+
+    val playbackSpeeds: List<Float>
+        get() = speeds
 
     init {
         viewModelScope.launch {
@@ -172,7 +170,6 @@ class PlayerViewModel(
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
         return ExoPlayer.Builder(application)
-            .setRenderersFactory(SubtitleRenderersFactory(application, subtitleRecognizer))
             .setMediaSourceFactory(mediaSourceFactory)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
@@ -199,6 +196,10 @@ class PlayerViewModel(
                             when (playbackState) {
                                 Player.STATE_ENDED -> clearProgress()
                             }
+                        }
+
+                        override fun onTracksChanged(tracks: Tracks) {
+                            refreshAudioTracks(this@apply)
                         }
 
                         override fun onPlayerError(error: PlaybackException) {
@@ -433,7 +434,6 @@ class PlayerViewModel(
             saveProgress(player)
             player.pause()
         }
-        stopLiveSubtitleRecognition()
     }
 
     fun seekBack() {
@@ -457,15 +457,58 @@ class PlayerViewModel(
         }
     }
 
-    fun cycleSpeed(): Float {
-        speedIndex = (speedIndex + 1) % speeds.size
+    fun selectPlaybackSpeed(speed: Float): Float {
+        val selectedIndex = speeds.indexOfFirst { abs(it - speed) < 0.001f }
+        if (selectedIndex < 0) return playbackSpeed
+        speedIndex = selectedIndex
         uiState.value.player?.setPlaybackSpeed(playbackSpeed)
         return playbackSpeed
     }
 
-    fun hasLiveSubtitleModel(): Boolean = subtitleRecognizer.hasModelAssets()
+    fun selectAudioTrack(groupIndex: Int?, trackIndex: Int?) {
+        val player = _uiState.value.player ?: return
+        val builder = player.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+        if (groupIndex != null && trackIndex != null) {
+            val group = player.currentTracks.groups.getOrNull(groupIndex) ?: return
+            if (group.type != C.TRACK_TYPE_AUDIO || trackIndex !in 0 until group.length) return
+            builder.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, trackIndex))
+        }
+        player.trackSelectionParameters = builder.build()
+        _uiState.update { it.copy(audioTrackAutomatic = groupIndex == null) }
+        refreshAudioTracks(player)
+    }
 
-    fun isPlayerLiveSubtitleEnabled(): Boolean = settingsRepository.isPlayerLiveSubtitleEnabled()
+    private fun refreshAudioTracks(player: Player) {
+        val tracks = player.currentTracks.groups.flatMapIndexed { groupIndex, group ->
+            if (group.type != C.TRACK_TYPE_AUDIO) return@flatMapIndexed emptyList()
+            (0 until group.length).map { trackIndex ->
+                val format = group.getTrackFormat(trackIndex)
+                AudioTrackOption(
+                    groupIndex = groupIndex,
+                    trackIndex = trackIndex,
+                    title = format.label?.takeIf { it.isNotBlank() }
+                        ?: format.language?.takeIf { it.isNotBlank() }?.uppercase()
+                        ?: "音轨 ${trackIndex + 1}",
+                    details = buildList {
+                        format.language?.takeIf { it.isNotBlank() }?.uppercase()?.let(::add)
+                        format.channelCount.takeIf { it > 0 }?.let { add("$it 声道") }
+                        format.sampleRate.takeIf { it > 0 }?.let { add("${it / 1000f} kHz") }
+                        format.bitrate.takeIf { it > 0 }?.let { add("${it / 1000} kbps") }
+                        format.sampleMimeType
+                            ?.substringAfter('/')
+                            ?.takeIf { it.isNotBlank() }
+                            ?.uppercase()
+                            ?.let(::add)
+                    }.distinct().joinToString(" · "),
+                    selected = group.isTrackSelected(trackIndex),
+                    supported = group.isTrackSupported(trackIndex)
+                )
+            }
+        }
+        _uiState.update { it.copy(audioTracks = tracks) }
+    }
 
     fun openExternalSubtitlePanel(videoDurationMs: Long) {
         if (!_uiState.value.subtitleFeaturesEnabled) return
@@ -476,7 +519,7 @@ class PlayerViewModel(
             it.copy(
                 externalSubtitlePanelVisible = true,
                 externalSubtitleQueryNumber = subtitleNumber.orEmpty(),
-                externalSubtitleProviderLabel = provider.label,
+                externalSubtitleProvider = provider,
                 externalSubtitleMessage = null,
                 externalSubtitleError = null,
                 externalSubtitleSearching = false,
@@ -512,9 +555,31 @@ class PlayerViewModel(
         }
     }
 
+    fun selectExternalSubtitleProvider(provider: SubtitleSearchProvider) {
+        if (!_uiState.value.subtitleFeaturesEnabled) return
+        settingsRepository.saveSubtitleSearchProvider(provider)
+        val number = normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title)
+        val subtitleNumber = number?.let { normalizeSubtitleSearchNumber(it, provider) }
+        _uiState.update {
+            it.copy(
+                externalSubtitleProvider = provider,
+                externalSubtitleQueryNumber = subtitleNumber.orEmpty(),
+                onlineSubtitles = emptyList(),
+                externalSubtitleSearching = false,
+                externalSubtitleDownloading = false,
+                externalSubtitleMessage = null,
+                externalSubtitleError = if (subtitleNumber.isNullOrBlank()) {
+                    "没有识别到影片番号，无法搜索字幕"
+                } else {
+                    null
+                }
+            )
+        }
+    }
+
     fun searchExternalSubtitles(videoDurationMs: Long) {
         if (!_uiState.value.subtitleFeaturesEnabled) return
-        val provider = settingsRepository.getSubtitleSearchProvider()
+        val provider = _uiState.value.externalSubtitleProvider
         val number = _uiState.value.externalSubtitleQueryNumber.ifBlank {
             (normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title))
                 ?.let { normalizeSubtitleSearchNumber(it, provider) }
@@ -544,13 +609,22 @@ class PlayerViewModel(
                     SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.search(number, videoDurationMs)
+                    SubtitleSearchProvider.Cloud115 -> cloud115SubtitleRepository.search(number)
                 }
             }.onSuccess { results ->
                 _uiState.update {
                     it.copy(
                         onlineSubtitles = results,
                         externalSubtitleSearching = false,
-                        externalSubtitleMessage = if (results.isEmpty()) "\u6CA1\u6709\u627E\u5230\u65F6\u957F\u5339\u914D\u7684\u5B57\u5E55" else null,
+                        externalSubtitleMessage = if (results.isEmpty()) {
+                            if (provider == SubtitleSearchProvider.Cloud115) {
+                                "网盘中没有找到包含番号的字幕文件"
+                            } else {
+                                "\u6CA1\u6709\u627E\u5230\u65F6\u957F\u5339\u914D\u7684\u5B57\u5E55"
+                            }
+                        } else {
+                            null
+                        },
                         externalSubtitleError = null
                     )
                 }
@@ -672,6 +746,7 @@ class PlayerViewModel(
                     SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                     SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                     SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
+                    SubtitleSearchProvider.Cloud115 -> cloud115SubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                 }
             }.onSuccess { subtitle ->
                 val localFiles = runCatching {
@@ -829,7 +904,6 @@ class PlayerViewModel(
     }
 
     private fun applyExternalSubtitle(subtitle: LocalSubtitleFile, closePanel: Boolean = true) {
-        stopLiveSubtitleRecognition()
         val request = _uiState.value.playbackRequest ?: return
         val player = _uiState.value.player ?: return
         val position = player.currentPosition.coerceAtLeast(0L)
@@ -887,352 +961,6 @@ class PlayerViewModel(
     fun setVrControlMode(mode: VrControlMode) {
         vrModeSettings.saveControlMode(mediaKey, mode)
         _uiState.update { it.copy(vrControlMode = mode) }
-    }
-
-    fun runRealtimeSubtitleTest() {
-        _uiState.update {
-            it.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleSourceText = "\u3053\u308C\u306F\u30EA\u30A2\u30EB\u30BF\u30A4\u30E0\u5B57\u5E55\u7FFB\u8A33\u306E\u30C6\u30B9\u30C8\u3067\u3059\u3002",
-                liveSubtitleTranslatedText = "\u6B63\u5728\u8C03\u7528\u7FFB\u8BD1...",
-                liveSubtitleError = null
-            )
-        }
-        viewModelScope.launch {
-            runCatching {
-                translateClient.translate("\u3053\u308C\u306F\u30EA\u30A2\u30EB\u30BF\u30A4\u30E0\u5B57\u5E55\u7FFB\u8A33\u306E\u30C6\u30B9\u30C8\u3067\u3059\u3002", from = "jp", to = "zh")
-            }.onSuccess { translated ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleTranslatedText = translated.ifBlank { "\u7FFB\u8BD1\u7ED3\u679C\u4E3A\u7A7A" },
-                        liveSubtitleError = null
-                    )
-                }
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleTranslatedText = "",
-                        liveSubtitleError = error.message ?: "\u7FFB\u8BD1\u5931\u8D25"
-                    )
-                }
-            }
-        }
-    }
-
-    fun toggleLiveSubtitleRecognition() {
-        if (!_uiState.value.subtitleFeaturesEnabled) return
-        if (_uiState.value.liveSubtitleEnabled) {
-            stopLiveSubtitleRecognition()
-        } else {
-            startLiveSubtitleRecognition()
-        }
-    }
-
-    fun startLiveSubtitleRecognition() {
-        if (!_uiState.value.subtitleFeaturesEnabled) return
-        startLiveSubtitleFromMicrophone()
-    }
-
-    fun startLiveSubtitleFromMicrophone() {
-        if (!_uiState.value.subtitleFeaturesEnabled) return
-        if (_uiState.value.liveSubtitleListening) return
-        if (!subtitleRecognizer.hasModelAssets()) {
-            _uiState.update {
-                it.copy(
-                    liveSubtitleEnabled = true,
-                    liveSubtitleListening = false,
-                    liveSubtitleSourceText = "\u5B9E\u65F6\u5B57\u5E55\u672A\u542F\u52A8",
-                    liveSubtitleTranslatedText = "",
-                    liveSubtitleError = "\u672A\u627E\u5230 sherpa-onnx SenseVoice \u6A21\u578B"
-                )
-            }
-            return
-        }
-        clearExternalSubtitleTrack()
-        _uiState.update { state ->
-            state.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleListening = true,
-                liveSubtitleSourceText = "\u6B63\u5728\u542F\u52A8 ASR...",
-                liveSubtitleTranslatedText = state.liveSubtitleTranslatedText,
-                liveSubtitleError = null
-            )
-        }
-        subtitleRecognizer.startFromMicrophone(
-            onStatus = { message ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleEnabled = true,
-                        liveSubtitleListening = true,
-                        liveSubtitleSourceText = message,
-                        liveSubtitleError = null
-                    )
-                }
-            },
-            onText = { text ->
-                translateRecognizedSubtitleAndSave(text)
-            },
-            onError = { message ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleEnabled = true,
-                        liveSubtitleListening = false,
-                        liveSubtitleError = message
-                    )
-                }
-            }
-        )
-    }
-
-    fun startLiveSubtitleFromPlayerAudio() {
-        if (!_uiState.value.subtitleFeaturesEnabled) return
-        if (_uiState.value.liveSubtitleListening) return
-        clearExternalSubtitleTrack()
-        savedSubtitleJob?.cancel()
-        viewModelScope.launch {
-            val savedCues = liveSubtitleStore.load(videoUri, fileName)
-            if (savedCues.isNotEmpty()) {
-                startSavedSubtitlePlayback(savedCues)
-            } else {
-                startLiveSubtitleCaptureFromPlayerAudio()
-            }
-        }
-    }
-
-    private fun startLiveSubtitleCaptureFromPlayerAudio() {
-        if (!_uiState.value.subtitleFeaturesEnabled) return
-        if (_uiState.value.liveSubtitleListening) return
-        if (!subtitleRecognizer.hasModelAssets()) {
-            _uiState.update {
-                it.copy(
-                    liveSubtitleEnabled = true,
-                    liveSubtitleListening = false,
-                    liveSubtitleSourceText = "\u5B9E\u65F6\u5B57\u5E55\u672A\u542F\u52A8",
-                    liveSubtitleTranslatedText = "",
-                    liveSubtitleError = "\u672A\u627E\u5230 sherpa-onnx SenseVoice \u6A21\u578B"
-                )
-            }
-            return
-        }
-        _uiState.update { state ->
-            state.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleListening = true,
-                liveSubtitleSourceText = "",
-                liveSubtitleTranslatedText = state.liveSubtitleTranslatedText,
-                liveSubtitleError = null
-            )
-        }
-        subtitleRecognizer.startFromPlayerPcm(
-            onStatus = { message ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleEnabled = true,
-                        liveSubtitleListening = true,
-                        liveSubtitleSourceText = "",
-                        liveSubtitleError = null
-                    )
-                }
-            },
-            onText = { text ->
-                translateRecognizedSubtitleAndSave(text)
-            },
-            onError = { message ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleEnabled = true,
-                        liveSubtitleListening = false,
-                        liveSubtitleError = message
-                    )
-                }
-            }
-        )
-    }
-
-    fun stopLiveSubtitleRecognition() {
-        savedSubtitleJob?.cancel()
-        savedSubtitleJob = null
-        liveSubtitleClearJob?.cancel()
-        liveSubtitleClearJob = null
-        subtitleRecognizer.stop()
-        _uiState.update {
-            it.copy(
-                liveSubtitleEnabled = false,
-                liveSubtitleListening = false,
-                liveSubtitleSourceText = "",
-                liveSubtitleTranslatedText = "",
-                liveSubtitleError = null
-            )
-        }
-    }
-
-    private fun startSavedSubtitlePlayback(cues: List<SavedSubtitleCue>) {
-        subtitleRecognizer.stop()
-        savedSubtitleJob?.cancel()
-        _uiState.update {
-            it.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleListening = false,
-                liveSubtitleSourceText = "",
-                liveSubtitleTranslatedText = "",
-                liveSubtitleError = null
-            )
-        }
-        savedSubtitleJob = viewModelScope.launch {
-            var lastCue: SavedSubtitleCue? = null
-            while (isActive && _uiState.value.liveSubtitleEnabled) {
-                val positionMs = _uiState.value.player?.currentPosition?.coerceAtLeast(0L) ?: 0L
-                val cue = cues.lastOrNull { positionMs in it.startMs..it.endMs }
-                if (cue != lastCue) {
-                    lastCue = cue
-                    _uiState.update {
-                        it.copy(
-                            liveSubtitleSourceText = cue?.sourceText.orEmpty(),
-                            liveSubtitleTranslatedText = cue?.translatedText.orEmpty(),
-                            liveSubtitleError = null
-                        )
-                    }
-                }
-                delay(250)
-            }
-        }
-    }
-
-    fun onLiveSubtitlePermissionDenied() {
-        _uiState.update {
-            it.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleListening = false,
-                liveSubtitleError = "\u5F53\u524D\u8BBE\u5907\u4E0D\u652F\u6301\u7CFB\u7EDF\u5185\u5F55\u6743\u9650\uFF0C\u8BF7\u4F7F\u7528 sherpa-onnx \u6A21\u578B\u540E\u518D\u8BD5"
-            )
-        }
-    }
-
-    private fun translateRecognizedSubtitleAndSave(text: String) {
-        val cleanText = text.trim()
-        if (cleanText.length < 2 || cleanText == lastTranslatedSource) return
-        val now = System.currentTimeMillis()
-        if (now - lastTranslationStartedAtMs < LIVE_TRANSLATE_MIN_INTERVAL_MS) {
-            _uiState.update {
-                it.copy(
-                    liveSubtitleEnabled = true,
-                    liveSubtitleListening = true,
-                    liveSubtitleSourceText = cleanText,
-                    liveSubtitleTranslatedText = "",
-                    liveSubtitleError = null
-                )
-            }
-            scheduleLiveSubtitleClear(cleanText, "")
-            return
-        }
-        lastTranslationStartedAtMs = now
-        lastTranslatedSource = cleanText
-        _uiState.update {
-            it.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleListening = true,
-                liveSubtitleSourceText = cleanText,
-                liveSubtitleTranslatedText = "",
-                liveSubtitleError = null
-            )
-        }
-        scheduleLiveSubtitleClear(cleanText, "")
-        viewModelScope.launch {
-            runCatching {
-                translateClient.translate(cleanText, from = "jp", to = "zh")
-            }.onSuccess { translated ->
-                val finalTranslated = translated.trim().ifBlank { "\u672A\u8BC6\u522B\u5230\u6709\u6548\u7FFB\u8BD1" }
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleTranslatedText = finalTranslated,
-                        liveSubtitleError = null
-                    )
-                }
-                scheduleLiveSubtitleClear(cleanText, finalTranslated)
-                liveSubtitleStore.append(
-                    videoUri = videoUri,
-                    fileName = fileName,
-                    sourceText = cleanText,
-                    translatedText = finalTranslated,
-                    positionMs = _uiState.value.player?.currentPosition?.coerceAtLeast(0L) ?: 0L
-                )
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleTranslatedText = "",
-                        liveSubtitleError = error.message ?: "\u7FFB\u8BD1\u5931\u8D25"
-                    )
-                }
-            }
-        }
-    }
-
-    private fun translateRecognizedSubtitle(text: String) {
-        val cleanText = text.trim()
-        if (cleanText.length < 2 || cleanText == lastTranslatedSource) return
-        val now = System.currentTimeMillis()
-        if (now - lastTranslationStartedAtMs < LIVE_TRANSLATE_MIN_INTERVAL_MS) {
-            _uiState.update {
-                it.copy(
-                    liveSubtitleEnabled = true,
-                    liveSubtitleListening = true,
-                    liveSubtitleSourceText = cleanText,
-                    liveSubtitleError = null
-                )
-            }
-            scheduleLiveSubtitleClear(cleanText, _uiState.value.liveSubtitleTranslatedText)
-            return
-        }
-        lastTranslationStartedAtMs = now
-        lastTranslatedSource = cleanText
-        _uiState.update {
-            it.copy(
-                liveSubtitleEnabled = true,
-                liveSubtitleListening = true,
-                liveSubtitleSourceText = cleanText,
-                liveSubtitleError = null
-            )
-        }
-        scheduleLiveSubtitleClear(cleanText, _uiState.value.liveSubtitleTranslatedText)
-        viewModelScope.launch {
-            runCatching {
-                translateClient.translate(cleanText, from = "jp", to = "zh")
-            }.onSuccess { translated ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleTranslatedText = translated.ifBlank { "\u7FFB\u8BD1\u7ED3\u679C\u4E3A\u7A7A" },
-                        liveSubtitleError = null
-                    )
-                }
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        liveSubtitleTranslatedText = "",
-                        liveSubtitleError = error.message ?: "\u7FFB\u8BD1\u5931\u8D25"
-                    )
-                }
-            }
-        }
-    }
-
-    private fun scheduleLiveSubtitleClear(sourceText: String, translatedText: String) {
-        if (sourceText.isBlank() && translatedText.isBlank()) return
-        liveSubtitleClearJob?.cancel()
-        liveSubtitleClearJob = viewModelScope.launch {
-            delay(LIVE_SUBTITLE_VISIBLE_MS)
-            _uiState.update { state ->
-                val sameSource = sourceText.isBlank() || state.liveSubtitleSourceText == sourceText
-                val sameTranslated = translatedText.isBlank() || state.liveSubtitleTranslatedText == translatedText
-                if (state.liveSubtitleEnabled && state.liveSubtitleError == null && sameSource && sameTranslated) {
-                    state.copy(
-                        liveSubtitleSourceText = "",
-                        liveSubtitleTranslatedText = ""
-                    )
-                } else {
-                    state
-                }
-            }
-        }
     }
 
     private fun startProgressSaver(player: Player) {
@@ -1307,17 +1035,12 @@ class PlayerViewModel(
         val player = uiState.value.player
         progressJob?.cancel()
         initialSubtitleJob?.cancel()
-        savedSubtitleJob?.cancel()
-        liveSubtitleClearJob?.cancel()
-        subtitleRecognizer.release()
         if (player != null) {
             player.release()
         }
     }
 
     companion object {
-        private const val LIVE_TRANSLATE_MIN_INTERVAL_MS = 1_200L
-        private const val LIVE_SUBTITLE_VISIBLE_MS = 4_000L
         private const val PROGRESS_SAVE_INTERVAL_MS = 15_000L
         private const val PROGRESS_SAVE_POSITION_DELTA_MS = 10_000L
         private const val MIN_AUTOSAVE_POSITION_MS = 5_000L
@@ -1331,6 +1054,7 @@ class PlayerViewModel(
             title: String,
             fileName: String,
             directLinkRepository: DirectLinkRepository,
+            cloud115Client: Cloud115Client,
             cloudStrmRecordRepository: CloudStrmRecordRepository,
             settingsRepository: AppSettingsRepository,
             playbackProgressRepository: PlaybackProgressRepository
@@ -1344,6 +1068,7 @@ class PlayerViewModel(
                         title = title,
                         fileName = fileName,
                         directLinkRepository = directLinkRepository,
+                        cloud115Client = cloud115Client,
                         cloudStrmRecordRepository = cloudStrmRecordRepository,
                         settingsRepository = settingsRepository,
                         playbackProgressRepository = playbackProgressRepository
@@ -1362,7 +1087,8 @@ data class PlayerUiState(
     val externalSubtitleSearching: Boolean = false,
     val externalSubtitleDownloading: Boolean = false,
     val externalSubtitleQueryNumber: String = "",
-    val externalSubtitleProviderLabel: String = SubtitleSearchProvider.Javzimu.label,
+    val externalSubtitleProvider: SubtitleSearchProvider = SubtitleSearchProvider.Xunlei,
+    val subtitleSearchProviderOptions: List<SubtitleSearchProvider> = SubtitleSearchProvider.entries,
     val localSubtitles: List<LocalSubtitleFile> = emptyList(),
     val onlineSubtitles: List<JavzimuSubtitleResult> = emptyList(),
     val externalSubtitleEnabled: Boolean = false,
@@ -1370,15 +1096,21 @@ data class PlayerUiState(
     val externalSubtitleMessage: String? = null,
     val externalSubtitleError: String? = null,
     val javzimuWebUrl: String? = null,
-    val liveSubtitleEnabled: Boolean = false,
-    val liveSubtitleListening: Boolean = false,
-    val liveSubtitleSourceText: String = "",
-    val liveSubtitleTranslatedText: String = "",
-    val liveSubtitleError: String? = null,
+    val audioTracks: List<AudioTrackOption> = emptyList(),
+    val audioTrackAutomatic: Boolean = true,
     val subtitleFeaturesEnabled: Boolean = true,
     val isLoading: Boolean = false,
     val loadingMessage: String? = null,
     val errorMessage: String? = null
+)
+
+data class AudioTrackOption(
+    val groupIndex: Int,
+    val trackIndex: Int,
+    val title: String,
+    val details: String,
+    val selected: Boolean,
+    val supported: Boolean
 )
 
 data class ExternalSubtitleStyleSettings(
@@ -1395,6 +1127,7 @@ private sealed interface PendingJavzimuAction {
 private fun normalizeSubtitleSearchNumber(number: String, provider: SubtitleSearchProvider): String =
     when (provider) {
         SubtitleSearchProvider.Xunlei -> normalizeXunleiSubtitleNumber(number)
+        SubtitleSearchProvider.Cloud115 -> normalizeCloud115SubtitleNumber(number)
         SubtitleSearchProvider.Javzimu,
         SubtitleSearchProvider.Avsubtitles -> normalizeJavzimuSubtitleNumber(number)
     }

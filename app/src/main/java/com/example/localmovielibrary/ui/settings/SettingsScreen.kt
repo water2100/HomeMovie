@@ -73,7 +73,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -86,10 +85,6 @@ import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.scraper.ScrapeSource
-import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
-import com.example.localmovielibrary.translate.DeepSeekPromptTemplate
-import com.example.localmovielibrary.translate.DeepSeekPromptTemplates
-import com.example.localmovielibrary.translate.TranslateProvider
 import com.example.localmovielibrary.ui.shared.MovieImageCacheStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -104,8 +99,6 @@ private enum class SettingsPage {
     Scrape,
     NumberRecognition,
     ScrapeTasks,
-    Subtitle,
-    Translate,
     Player,
     Update
 }
@@ -137,7 +130,6 @@ fun SettingsScreen(
         )
     }
     var showImageCacheDialog by remember { mutableStateOf(false) }
-    var showTranslateDialog by remember { mutableStateOf(false) }
     var imageCacheSizeText by remember { mutableStateOf("计算中...") }
     var shouldScrollUpdateToBottom by remember { mutableStateOf(openUpdatePage) }
     val contentScrollState = when (currentPage) {
@@ -311,24 +303,8 @@ fun SettingsScreen(
                         onRefreshCloudFolderBatchTasks = viewModel::refreshCloudFolderBatchTasks
                     )
 
-                    SettingsPage.Subtitle -> SubtitleSettingsPage(
-                        uiState = uiState,
-                        onOpenRealtimeSubtitle = { currentPage = SettingsPage.Translate },
-                        onProviderSelected = viewModel::updateSubtitleSearchProvider
-                    )
-
-                    SettingsPage.Translate -> TranslateSettingsSummaryPage(
-                        uiState = uiState,
-                        onProviderSelected = viewModel::updateTranslateProvider,
-                        onAsrModelSelected = viewModel::updateAsrModel,
-                        onAsrModelBaseUrlChange = viewModel::updateAsrModelBaseUrl,
-                        onDownloadAsrModel = viewModel::downloadAsrModel,
-                        onOpenTranslateDialog = { showTranslateDialog = true }
-                    )
-
                     SettingsPage.Player -> PlayerSettingsPage(
                         uiState = uiState,
-                        onLiveSubtitleEnabledChange = viewModel::updatePlayerLiveSubtitleEnabled,
                         onExternalSubtitleFontSizeChange = viewModel::updateExternalSubtitleFontSizeSp,
                         onExternalSubtitleBottomPaddingChange = viewModel::updateExternalSubtitleBottomPaddingPercent,
                         onExternalSubtitleBackgroundAlphaChange = viewModel::updateExternalSubtitleBackgroundAlphaPercent
@@ -388,35 +364,6 @@ fun SettingsScreen(
                 }
             )
         }
-        if (showTranslateDialog) {
-            TranslateSettingsDialog(
-                provider = uiState.translateProvider,
-                baiduAppId = uiState.baiduTranslateAppId,
-                baiduSecretKey = uiState.baiduTranslateSecretKey,
-                deepSeekApiKey = uiState.deepSeekApiKey,
-                deepSeekBaseUrl = uiState.deepSeekBaseUrl,
-                deepSeekModel = uiState.deepSeekModel,
-                deepSeekThinkingEnabled = uiState.deepSeekThinkingEnabled,
-                deepSeekPromptEnabled = uiState.deepSeekPromptEnabled,
-                deepSeekPromptOptions = uiState.deepSeekPromptOptions,
-                deepSeekPromptTemplateId = uiState.deepSeekPromptTemplateId,
-                deepSeekCustomPrompt = uiState.deepSeekCustomPrompt,
-                onBaiduAppIdChange = viewModel::updateBaiduTranslateAppId,
-                onBaiduSecretKeyChange = viewModel::updateBaiduTranslateSecretKey,
-                onDeepSeekApiKeyChange = viewModel::updateDeepSeekApiKey,
-                onDeepSeekBaseUrlChange = viewModel::updateDeepSeekBaseUrl,
-                onDeepSeekModelChange = viewModel::updateDeepSeekModel,
-                onDeepSeekThinkingChange = viewModel::updateDeepSeekThinkingEnabled,
-                onDeepSeekPromptEnabledChange = viewModel::updateDeepSeekPromptEnabled,
-                onDeepSeekPromptTemplateChange = viewModel::updateDeepSeekPromptTemplate,
-                onDeepSeekCustomPromptChange = viewModel::updateDeepSeekCustomPrompt,
-                onDismiss = { showTranslateDialog = false },
-                onSave = {
-                    viewModel.saveBaiduTranslateSettings()
-                    showTranslateDialog = false
-                }
-            )
-        }
     }
 }
 
@@ -426,8 +373,6 @@ private fun SettingsPage.titleText(): String = when (this) {
     SettingsPage.Scrape -> "刮削设置"
     SettingsPage.NumberRecognition -> "番号识别规则"
     SettingsPage.ScrapeTasks -> "刮削任务"
-    SettingsPage.Subtitle -> "字幕设置"
-    SettingsPage.Translate -> "实时字幕翻译"
     SettingsPage.Player -> "播放器设置"
     SettingsPage.Update -> "应用更新"
 }
@@ -484,21 +429,10 @@ private fun SettingsOverviewPage(
             onClick = { onOpenPage(SettingsPage.ScrapeTasks) }
         )
     }
-    SettingsGroupCard(title = "字幕") {
-        SettingsEntryRow(
-            title = "字幕设置",
-            subtitle = "实时字幕 · 在线字幕：${uiState.subtitleSearchProvider.label}",
-            onClick = { onOpenPage(SettingsPage.Subtitle) }
-        )
-    }
     SettingsGroupCard(title = "播放器") {
         SettingsEntryRow(
             title = "播放器设置",
-            subtitle = if (uiState.playerLiveSubtitleEnabled) {
-                "实时字幕：已开启"
-            } else {
-                "实时字幕：未开启"
-            },
+            subtitle = "外挂字幕字号 ${uiState.externalSubtitleFontSizeSp}sp · 位置 ${uiState.externalSubtitleBottomPaddingPercent}%",
             onClick = { onOpenPage(SettingsPage.Player) }
         )
     }
@@ -523,38 +457,10 @@ private fun SettingsOverviewPage(
 @Composable
 private fun PlayerSettingsPage(
     uiState: SettingsUiState,
-    onLiveSubtitleEnabledChange: (Boolean) -> Unit,
     onExternalSubtitleFontSizeChange: (Int) -> Unit,
     onExternalSubtitleBottomPaddingChange: (Int) -> Unit,
     onExternalSubtitleBackgroundAlphaChange: (Int) -> Unit
 ) {
-    SettingsSectionTitle("实时字幕")
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "开启实时字幕",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = "关闭后，播放器里的实时字幕按钮不会启动 ASR；本地字幕和在线字幕不受影响。",
-                color = Color.White.copy(alpha = 0.62f),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        Switch(
-            checked = uiState.playerLiveSubtitleEnabled,
-            onCheckedChange = onLiveSubtitleEnabledChange
-        )
-    }
-
     SettingsSectionTitle("外挂字幕样式")
     SettingsGroupCard(title = "字幕显示") {
         SubtitleStyleSliderRow(
@@ -840,138 +746,6 @@ private fun UpdateSwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange
         )
-    }
-}
-
-@Composable
-private fun SubtitleSettingsPage(
-    uiState: SettingsUiState,
-    onOpenRealtimeSubtitle: () -> Unit,
-    onProviderSelected: (SubtitleSearchProvider) -> Unit
-) {
-    SettingsSectionTitle("字幕功能")
-    SettingsGroupCard(title = "实时字幕") {
-        SettingsEntryRow(
-            title = "实时字幕翻译",
-            subtitle = "播放器按钮：${if (uiState.playerLiveSubtitleEnabled) "已开启" else "未开启"} · 翻译：${uiState.translateProvider.label}",
-            onClick = onOpenRealtimeSubtitle
-        )
-    }
-
-    SettingsSectionTitle("在线字幕来源")
-    SubtitleProviderRow(
-        selected = uiState.subtitleSearchProvider,
-        options = uiState.subtitleSearchProviderOptions,
-        onSelected = onProviderSelected
-    )
-    Text(
-        text = "播放器字幕按钮会先显示本地字幕；点击搜索时才使用这里选择的在线字幕来源。",
-        color = Color.White.copy(alpha = 0.58f),
-        style = MaterialTheme.typography.bodySmall
-    )
-
-    SettingsGroupCard(title = "Javzimu.com") {
-        SubtitleSourceInfoRow(
-            selected = uiState.subtitleSearchProvider == SubtitleSearchProvider.Javzimu,
-            title = "Javzimu.com",
-            subtitle = "使用 javzimu.com/search/番号 搜索并下载字幕。遇到验证时会沿用现有 WebView Cookie 流程。",
-            onClick = { onProviderSelected(SubtitleSearchProvider.Javzimu) }
-        )
-    }
-    SettingsGroupCard(title = "AVSubtitles") {
-        SubtitleSourceInfoRow(
-            selected = uiState.subtitleSearchProvider == SubtitleSearchProvider.Avsubtitles,
-            title = "AVSubtitles",
-            subtitle = "使用 avsubtitles.com 搜索影片详情页，再解析 subid/revid 下载 zip 字幕。",
-            onClick = { onProviderSelected(SubtitleSearchProvider.Avsubtitles) }
-        )
-    }
-    SettingsGroupCard(title = "迅雷字幕") {
-        SubtitleSourceInfoRow(
-            selected = uiState.subtitleSearchProvider == SubtitleSearchProvider.Xunlei,
-            title = "迅雷字幕",
-            subtitle = "使用迅雷字幕接口按番号搜索，返回的 srt/ass 字幕可直接下载并加载。",
-            onClick = { onProviderSelected(SubtitleSearchProvider.Xunlei) }
-        )
-    }
-}
-
-@Composable
-private fun SubtitleProviderRow(
-    selected: SubtitleSearchProvider,
-    options: List<SubtitleSearchProvider>,
-    onSelected: (SubtitleSearchProvider) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(
-            onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Text(
-                text = selected.label,
-                modifier = Modifier.weight(1f),
-                color = Color.White
-            )
-            Text(text = "选择", color = Color.White.copy(alpha = 0.62f))
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            options.forEach { provider ->
-                DropdownMenuItem(
-                    text = { Text(provider.label) },
-                    onClick = {
-                        expanded = false
-                        onSelected(provider)
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SubtitleSourceInfoRow(
-    selected: Boolean,
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = title,
-                color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = subtitle,
-                color = Color.White.copy(alpha = 0.58f),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (selected) {
-            Icon(
-                imageVector = Icons.Rounded.CheckCircle,
-                contentDescription = null,
-                tint = Color(0xFF76D48A)
-            )
-        }
     }
 }
 
@@ -2368,179 +2142,6 @@ private fun Dmm2SkippedPrefixPanel(
 }
 
 @Composable
-private fun TranslateSettingsSummaryPage(
-    uiState: SettingsUiState,
-    onProviderSelected: (TranslateProvider) -> Unit,
-    onAsrModelSelected: (com.example.localmovielibrary.asr.AsrModelOption) -> Unit,
-    onAsrModelBaseUrlChange: (String) -> Unit,
-    onDownloadAsrModel: () -> Unit,
-    onOpenTranslateDialog: () -> Unit
-) {
-    SettingsSectionTitle("翻译方式")
-    TranslateProviderSelector(
-        provider = uiState.translateProvider,
-        onProviderSelected = onProviderSelected
-    )
-    Text(
-        text = "只在这里选择翻译方式。密钥、模型和接口地址放到弹窗里配置，避免设置页堆太长。",
-        color = Color.White.copy(alpha = 0.62f),
-        style = MaterialTheme.typography.bodySmall
-    )
-    OutlinedButton(
-        onClick = onOpenTranslateDialog,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp)
-    ) {
-        Icon(Icons.Rounded.Settings, contentDescription = null)
-        Text("配置 ${uiState.translateProvider.label}", modifier = Modifier.padding(start = 8.dp))
-    }
-    if (uiState.translateProvider == TranslateProvider.DeepSeek) {
-        val promptTemplate = uiState.deepSeekPromptOptions
-            .firstOrNull { it.id == uiState.deepSeekPromptTemplateId }
-        Text(
-            text = "当前提示词：${promptTemplate?.label ?: uiState.deepSeekPromptTemplateId}",
-            color = Color.White.copy(alpha = 0.62f),
-            style = MaterialTheme.typography.bodySmall
-        )
-    }
-    SettingsSectionTitle("本地 ASR 模型")
-    AsrModelPanel(
-        uiState = uiState,
-        onModelSelected = onAsrModelSelected,
-        onBaseUrlChange = onAsrModelBaseUrlChange,
-        onDownload = onDownloadAsrModel
-    )
-}
-
-@Composable
-private fun TranslateProviderSelector(
-    provider: TranslateProvider,
-    onProviderSelected: (TranslateProvider) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(
-            onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Text(
-                text = provider.label,
-                modifier = Modifier.weight(1f),
-                color = Color.White
-            )
-            Text(text = "选择", color = Color.White.copy(alpha = 0.62f))
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            TranslateProvider.entries.forEach { item ->
-                DropdownMenuItem(
-                    text = { Text(item.label) },
-                    onClick = {
-                        expanded = false
-                        onProviderSelected(item)
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AsrModelPanel(
-    uiState: SettingsUiState,
-    onModelSelected: (com.example.localmovielibrary.asr.AsrModelOption) -> Unit,
-    onBaseUrlChange: (String) -> Unit,
-    onDownload: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val selected = uiState.asrModelOptions.firstOrNull { it.id == uiState.selectedAsrModelId }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = { expanded = true },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Text(
-                    text = selected?.label ?: uiState.selectedAsrModelId,
-                    modifier = Modifier.weight(1f),
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text("模型", color = Color.White.copy(alpha = 0.62f))
-            }
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                uiState.asrModelOptions.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option.label) },
-                        onClick = {
-                            expanded = false
-                            onModelSelected(option)
-                        }
-                    )
-                }
-            }
-        }
-        selected?.description?.let {
-            Text(
-                text = it,
-                color = Color.White.copy(alpha = 0.58f),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        Text(
-            text = if (uiState.isAsrModelReady) "状态：已下载，${uiState.asrModelSizeText}" else "状态：未下载",
-            color = if (uiState.isAsrModelReady) Color(0xFF7BD88F) else Color.White.copy(alpha = 0.68f),
-            style = MaterialTheme.typography.bodySmall
-        )
-        OutlinedTextField(
-            value = uiState.asrModelBaseUrl,
-            onValueChange = onBaseUrlChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = false,
-            minLines = 2,
-            maxLines = 3,
-            shape = RoundedCornerShape(18.dp),
-            label = { Text("模型下载地址") },
-            supportingText = { Text("目录地址即可，App 会下载 model.int8.onnx 和 tokens.txt。") },
-            colors = settingsTextFieldColors()
-        )
-        if (uiState.isAsrModelDownloading || uiState.asrModelDownloadMessage.isNotBlank()) {
-            LinearProgressIndicator(
-                progress = { uiState.asrModelDownloadProgress / 100f },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                text = uiState.asrModelDownloadMessage.ifBlank { "${uiState.asrModelDownloadProgress}%" },
-                color = Color.White.copy(alpha = 0.62f),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        Button(
-            onClick = onDownload,
-            enabled = !uiState.isAsrModelDownloading,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Text(if (uiState.isAsrModelDownloading) "下载中..." else "下载/更新模型")
-        }
-    }
-}
-
-@Composable
 private fun SettingsGroupCard(
     title: String,
     content: @Composable ColumnScope.() -> Unit
@@ -2607,226 +2208,6 @@ private fun ClearImageCacheDialog(
             }
         }
     )
-}
-
-@Composable
-private fun TranslateSettingsDialog(
-    provider: TranslateProvider,
-    baiduAppId: String,
-    baiduSecretKey: String,
-    deepSeekApiKey: String,
-    deepSeekBaseUrl: String,
-    deepSeekModel: String,
-    deepSeekThinkingEnabled: Boolean,
-    deepSeekPromptEnabled: Boolean,
-    deepSeekPromptOptions: List<DeepSeekPromptTemplate>,
-    deepSeekPromptTemplateId: String,
-    deepSeekCustomPrompt: String,
-    onBaiduAppIdChange: (String) -> Unit,
-    onBaiduSecretKeyChange: (String) -> Unit,
-    onDeepSeekApiKeyChange: (String) -> Unit,
-    onDeepSeekBaseUrlChange: (String) -> Unit,
-    onDeepSeekModelChange: (String) -> Unit,
-    onDeepSeekThinkingChange: (Boolean) -> Unit,
-    onDeepSeekPromptEnabledChange: (Boolean) -> Unit,
-    onDeepSeekPromptTemplateChange: (DeepSeekPromptTemplate) -> Unit,
-    onDeepSeekCustomPromptChange: (String) -> Unit,
-    onDismiss: () -> Unit,
-    onSave: () -> Unit
-) {
-    var promptMenuExpanded by remember { mutableStateOf(false) }
-    val selectedPromptTemplate = deepSeekPromptOptions.firstOrNull { it.id == deepSeekPromptTemplateId }
-        ?: deepSeekPromptOptions.firstOrNull()
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 620.dp)
-                .verticalScroll(rememberScrollState())
-                .background(Color(0xFF202126), RoundedCornerShape(22.dp))
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Text(
-                text = "${provider.label} 配置",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "ASR 识别出的文本会发送到所选翻译服务；音频不会发送给翻译接口。",
-                color = Color.White.copy(alpha = 0.62f),
-                style = MaterialTheme.typography.bodySmall
-            )
-            when (provider) {
-                TranslateProvider.Baidu -> {
-                    OutlinedTextField(
-                        value = baiduAppId,
-                        onValueChange = onBaiduAppIdChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp),
-                        label = { Text("百度翻译 APP ID") },
-                        colors = settingsTextFieldColors()
-                    )
-                    OutlinedTextField(
-                        value = baiduSecretKey,
-                        onValueChange = onBaiduSecretKeyChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp),
-                        label = { Text("百度翻译密钥") },
-                        colors = settingsTextFieldColors()
-                    )
-                }
-
-                TranslateProvider.DeepSeek -> {
-                    OutlinedTextField(
-                        value = deepSeekApiKey,
-                        onValueChange = onDeepSeekApiKeyChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp),
-                        label = { Text("DeepSeek API Key") },
-                        colors = settingsTextFieldColors()
-                    )
-                    OutlinedTextField(
-                        value = deepSeekModel,
-                        onValueChange = onDeepSeekModelChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp),
-                        label = { Text("DeepSeek 模型") },
-                        placeholder = { Text("deepseek-v4-flash") },
-                        colors = settingsTextFieldColors()
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "思考模式",
-                                color = Color.White,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "实时字幕建议关闭，速度更快。",
-                                color = Color.White.copy(alpha = 0.56f),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        Switch(
-                            checked = deepSeekThinkingEnabled,
-                            onCheckedChange = onDeepSeekThinkingChange
-                        )
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "启用翻译提示词",
-                                color = Color.White,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "关闭后不会向大模型发送额外 system prompt。",
-                                color = Color.White.copy(alpha = 0.56f),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        Switch(
-                            checked = deepSeekPromptEnabled,
-                            onCheckedChange = onDeepSeekPromptEnabledChange
-                        )
-                    }
-                    if (deepSeekPromptEnabled) {
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { promptMenuExpanded = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(18.dp)
-                            ) {
-                                Text(
-                                    text = "提示词：${selectedPromptTemplate?.label.orEmpty()}",
-                                    modifier = Modifier.weight(1f),
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = promptMenuExpanded,
-                                onDismissRequest = { promptMenuExpanded = false },
-                                modifier = Modifier.background(Color(0xFF25272D))
-                            ) {
-                                deepSeekPromptOptions.forEach { template ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                text = "${if (template.id == deepSeekPromptTemplateId) "✓ " else ""}${template.label}",
-                                                color = Color.White
-                                            )
-                                        },
-                                        onClick = {
-                                            onDeepSeekPromptTemplateChange(template)
-                                            promptMenuExpanded = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                        if (deepSeekPromptTemplateId == DeepSeekPromptTemplates.CUSTOM_ID) {
-                            OutlinedTextField(
-                                value = deepSeekCustomPrompt,
-                                onValueChange = onDeepSeekCustomPromptChange,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 130.dp, max = 260.dp),
-                                minLines = 5,
-                                maxLines = 10,
-                                shape = RoundedCornerShape(18.dp),
-                                label = { Text("自定义翻译提示词") },
-                                placeholder = { Text("输入 system prompt，只输出译文等规则可以写在这里") },
-                                colors = settingsTextFieldColors()
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = deepSeekBaseUrl,
-                        onValueChange = onDeepSeekBaseUrlChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp),
-                        label = { Text("DeepSeek 接口地址") },
-                        placeholder = { Text("https://api.deepseek.com") },
-                        colors = settingsTextFieldColors()
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)
-            ) {
-                OutlinedButton(onClick = onDismiss, shape = RoundedCornerShape(18.dp)) {
-                    Text("取消")
-                }
-                Button(onClick = onSave, shape = RoundedCornerShape(18.dp)) {
-                    Text("保存")
-                }
-            }
-        }
-    }
 }
 
 @Composable
@@ -3173,157 +2554,6 @@ private fun ImageCachePanel(
         ) {
             Icon(Icons.Rounded.DeleteSweep, contentDescription = null)
             Text("清理图片缓存", modifier = Modifier.padding(start = 8.dp))
-        }
-    }
-}
-
-@Composable
-private fun TranslateSettingsPanel(
-    provider: TranslateProvider,
-    baiduAppId: String,
-    baiduSecretKey: String,
-    deepSeekApiKey: String,
-    deepSeekBaseUrl: String,
-    deepSeekModel: String,
-    deepSeekThinkingEnabled: Boolean,
-    onProviderSelected: (TranslateProvider) -> Unit,
-    onBaiduAppIdChange: (String) -> Unit,
-    onBaiduSecretKeyChange: (String) -> Unit,
-    onDeepSeekApiKeyChange: (String) -> Unit,
-    onDeepSeekBaseUrlChange: (String) -> Unit,
-    onDeepSeekModelChange: (String) -> Unit,
-    onDeepSeekThinkingChange: (Boolean) -> Unit,
-    onSave: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = "ASR 识别出的文本会发送到所选翻译服务；音频不会发送给翻译接口。",
-            color = Color.White.copy(alpha = 0.62f),
-            style = MaterialTheme.typography.bodySmall
-        )
-        Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = { expanded = true },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Text(
-                    text = provider.label,
-                    modifier = Modifier.weight(1f),
-                    color = Color.White
-                )
-                Text(text = "选择", color = Color.White.copy(alpha = 0.62f))
-            }
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                TranslateProvider.entries.forEach { item ->
-                    DropdownMenuItem(
-                        text = { Text(item.label) },
-                        onClick = {
-                            expanded = false
-                            onProviderSelected(item)
-                        }
-                    )
-                }
-            }
-        }
-
-        when (provider) {
-            TranslateProvider.Baidu -> {
-                OutlinedTextField(
-                    value = baiduAppId,
-                    onValueChange = onBaiduAppIdChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("百度翻译 APP ID") },
-                    colors = settingsTextFieldColors()
-                )
-                OutlinedTextField(
-                    value = baiduSecretKey,
-                    onValueChange = onBaiduSecretKeyChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("百度翻译密钥") },
-                    colors = settingsTextFieldColors()
-                )
-            }
-
-            TranslateProvider.DeepSeek -> {
-                OutlinedTextField(
-                    value = deepSeekApiKey,
-                    onValueChange = onDeepSeekApiKeyChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("DeepSeek API Key") },
-                    colors = settingsTextFieldColors()
-                )
-                OutlinedTextField(
-                    value = deepSeekModel,
-                    onValueChange = onDeepSeekModelChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("DeepSeek 模型") },
-                    placeholder = { Text("deepseek-v4-flash") },
-                    colors = settingsTextFieldColors()
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "思考模式",
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "实时字幕建议关闭，速度更快。",
-                            color = Color.White.copy(alpha = 0.56f),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Switch(
-                        checked = deepSeekThinkingEnabled,
-                        onCheckedChange = onDeepSeekThinkingChange
-                    )
-                }
-                OutlinedTextField(
-                    value = deepSeekBaseUrl,
-                    onValueChange = onDeepSeekBaseUrlChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(18.dp),
-                    label = { Text("DeepSeek 接口地址") },
-                    placeholder = { Text("https://api.deepseek.com") },
-                    colors = settingsTextFieldColors()
-                )
-            }
-        }
-
-        OutlinedButton(
-            onClick = onSave,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Icon(Icons.Rounded.Save, contentDescription = null)
-            Text("保存翻译配置", modifier = Modifier.padding(start = 8.dp))
         }
     }
 }

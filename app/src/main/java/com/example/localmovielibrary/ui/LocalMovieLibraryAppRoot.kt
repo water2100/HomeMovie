@@ -220,7 +220,6 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
                             cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
@@ -240,7 +239,6 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
                             cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
@@ -262,7 +260,6 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
                             cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
@@ -288,7 +285,6 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            asrModelManager = appContainer.asrModelManager,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
                             cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
                         )
@@ -428,6 +424,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             title = title,
                             fileName = fileName,
                             directLinkRepository = appContainer.directLinkRepository,
+                            cloud115Client = appContainer.cloud115Client,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
                             settingsRepository = appContainer.settingsRepository,
                             playbackProgressRepository = appContainer.playbackProgressRepository

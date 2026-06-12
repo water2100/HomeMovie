@@ -29,7 +29,7 @@ class LocalMovieLibraryApp : Application() {
 
     private companion object {
         private const val TAG = "LocalMovieLibraryApp"
-        private const val BUILD_MARKER = "BUILD_MARKER=2026-06-02-room-paged-dao-no-bundled-asr-model"
+        private const val BUILD_MARKER = "BUILD_MARKER=2026-06-12-room-paged-dao-player-subtitles"
         private const val CURSOR_WINDOW_SIZE_BYTES = 64 * 1024 * 1024
     }
 }

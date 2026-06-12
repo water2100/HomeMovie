@@ -464,6 +464,18 @@ class StrmScrapeRepository(
         return null
     }
 
+    private suspend fun extractOutputNumberWithRules(vararg values: String?): String? {
+        refreshNumberRecognitionRules(forceRefresh = false)
+        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
+            MovieNumberExtractor.extractDisplayNumber(value)?.let { return it }
+        }
+        refreshNumberRecognitionRules(forceRefresh = true)
+        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
+            MovieNumberExtractor.extractDisplayNumber(value)?.let { return it }
+        }
+        return null
+    }
+
     private suspend fun scrapeSourcesFor(source: ScrapeSource, number: String): List<ScrapeSource> {
         if (source != ScrapeSource.Priority) return listOf(source)
         val configuredSources = settingsRepository.getPriorityScrapeSources()
@@ -649,9 +661,13 @@ class StrmScrapeRepository(
 
     private suspend fun writeOrganizedScrapeFiles(target: StrmTarget, info: ScrapedMovieInfo, fallbackNumber: String, forceDistinct: Boolean = false): String {
         val sourceName = target.file.name.orEmpty()
-        val baseNumber = info.number.ifBlank { fallbackNumber }.uppercase()
+        val outputNumber = extractOutputNumberWithRules(sourceName)
+        val baseNumber = (outputNumber ?: fallbackNumber.ifBlank { info.number }).uppercase()
         val variant = detectMovieVariant(sourceName)
         val writeInfo = info.copy(number = baseNumber)
+        if (info.number.isNotBlank() && !info.number.equals(baseNumber, ignoreCase = true)) {
+            logStore.append("Use source filename number for output: $baseNumber (scraped=${info.number})")
+        }
         val distinctSuffix = if (forceDistinct) target.file.name.orEmpty().distinctPickcodeSuffix() else null
         val baseName = buildMovieBaseName(writeInfo, baseNumber) + distinctSuffix.orEmpty()
         val movieDirectory = if (target.directory.name == baseName) {
@@ -709,7 +725,8 @@ class StrmScrapeRepository(
         val baseName = target.baseName
         val directory = target.directory
         val nfoName = "$baseName.nfo"
-        val displayNumber = displayNumberWithVariant(info.number, target.file.name.orEmpty())
+        val sourceNumber = extractOutputNumberWithRules(target.file.name.orEmpty()) ?: info.number
+        val displayNumber = displayNumberWithVariant(sourceNumber, target.file.name.orEmpty())
         val writeInfo = info.copy(number = displayNumber)
         logStore.append("Rewrite NFO: $nfoName")
         writeTextFile(directory, nfoName, NfoWriter.build(writeInfo))

@@ -4,6 +4,7 @@ import com.example.localmovielibrary.playback.USER_AGENT
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -68,6 +69,64 @@ class Cloud115ApiClient(
         }
     }
 
+    override suspend fun searchFiles(
+        keyword: String,
+        limit: Int,
+        offset: Int,
+        type: Int
+    ): List<Cloud115FileItem> = withContext(Dispatchers.IO) {
+        val cookies = cookieProvider.loadCookies()
+            ?: error("115 Cookie 未配置，请先到设置页登录或填写 Cookie")
+        val query = keyword.trim()
+        if (query.isBlank()) return@withContext emptyList()
+        val url = SEARCH_URL.toHttpUrl().newBuilder()
+            .addQueryParameter("aid", "1")
+            .addQueryParameter("search_value", query)
+            .addQueryParameter("limit", limit.coerceIn(1, 100).toString())
+            .addQueryParameter("offset", offset.coerceAtLeast(0).toString())
+            .addQueryParameter("type", type.toString())
+            .addQueryParameter("format", "json")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("Cookie", cookies)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json, text/plain, */*")
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("115 搜索失败：HTTP ${response.code}")
+            }
+            val raw = response.body?.string().orEmpty()
+            val json = JSONObject(raw)
+            if (!json.optBoolean("state", true)) {
+                error(json.optString("error", "115 搜索失败"))
+            }
+            val data = json.optJSONArray("data") ?: return@withContext emptyList()
+            buildList {
+                for (index in 0 until data.length()) {
+                    val item = data.optJSONObject(index) ?: continue
+                    val name = item.optString("n").takeIf { it.isNotBlank() } ?: continue
+                    val fid = item.optString("fid").takeIf { it.isNotBlank() }?.toLongOrNull()
+                    val cidValue = item.optString("cid").takeIf { it.isNotBlank() }?.toLongOrNull()
+                    add(
+                        Cloud115FileItem(
+                            name = name,
+                            cid = cidValue,
+                            fid = fid,
+                            pickcode = item.optString("pc").takeIf { it.isNotBlank() },
+                            size = item.optString("s").toLongOrNull(),
+                            modifiedAt = item.optTimestamp("t", "te", "tp", "pt", "mtime", "utime"),
+                            isDirectory = fid == null
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     override suspend fun fetchDirectUrl(pickcode: String): String = withContext(Dispatchers.IO) {
         val cookies = cookieProvider.loadCookies()
             ?: error("115 Cookie 未配置，请先到设置页填写 Cookie")
@@ -105,13 +164,13 @@ class Cloud115ApiClient(
             .url(url)
             .get()
             .header("User-Agent", USER_AGENT)
-            .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+            .header("Accept", "*/*")
             .build()
         httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                error("115 图片下载失败：HTTP ${response.code}")
+                error("115 文件下载失败：HTTP ${response.code}")
             }
-            response.body?.bytes() ?: error("115 图片响应为空")
+            response.body?.bytes() ?: error("115 文件响应为空")
         }
     }
 
@@ -140,6 +199,7 @@ class Cloud115ApiClient(
 
     private companion object {
         const val FILES_URL = "https://webapi.115.com/files"
+        const val SEARCH_URL = "https://webapi.115.com/files/search"
         const val DOWNLOAD_URL = "https://proapi.115.com/app/chrome/downurl"
     }
 }

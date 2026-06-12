@@ -226,8 +226,6 @@ fun CloudBrowserScreen(
                     isDomesticRoot = viewModel.domesticRootCid()?.let { currentFolderCid == it } == true,
                     addingDomesticFolderCids = uiState.addingDomesticFolderCids,
                     addedDomesticFolderCids = uiState.addedDomesticFolderCids,
-                    addingFolderCids = uiState.addingFolderCids,
-                    addedFolderCids = uiState.addedFolderCids,
                     onOpenFolder = viewModel::openFolder,
                     onPlayVideo = onPlayVideo,
                     onAddVideo = viewModel::addVideoToLibrary,
@@ -346,8 +344,6 @@ private fun CloudFileList(
     isDomesticRoot: Boolean,
     addingDomesticFolderCids: Set<Long>,
     addedDomesticFolderCids: Set<Long>,
-    addingFolderCids: Set<Long>,
-    addedFolderCids: Set<Long>,
     onOpenFolder: (Cloud115FileItem) -> Unit,
     onPlayVideo: (Cloud115FileItem) -> Unit,
     onAddVideo: (Cloud115FileItem) -> Unit,
@@ -379,8 +375,6 @@ private fun CloudFileList(
                 showDomesticAdd = isDomesticRoot && item.isDirectory && item.cid != null,
                 isDomesticAdding = item.cid != null && item.cid in addingDomesticFolderCids,
                 isDomesticAdded = item.cid != null && item.cid in addedDomesticFolderCids,
-                isFolderAdding = item.cid != null && item.cid in addingFolderCids,
-                isFolderAdded = item.cid != null && item.cid in addedFolderCids,
                 onOpenFolder = { onOpenFolder(item) },
                 onPlayVideo = { onPlayVideo(item) },
                 onAddVideo = { onAddVideo(item) },
@@ -401,8 +395,6 @@ private fun CloudFileRow(
     showDomesticAdd: Boolean,
     isDomesticAdding: Boolean,
     isDomesticAdded: Boolean,
-    isFolderAdding: Boolean,
-    isFolderAdded: Boolean,
     onOpenFolder: () -> Unit,
     onPlayVideo: () -> Unit,
     onAddVideo: () -> Unit,
@@ -480,8 +472,8 @@ private fun CloudFileRow(
                     onAddVideo = onAddDomesticFolder
                 )
                 item.isDirectory && item.cid != null -> AddVideoButton(
-                    isAdding = isFolderAdding,
-                    isAdded = isFolderAdded,
+                    isAdding = false,
+                    isAdded = false,
                     onAddVideo = onAddFolder
                 )
                 item.isVideoFile() && !isExcludedVideo -> AddVideoButton(isAdding = isAdding, isAdded = isAdded, onAddVideo = onAddVideo)

@@ -1,36 +1,38 @@
 ﻿package com.example.localmovielibrary.ui.player
 
-import android.Manifest
 import android.app.Activity
 import android.media.AudioManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
-import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
@@ -66,8 +68,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -87,6 +87,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -94,18 +95,24 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -118,6 +125,7 @@ import com.example.localmovielibrary.playback.vr.VrControlMode
 import com.example.localmovielibrary.playback.vr.VrMode
 import com.example.localmovielibrary.subtitle.JavzimuSubtitleResult
 import com.example.localmovielibrary.subtitle.LocalSubtitleFile
+import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -145,7 +153,8 @@ fun PlayerScreen(
     var isLandscape by rememberSaveable { mutableStateOf(true) }
     var speed by rememberSaveable { mutableFloatStateOf(viewModel.playbackSpeed) }
     var resizeModeIndex by rememberSaveable { mutableStateOf(0) }
-    var subtitleModelHint by remember { mutableStateOf<String?>(null) }
+    var audioTrackDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var playbackModePanelVisible by rememberSaveable { mutableStateOf(false) }
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     var gestureMode by remember { mutableStateOf<GestureMode?>(null) }
     var gestureStartSide by remember { mutableStateOf<GestureSide?>(null) }
@@ -168,15 +177,6 @@ fun PlayerScreen(
         AspectRatioFrameLayout.RESIZE_MODE_FILL,
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM
     )
-    val audioPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            viewModel.startLiveSubtitleFromPlayerAudio()
-        } else {
-            viewModel.onLiveSubtitlePermissionDenied()
-        }
-    }
     fun restorePlayerBrightness() {
         val window = activity?.window ?: return
         val attrs = window.attributes
@@ -190,7 +190,18 @@ fun PlayerScreen(
         onBack()
     }
 
-    BackHandler(onBack = leavePlayer)
+    BackHandler(
+        enabled = uiState.subtitleFeaturesEnabled && uiState.externalSubtitlePanelVisible,
+        onBack = viewModel::dismissExternalSubtitlePanel
+    )
+    BackHandler(
+        enabled = playbackModePanelVisible,
+        onBack = { playbackModePanelVisible = false }
+    )
+    BackHandler(
+        enabled = !uiState.externalSubtitlePanelVisible && !playbackModePanelVisible,
+        onBack = leavePlayer
+    )
 
     DisposableEffect(activity) {
         val window = activity?.window
@@ -285,8 +296,8 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(controlsVisible, isPlaying, vrMode) {
-        if (controlsVisible && isPlaying) {
+    LaunchedEffect(controlsVisible, isPlaying, vrMode, playbackModePanelVisible) {
+        if (controlsVisible && isPlaying && !playbackModePanelVisible) {
             delay(3_000)
             controlsVisible = false
         }
@@ -296,13 +307,6 @@ fun PlayerScreen(
         if (gestureFeedback != null && gestureStartSide == null) {
             delay(850)
             gestureFeedback = null
-        }
-    }
-
-    LaunchedEffect(subtitleModelHint) {
-        if (subtitleModelHint != null) {
-            delay(2_400)
-            subtitleModelHint = null
         }
     }
 
@@ -462,22 +466,6 @@ fun PlayerScreen(
             modifier = Modifier.align(Alignment.Center)
         )
 
-        LiveSubtitleOverlayModern(
-            enabled = uiState.subtitleFeaturesEnabled && uiState.liveSubtitleEnabled,
-            sourceText = uiState.liveSubtitleSourceText,
-            translatedText = uiState.liveSubtitleTranslatedText,
-            errorText = uiState.liveSubtitleError,
-            listening = uiState.liveSubtitleListening,
-            controlsVisible = controlsVisible,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
-
-        SubtitleModelHintOverlay(
-            text = subtitleModelHint,
-            controlsVisible = controlsVisible,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
-
         AnimatedVisibility(
             visible = controlsVisible && !controlsLocked,
             enter = fadeIn(),
@@ -491,26 +479,23 @@ fun PlayerScreen(
                 positionMs = positionMs,
                 durationMs = durationMs,
                 speed = speed,
+                speeds = viewModel.playbackSpeeds,
                 errorMessage = uiState.errorMessage,
                 aspectLabel = aspectLabel(resizeModeIndex),
-                vrMode = vrMode,
-                vrControlMode = vrControlMode,
-                liveSubtitleEnabled = uiState.liveSubtitleEnabled,
                 showExternalSubtitleControl = uiState.subtitleFeaturesEnabled,
-                showLiveSubtitleControl = uiState.subtitleFeaturesEnabled &&
-                    (viewModel.isPlayerLiveSubtitleEnabled() || uiState.liveSubtitleEnabled),
+                showAudioTrackControl = uiState.audioTracks.count { it.supported } > 1,
                 onBack = leavePlayer,
+                onAudioTrack = {
+                    audioTrackDialogVisible = true
+                    controlsVisible = true
+                },
                 onExternalSubtitle = {
                     if (!uiState.subtitleFeaturesEnabled) return@PlayerOverlay
                     viewModel.openExternalSubtitlePanel(durationMs)
                     controlsVisible = true
                 },
-                onVrMode = { mode ->
-                    viewModel.setVrMode(mode)
-                    controlsVisible = true
-                },
-                onVrControlMode = { mode ->
-                    viewModel.setVrControlMode(mode)
+                onPlaybackModePanel = {
+                    playbackModePanelVisible = true
                     controlsVisible = true
                 },
                 onTogglePlay = {
@@ -531,32 +516,8 @@ fun PlayerScreen(
                     positionMs = target
                     controlsVisible = true
                 },
-                onSpeed = {
-                    speed = viewModel.cycleSpeed()
-                    controlsVisible = true
-                },
-                onSubtitle = {
-                    if (!uiState.subtitleFeaturesEnabled) return@PlayerOverlay
-                    if (uiState.liveSubtitleEnabled) {
-                        viewModel.stopLiveSubtitleRecognition()
-                    } else {
-                        if (!viewModel.isPlayerLiveSubtitleEnabled()) {
-                            subtitleModelHint = "\u8BF7\u5148\u5728\u8BBE\u7F6E\u64AD\u653E\u5668\u9875\u9762\u4E2D\u5F00\u542F\u5B9E\u65F6\u5B57\u5E55"
-                            controlsVisible = true
-                            return@PlayerOverlay
-                        }
-                        if (!viewModel.hasLiveSubtitleModel()) {
-                            subtitleModelHint = "\u8BF7\u5148\u5728\u8BBE\u7F6E\u7FFB\u8BD1\u9875\u9762\u4E2D\u4E0B\u8F7D\u6A21\u578B"
-                            controlsVisible = true
-                            return@PlayerOverlay
-                        }
-                        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                        if (granted) {
-                            viewModel.startLiveSubtitleFromPlayerAudio()
-                        } else {
-                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    }
+                onSpeedSelected = { selectedSpeed ->
+                    speed = viewModel.selectPlaybackSpeed(selectedSpeed)
                     controlsVisible = true
                 },
                 onAspect = {
@@ -570,10 +531,11 @@ fun PlayerScreen(
             )
         }
 
-        ExternalSubtitleDialog(
+        ExternalSubtitlePanel(
             visible = uiState.subtitleFeaturesEnabled && uiState.externalSubtitlePanelVisible,
             queryNumber = uiState.externalSubtitleQueryNumber,
-            providerLabel = uiState.externalSubtitleProviderLabel,
+            provider = uiState.externalSubtitleProvider,
+            providerOptions = uiState.subtitleSearchProviderOptions,
             localSubtitles = uiState.localSubtitles,
             onlineSubtitles = uiState.onlineSubtitles,
             externalSubtitleEnabled = uiState.externalSubtitleEnabled,
@@ -583,11 +545,38 @@ fun PlayerScreen(
             message = uiState.externalSubtitleMessage,
             error = uiState.externalSubtitleError,
             onDismiss = viewModel::dismissExternalSubtitlePanel,
+            onProviderSelected = viewModel::selectExternalSubtitleProvider,
             onExternalSubtitleEnabledChange = viewModel::setExternalSubtitleEnabled,
             onSearchOnline = { viewModel.searchExternalSubtitles(durationMs) },
             onLocalSelected = viewModel::loadLocalSubtitle,
             onLocalDelete = viewModel::deleteLocalSubtitle,
             onOnlineSelected = viewModel::downloadAndLoadSubtitle
+        )
+
+        PlaybackModePanel(
+            visible = playbackModePanelVisible,
+            selectedMode = vrMode,
+            selectedControlMode = vrControlMode,
+            onDismiss = { playbackModePanelVisible = false },
+            onVrMode = { mode ->
+                viewModel.setVrMode(mode)
+                controlsVisible = true
+            },
+            onVrControlMode = { mode ->
+                viewModel.setVrControlMode(mode)
+                controlsVisible = true
+            }
+        )
+
+        AudioTrackDialog(
+            visible = audioTrackDialogVisible,
+            tracks = uiState.audioTracks,
+            automatic = uiState.audioTrackAutomatic,
+            onDismiss = { audioTrackDialogVisible = false },
+            onAutomatic = { viewModel.selectAudioTrack(null, null) },
+            onTrackSelected = { track ->
+                viewModel.selectAudioTrack(track.groupIndex, track.trackIndex)
+            }
         )
 
         AnimatedVisibility(
@@ -608,57 +597,6 @@ fun PlayerScreen(
             )
         }
 
-    }
-}
-
-@Composable
-private fun LiveSubtitleOverlay(
-    enabled: Boolean,
-    sourceText: String,
-    translatedText: String,
-    errorText: String?,
-    listening: Boolean,
-    controlsVisible: Boolean,
-    modifier: Modifier = Modifier
-) {
-    if (!enabled) return
-    val bottomPadding = if (controlsVisible) 156.dp else 42.dp
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 22.dp)
-            .padding(bottom = bottomPadding),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        val statusText = sourceText.ifBlank {
-            if (listening) "\u6B63\u5728\u8BC6\u522B\u5F71\u7247\u58F0\u97F3..." else ""
-        }
-        if (statusText.isNotBlank()) {
-            Text(
-                text = statusText,
-                color = Color.White.copy(alpha = 0.82f),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color.Black.copy(alpha = 0.42f))
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            )
-        }
-        val mainText = errorText ?: translatedText
-        if (mainText.isNotBlank()) {
-            Text(
-                text = mainText,
-                color = if (errorText == null) Color.White else MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color.Black.copy(alpha = 0.68f))
-                    .padding(horizontal = 16.dp, vertical = 9.dp)
-            )
-        }
     }
 }
 
@@ -739,94 +677,6 @@ private fun CueGroup.toSubtitleText(): String =
         }
         .distinct()
         .joinToString("\n")
-
-@Composable
-private fun LiveSubtitleOverlayModern(
-    enabled: Boolean,
-    sourceText: String,
-    translatedText: String,
-    errorText: String?,
-    listening: Boolean,
-    controlsVisible: Boolean,
-    modifier: Modifier = Modifier
-) {
-    if (!enabled) return
-    val bottomPadding = if (controlsVisible) 156.dp else 42.dp
-    val hasSubtitle = sourceText.isNotBlank() || translatedText.isNotBlank()
-    if (!hasSubtitle && errorText.isNullOrBlank()) return
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 22.dp)
-            .padding(bottom = bottomPadding),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Column(
-            modifier = Modifier
-                .clip(RoundedCornerShape(14.dp))
-                .background(Color.Black.copy(alpha = 0.66f))
-                .padding(horizontal = 16.dp, vertical = 9.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            if (!errorText.isNullOrBlank()) {
-                Text(
-                    text = errorText,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            } else {
-                if (sourceText.isNotBlank()) {
-                    Text(
-                        text = sourceText,
-                        color = Color.White.copy(alpha = 0.82f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-                if (translatedText.isNotBlank()) {
-                    Text(
-                        text = translatedText,
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SubtitleModelHintOverlay(
-    text: String?,
-    controlsVisible: Boolean,
-    modifier: Modifier = Modifier
-) {
-    AnimatedVisibility(
-        visible = !text.isNullOrBlank(),
-        enter = fadeIn(),
-        exit = fadeOut(),
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 22.dp)
-            .padding(bottom = if (controlsVisible) 138.dp else 34.dp)
-    ) {
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text(
-                text = text.orEmpty(),
-                color = Color(0xFF70F28A),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color.Black.copy(alpha = 0.68f))
-                    .padding(horizontal = 16.dp, vertical = 9.dp)
-            )
-        }
-    }
-}
 
 private enum class GestureSide {
     Brightness,
@@ -1031,10 +881,11 @@ private fun ManualControlOverlay(
 }
 
 @Composable
-private fun ExternalSubtitleDialog(
+private fun ExternalSubtitlePanel(
     visible: Boolean,
     queryNumber: String,
-    providerLabel: String,
+    provider: SubtitleSearchProvider,
+    providerOptions: List<SubtitleSearchProvider>,
     localSubtitles: List<LocalSubtitleFile>,
     onlineSubtitles: List<JavzimuSubtitleResult>,
     externalSubtitleEnabled: Boolean,
@@ -1044,11 +895,283 @@ private fun ExternalSubtitleDialog(
     message: String?,
     error: String?,
     onDismiss: () -> Unit,
+    onProviderSelected: (SubtitleSearchProvider) -> Unit,
     onExternalSubtitleEnabledChange: (Boolean) -> Unit,
     onSearchOnline: () -> Unit,
     onLocalSelected: (LocalSubtitleFile) -> Unit,
     onLocalDelete: (LocalSubtitleFile) -> Unit,
     onOnlineSelected: (JavzimuSubtitleResult) -> Unit
+) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(20f)
+    ) {
+        val panelWidth = when {
+            maxWidth < 320.dp -> maxWidth
+            maxWidth < 520.dp -> maxWidth - 88.dp
+            else -> 300.dp
+        }
+        val quietClickSource = remember { MutableInteractionSource() }
+
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.26f))
+                    .clickable(
+                        interactionSource = quietClickSource,
+                        indication = null,
+                        onClick = onDismiss
+                    )
+            )
+        }
+
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(panelWidth)
+                    .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+                    .background(Color(0xF21A1C20))
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (queryNumber.isBlank()) "字幕" else "字幕 · $queryNumber",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = provider.label,
+                            color = Color.White.copy(alpha = 0.62f),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .padding(horizontal = 7.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "外挂字幕",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = activeSubtitleName ?: "关闭",
+                                color = Color.White.copy(alpha = 0.58f),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Switch(
+                            checked = externalSubtitleEnabled,
+                            onCheckedChange = onExternalSubtitleEnabledChange,
+                            enabled = !isDownloading,
+                            modifier = Modifier.scale(0.80f)
+                        )
+                    }
+
+                    Text(
+                        text = "字幕来源",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    providerOptions.forEach { option ->
+                        val selected = option == provider
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(
+                                    if (selected) {
+                                        Color.White.copy(alpha = 0.16f)
+                                    } else {
+                                        Color.White.copy(alpha = 0.07f)
+                                    }
+                                )
+                                .clickable(
+                                    enabled = !selected && !isSearching && !isDownloading,
+                                    onClick = { onProviderSelected(option) }
+                                )
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = option.label,
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                )
+                                Text(
+                                    text = when (option) {
+                                        SubtitleSearchProvider.Cloud115 -> "搜索网盘里的字幕文件"
+                                        SubtitleSearchProvider.Xunlei -> "按番号搜索迅雷字幕"
+                                        else -> "在线字幕来源"
+                                    },
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (selected) {
+                                Text(
+                                    text = "当前",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = onSearchOnline,
+                        enabled = !isSearching && !isDownloading && queryNumber.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(9.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text("搜索 ${provider.label}", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    if (isSearching || isDownloading) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(Color.White.copy(alpha = 0.07f))
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = if (isDownloading) "正在下载字幕..." else "正在搜索字幕...",
+                                color = Color.White.copy(alpha = 0.82f),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                    message?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall)
+                    }
+                    error?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                    }
+
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
+
+                    Text(
+                        text = "本地字幕",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (localSubtitles.isEmpty()) {
+                        Text("当前目录没有可加载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.labelSmall)
+                    } else {
+                        localSubtitles.forEach { subtitle ->
+                            SubtitleOptionRow(
+                                title = subtitle.name,
+                                subtitle = if (subtitle.name == activeSubtitleName) "当前加载" else "点击加载",
+                                enabled = !isDownloading,
+                                onDelete = { onLocalDelete(subtitle) },
+                                onClick = { onLocalSelected(subtitle) }
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
+
+                    Text(
+                        text = "在线字幕",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (!isSearching && onlineSubtitles.isEmpty()) {
+                        Text("没有可下载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.labelSmall)
+                    } else {
+                        onlineSubtitles.forEach { result ->
+                            SubtitleOptionRow(
+                                title = result.name,
+                                subtitle = result.displayName
+                                    .removePrefix(result.name)
+                                    .trim()
+                                    .trimStart('·')
+                                    .trim()
+                                    .ifBlank { "${result.provider.label} · 点击下载并加载" },
+                                enabled = !isDownloading,
+                                onClick = { onOnlineSelected(result) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioTrackDialog(
+    visible: Boolean,
+    tracks: List<AudioTrackOption>,
+    automatic: Boolean,
+    onDismiss: () -> Unit,
+    onAutomatic: () -> Unit,
+    onTrackSelected: (AudioTrackOption) -> Unit
 ) {
     if (!visible) return
     AlertDialog(
@@ -1056,7 +1179,7 @@ private fun ExternalSubtitleDialog(
         containerColor = Color(0xF21A1C20),
         title = {
             Text(
-                text = if (queryNumber.isBlank()) "字幕" else "字幕 · $queryNumber",
+                text = "音轨",
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
@@ -1066,107 +1189,27 @@ private fun ExternalSubtitleDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 320.dp)
+                    .heightIn(max = 360.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.07f))
-                        .padding(horizontal = 11.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "外挂字幕",
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = activeSubtitleName ?: "关闭",
-                            color = Color.White.copy(alpha = 0.58f),
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Switch(
-                        checked = externalSubtitleEnabled,
-                        onCheckedChange = onExternalSubtitleEnabledChange,
-                        enabled = !isDownloading
+                AudioTrackOptionRow(
+                    title = "自动选择",
+                    details = "由播放器自动选择合适的音轨",
+                    selected = automatic,
+                    enabled = true,
+                    onClick = onAutomatic
+                )
+                tracks.forEachIndexed { index, track ->
+                    AudioTrackOptionRow(
+                        title = track.title.ifBlank { "音轨 ${index + 1}" },
+                        details = track.details.ifBlank {
+                            if (track.supported) "音轨 ${index + 1}" else "当前设备不支持"
+                        },
+                        selected = !automatic && track.selected,
+                        enabled = track.supported,
+                        onClick = { onTrackSelected(track) }
                     )
-                }
-
-                if (isSearching || isDownloading) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
-                        )
-                        Text(
-                            text = if (isDownloading) "正在下载字幕..." else "正在搜索字幕...",
-                            color = Color.White.copy(alpha = 0.82f),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-                message?.takeIf { it.isNotBlank() }?.let {
-                    Text(it, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.bodyMedium)
-                }
-                error?.takeIf { it.isNotBlank() }?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-                }
-
-                Text("本地字幕", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                if (localSubtitles.isEmpty()) {
-                    Text("当前目录没有可加载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
-                } else {
-                    localSubtitles.forEach { subtitle ->
-                        SubtitleOptionRow(
-                            title = subtitle.name,
-                            subtitle = if (subtitle.name == activeSubtitleName) "当前加载" else "点击加载",
-                            enabled = !isDownloading,
-                            onDelete = { onLocalDelete(subtitle) },
-                            onClick = { onLocalSelected(subtitle) }
-                        )
-                    }
-                }
-
-                HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
-
-                Text("在线字幕 · $providerLabel", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                OutlinedButton(
-                    onClick = onSearchOnline,
-                    enabled = !isSearching && !isDownloading && queryNumber.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("搜索 $providerLabel", style = MaterialTheme.typography.labelLarge)
-                }
-                if (!isSearching && onlineSubtitles.isEmpty()) {
-                    Text("没有可下载字幕", color = Color.White.copy(alpha = 0.52f), style = MaterialTheme.typography.bodySmall)
-                } else {
-                    onlineSubtitles.forEach { result ->
-                        SubtitleOptionRow(
-                            title = result.name,
-                            subtitle = result.displayName
-                                .removePrefix(result.name)
-                                .trim()
-                                .trimStart('·')
-                                .trim()
-                                .ifBlank { "${result.provider.label} · 点击下载并加载" },
-                            enabled = !isDownloading,
-                            onClick = { onOnlineSelected(result) }
-                        )
-                    }
                 }
             }
         },
@@ -1176,6 +1219,55 @@ private fun ExternalSubtitleDialog(
             }
         }
     )
+}
+
+@Composable
+private fun AudioTrackOptionRow(
+    title: String,
+    details: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = if (selected) 0.16f else if (enabled) 0.08f else 0.04f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                color = Color.White.copy(alpha = if (enabled) 1f else 0.42f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = details,
+                color = Color.White.copy(alpha = if (enabled) 0.58f else 0.34f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (selected) {
+            Text(
+                text = "当前",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
 }
 
 @Composable
@@ -1189,12 +1281,12 @@ private fun SubtitleOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(Color.White.copy(alpha = if (enabled) 0.08f else 0.04f))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 11.dp, vertical = 8.dp),
+            .padding(horizontal = 7.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Column(
             modifier = Modifier.weight(1f),
@@ -1203,7 +1295,7 @@ private fun SubtitleOptionRow(
             Text(
                 text = title,
                 color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1211,7 +1303,7 @@ private fun SubtitleOptionRow(
             Text(
                 text = subtitle,
                 color = Color.White.copy(alpha = 0.62f),
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.labelSmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1221,7 +1313,7 @@ private fun SubtitleOptionRow(
                 onClick = delete,
                 enabled = enabled,
                 modifier = Modifier
-                    .size(32.dp)
+                    .size(24.dp)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.10f))
             ) {
@@ -1229,7 +1321,7 @@ private fun SubtitleOptionRow(
                     imageVector = Icons.Rounded.Close,
                     contentDescription = "删除字幕",
                     tint = Color.White.copy(alpha = if (enabled) 0.86f else 0.38f),
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
@@ -1263,37 +1355,56 @@ private fun PlayerOverlay(
     positionMs: Long,
     durationMs: Long,
     speed: Float,
+    speeds: List<Float>,
     errorMessage: String?,
     aspectLabel: String,
-    vrMode: VrMode,
-    vrControlMode: VrControlMode,
-    liveSubtitleEnabled: Boolean,
     showExternalSubtitleControl: Boolean,
-    showLiveSubtitleControl: Boolean,
+    showAudioTrackControl: Boolean,
     onBack: () -> Unit,
+    onAudioTrack: () -> Unit,
     onExternalSubtitle: () -> Unit,
-    onVrMode: (VrMode) -> Unit,
-    onVrControlMode: (VrControlMode) -> Unit,
+    onPlaybackModePanel: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
     onSeek: (Float) -> Unit,
-    onSpeed: () -> Unit,
-    onSubtitle: () -> Unit,
+    onSpeedSelected: (Float) -> Unit,
     onAspect: () -> Unit,
     onOrientation: () -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    var speedMenuExpanded by remember { mutableStateOf(false) }
+    var overlayRootOffset by remember { mutableStateOf(Offset.Zero) }
+    var overlaySize by remember { mutableStateOf(IntSize.Zero) }
+    var speedButtonOffset by remember { mutableStateOf(IntOffset.Zero) }
+    var speedButtonSize by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
+    val dismissSpeedMenuInteraction = remember { MutableInteractionSource() }
+    val menuWidthPx = with(density) { 92.dp.roundToPx() }
+    val menuItemHeightPx = with(density) { 36.dp.roundToPx() }
+    val menuPaddingPx = with(density) { 6.dp.roundToPx() }
+    val menuGapPx = with(density) { 10.dp.roundToPx() }
+    val menuMarginPx = with(density) { 12.dp.roundToPx() }
+    val menuHeightPx = menuItemHeightPx * speeds.size + menuPaddingPx * 2
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coordinates ->
+                overlayRootOffset = coordinates.positionInRoot()
+                overlaySize = coordinates.size
+            }
+    ) {
         TopGradientBar(
             title = title,
-            isLandscape = isLandscape,
-            vrMode = vrMode,
-            vrControlMode = vrControlMode,
             showExternalSubtitleControl = showExternalSubtitleControl,
+            showAudioTrackControl = showAudioTrackControl,
             onBack = onBack,
+            onAudioTrack = onAudioTrack,
             onExternalSubtitle = onExternalSubtitle,
-            onVrMode = onVrMode,
-            onVrControlMode = onVrControlMode,
+            onModeMenuClick = {
+                speedMenuExpanded = false
+                onPlaybackModePanel()
+            },
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
@@ -1302,38 +1413,88 @@ private fun PlayerOverlay(
             durationMs = durationMs,
             speed = speed,
             aspectLabel = aspectLabel,
-                errorMessage = errorMessage,
-                liveSubtitleEnabled = liveSubtitleEnabled,
-                showLiveSubtitleControl = showLiveSubtitleControl,
-                isPlaying = isPlaying,
-                isLandscape = isLandscape,
-                onSeekBack = onSeekBack,
+            errorMessage = errorMessage,
+            isPlaying = isPlaying,
+            isLandscape = isLandscape,
+            onSeekBack = onSeekBack,
             onTogglePlay = onTogglePlay,
             onSeekForward = onSeekForward,
             onSeek = onSeek,
-            onSpeed = onSpeed,
-                onSubtitle = onSubtitle,
-                onAspect = onAspect,
-                onOrientation = onOrientation,
-                modifier = Modifier.align(Alignment.BottomCenter)
+            onSpeedClick = {
+                speedMenuExpanded = true
+            },
+            onSpeedButtonPositioned = { coordinates ->
+                val position = coordinates.positionInRoot()
+                speedButtonOffset = IntOffset(
+                    x = (position.x - overlayRootOffset.x).roundToInt(),
+                    y = (position.y - overlayRootOffset.y).roundToInt()
+                )
+                speedButtonSize = coordinates.size
+            },
+            onAspect = onAspect,
+            onOrientation = onOrientation,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+
+        if (speedMenuExpanded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(8f)
+                    .clickable(
+                        interactionSource = dismissSpeedMenuInteraction,
+                        indication = null
+                    ) {
+                        speedMenuExpanded = false
+                    }
             )
+        }
+
+        AnimatedVisibility(
+            visible = speedMenuExpanded,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { it / 5 }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 5 }),
+            modifier = Modifier
+                .zIndex(9f)
+                .offset {
+                    val centeredX = speedButtonOffset.x + speedButtonSize.width / 2 - menuWidthPx / 2
+                    val maxX = (overlaySize.width - menuWidthPx - menuMarginPx).coerceAtLeast(menuMarginPx)
+                    val x = centeredX.coerceIn(menuMarginPx, maxX)
+                    val preferredY = speedButtonOffset.y - menuHeightPx - menuGapPx
+                    val maxY = (overlaySize.height - menuHeightPx - menuMarginPx).coerceAtLeast(menuMarginPx)
+                    val fallbackY = speedButtonOffset.y + speedButtonSize.height + menuGapPx
+                    val y = if (preferredY >= menuMarginPx) {
+                        preferredY
+                    } else {
+                        fallbackY.coerceIn(menuMarginPx, maxY)
+                    }
+                    IntOffset(x, y)
+                }
+        ) {
+            PlaybackSpeedInlineMenu(
+                speeds = speeds,
+                selectedSpeed = speed,
+                onSpeedSelected = { selectedSpeed ->
+                    onSpeedSelected(selectedSpeed)
+                    speedMenuExpanded = false
+                }
+            )
+        }
+
     }
 }
 
 @Composable
 private fun TopGradientBar(
     title: String,
-    isLandscape: Boolean,
-    vrMode: VrMode,
-    vrControlMode: VrControlMode,
     showExternalSubtitleControl: Boolean,
+    showAudioTrackControl: Boolean,
     onBack: () -> Unit,
+    onAudioTrack: () -> Unit,
     onExternalSubtitle: () -> Unit,
-    onVrMode: (VrMode) -> Unit,
-    onVrControlMode: (VrControlMode) -> Unit,
+    onModeMenuClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var modeMenuExpanded by remember { mutableStateOf(false) }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1359,6 +1520,13 @@ private fun TopGradientBar(
                 .weight(1f)
                 .padding(horizontal = 14.dp, vertical = 12.dp)
         )
+        if (showAudioTrackControl) {
+            GlassIconButton(
+                icon = Icons.Rounded.VolumeUp,
+                contentDescription = "音轨",
+                onClick = onAudioTrack
+            )
+        }
         if (showExternalSubtitleControl) {
             GlassIconButton(
                 icon = Icons.Rounded.ClosedCaption,
@@ -1366,21 +1534,57 @@ private fun TopGradientBar(
                 onClick = onExternalSubtitle
             )
         }
-        Box {
-            GlassIconButton(
-                icon = Icons.Rounded.MoreVert,
-                contentDescription = "\u64AD\u653E\u6A21\u5F0F",
-                onClick = { modeMenuExpanded = true }
+        GlassIconButton(
+            icon = Icons.Rounded.MoreVert,
+            contentDescription = "\u64AD\u653E\u6A21\u5F0F",
+            onClick = onModeMenuClick
+        )
+    }
+}
+
+@Composable
+private fun PlaybackModePanel(
+    visible: Boolean,
+    selectedMode: VrMode,
+    selectedControlMode: VrControlMode,
+    onDismiss: () -> Unit,
+    onVrMode: (VrMode) -> Unit,
+    onVrControlMode: (VrControlMode) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(19f)
+    ) {
+        val quietClickSource = remember { MutableInteractionSource() }
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.22f))
+                    .clickable(
+                        interactionSource = quietClickSource,
+                        indication = null,
+                        onClick = onDismiss
+                    )
             )
-            PlaybackModeMenu(
-                expanded = modeMenuExpanded,
-                selectedMode = vrMode,
-                selectedControlMode = vrControlMode,
-                onDismiss = { modeMenuExpanded = false },
-                onVrMode = {
-                    onVrMode(it)
-                    modeMenuExpanded = false
-                },
+        }
+
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            PlaybackModeSidePanel(
+                selectedMode = selectedMode,
+                selectedControlMode = selectedControlMode,
+                onDismiss = onDismiss,
+                onVrMode = onVrMode,
                 onVrControlMode = onVrControlMode
             )
         }
@@ -1388,64 +1592,162 @@ private fun TopGradientBar(
 }
 
 @Composable
-private fun PlaybackModeMenu(
-    expanded: Boolean,
+private fun PlaybackModeSidePanel(
     selectedMode: VrMode,
     selectedControlMode: VrControlMode,
     onDismiss: () -> Unit,
     onVrMode: (VrMode) -> Unit,
     onVrControlMode: (VrControlMode) -> Unit
 ) {
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
-        modifier = Modifier.background(Color(0xEE181B20))
-    ) {
-        DropdownMenuItem(
-            text = {
-                Text(
-                    text = "\u64AD\u653E\u6A21\u5F0F",
-                    color = Color.White.copy(alpha = 0.62f),
-                    fontWeight = FontWeight.Bold
+    BoxWithConstraints(modifier = Modifier.fillMaxHeight()) {
+        val panelWidth = when {
+            maxWidth < 320.dp -> maxWidth
+            maxWidth < 520.dp -> maxWidth - 88.dp
+            else -> 300.dp
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(panelWidth)
+                .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+                .background(Color(0xF21A1C20))
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
                 )
-            },
-            onClick = {}
-        )
-        VrMode.entries.forEach { mode ->
-            DropdownMenuItem(
-                text = {
-                    Text(
-                        text = "${if (mode == selectedMode) "\u2713 " else ""}${mode.label}",
-                        color = Color.White
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "播放模式",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                PlaybackModeSectionTitle("画面")
+                VrMode.entries.forEach { mode ->
+                    PlaybackModeOptionRow(
+                        title = mode.label,
+                        subtitle = mode.modeSubtitle(),
+                        selected = mode == selectedMode,
+                        enabled = true,
+                        onClick = { onVrMode(mode) }
                     )
-                },
-                onClick = { onVrMode(mode) }
+                }
+                HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
+                PlaybackModeSectionTitle("控制方式")
+                VrControlMode.entries.forEach { mode ->
+                    PlaybackModeOptionRow(
+                        title = mode.label,
+                        subtitle = mode.controlSubtitle(),
+                        selected = mode == selectedControlMode,
+                        enabled = selectedMode.isVr,
+                        onClick = { onVrControlMode(mode) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackModeSectionTitle(text: String) {
+    Text(
+        text = text,
+        color = Color.White.copy(alpha = 0.58f),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 2.dp)
+    )
+}
+
+@Composable
+private fun PlaybackModeOptionRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(9.dp))
+            .background(
+                when {
+                    selected -> Color.White.copy(alpha = 0.16f)
+                    enabled -> Color.White.copy(alpha = 0.07f)
+                    else -> Color.White.copy(alpha = 0.035f)
+                }
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = title,
+                color = Color.White.copy(alpha = if (enabled) 0.96f else 0.36f),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                color = Color.White.copy(alpha = if (enabled) 0.58f else 0.28f),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
-        DropdownMenuItem(
-            text = {
-                Text(
-                    text = "\u63A7\u5236\u65B9\u5F0F",
-                    color = Color.White.copy(alpha = 0.62f),
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            onClick = {}
-        )
-        VrControlMode.entries.forEach { mode ->
-            DropdownMenuItem(
-                enabled = selectedMode.isVr,
-                text = {
-                    Text(
-                        text = "${if (mode == selectedControlMode) "\u2713 " else ""}${mode.label}",
-                        color = if (selectedMode.isVr) Color.White else Color.White.copy(alpha = 0.38f)
-                    )
-                },
-                onClick = { onVrControlMode(mode) }
+        if (selected) {
+            Text(
+                text = "\u2713",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
             )
         }
     }
 }
+
+private fun VrMode.modeSubtitle(): String =
+    when (this) {
+        VrMode.Normal2D -> "普通 2D 播放"
+        VrMode.Vr360 -> "360 全景"
+        VrMode.Vr180 -> "180 全景"
+        VrMode.Vr360Sbs -> "360 左右"
+        VrMode.Vr180Sbs -> "180 左右"
+        VrMode.Vr360Ou -> "360 上下"
+        VrMode.Vr180Ou -> "180 上下"
+    }
+
+private fun VrControlMode.controlSubtitle(): String =
+    when (this) {
+        VrControlMode.Touch -> "手指拖动画面"
+        VrControlMode.Sensor -> "跟随陀螺仪"
+        VrControlMode.TouchAndSensor -> "手指和陀螺仪同时启用"
+    }
 
 @Composable
 private fun CenterControls(
@@ -1491,16 +1793,14 @@ private fun BottomGradientControls(
     speed: Float,
     aspectLabel: String,
     errorMessage: String?,
-    liveSubtitleEnabled: Boolean,
-    showLiveSubtitleControl: Boolean,
     isPlaying: Boolean,
     isLandscape: Boolean,
     onSeekBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeekForward: () -> Unit,
     onSeek: (Float) -> Unit,
-    onSpeed: () -> Unit,
-    onSubtitle: () -> Unit,
+    onSpeedClick: () -> Unit,
+    onSpeedButtonPositioned: (LayoutCoordinates) -> Unit,
     onAspect: () -> Unit,
     onOrientation: () -> Unit,
     modifier: Modifier = Modifier
@@ -1556,11 +1856,9 @@ private fun BottomGradientControls(
                 )
                 PlayerToolRow(
                     speed = speed,
-                    liveSubtitleEnabled = liveSubtitleEnabled,
-                    showLiveSubtitleControl = showLiveSubtitleControl,
                     isLandscape = isLandscape,
-                    onSpeed = onSpeed,
-                    onSubtitle = onSubtitle,
+                    onSpeedClick = onSpeedClick,
+                    onSpeedButtonPositioned = onSpeedButtonPositioned,
                     onOrientation = onOrientation,
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
@@ -1577,11 +1875,9 @@ private fun BottomGradientControls(
             )
             PlayerToolRow(
                 speed = speed,
-                liveSubtitleEnabled = liveSubtitleEnabled,
-                showLiveSubtitleControl = showLiveSubtitleControl,
                 isLandscape = isLandscape,
-                onSpeed = onSpeed,
-                onSubtitle = onSubtitle,
+                onSpeedClick = onSpeedClick,
+                onSpeedButtonPositioned = onSpeedButtonPositioned,
                 onOrientation = onOrientation,
                 modifier = Modifier.align(Alignment.End)
             )
@@ -1590,13 +1886,57 @@ private fun BottomGradientControls(
 }
 
 @Composable
+private fun PlaybackSpeedInlineMenu(
+    speeds: List<Float>,
+    selectedSpeed: Float,
+    onSpeedSelected: (Float) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(92.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.Black.copy(alpha = 0.62f))
+            .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        speeds.asReversed().forEach { option ->
+            val selected = abs(option - selectedSpeed) < 0.001f
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .padding(horizontal = 6.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = if (selected) 0.18f else 0f))
+                    .clickable { onSpeedSelected(option) }
+                    .padding(horizontal = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = option.formatSpeed() + "x",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (selected) "\u2713" else "",
+                    color = Color.White.copy(alpha = 0.82f),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlayerToolRow(
     speed: Float,
-    liveSubtitleEnabled: Boolean,
-    showLiveSubtitleControl: Boolean,
     isLandscape: Boolean,
-    onSpeed: () -> Unit,
-    onSubtitle: () -> Unit,
+    onSpeedClick: () -> Unit,
+    onSpeedButtonPositioned: (LayoutCoordinates) -> Unit,
     onOrientation: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1605,14 +1945,12 @@ private fun PlayerToolRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        GlassToolButton(icon = Icons.Rounded.Speed, label = "${speed.formatSpeed()}x", onClick = onSpeed)
-        if (showLiveSubtitleControl) {
-            GlassToolButton(
-                icon = Icons.Rounded.ClosedCaption,
-                label = if (liveSubtitleEnabled) "字幕开" else "实时字幕",
-                onClick = onSubtitle
-            )
-        }
+        GlassToolButton(
+            icon = Icons.Rounded.Speed,
+            label = "${speed.formatSpeed()}x",
+            onClick = onSpeedClick,
+            modifier = Modifier.onGloballyPositioned(onSpeedButtonPositioned)
+        )
         GlassToolButton(
             icon = if (isLandscape) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
             label = if (isLandscape) "\u7AD6\u5C4F" else "\u6A2A\u5C4F",
@@ -1691,9 +2029,14 @@ private fun PlayerLockButton(
 }
 
 @Composable
-private fun GlassToolButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun GlassToolButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(18.dp))
             .background(Color.Black.copy(alpha = 0.42f))
             .clickable(onClick = onClick)
