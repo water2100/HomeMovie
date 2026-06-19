@@ -5,9 +5,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.data.repository.MovieRepository
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 class FilterResultViewModel(
@@ -15,15 +15,16 @@ class FilterResultViewModel(
     private val filterValue: String,
     private val repository: MovieRepository
 ) : ViewModel() {
-    val uiState: StateFlow<FilterResultUiState> = flow {
-            val normalizedType = filterType.lowercase()
-            val results = repository.filterMovies(normalizedType, filterValue)
-            emit(FilterResultUiState(
+    private val normalizedType = filterType.lowercase()
+
+    val uiState: StateFlow<FilterResultUiState> = repository.observeFilteredMovies(normalizedType, filterValue)
+        .map { results ->
+            FilterResultUiState(
                 filterType = normalizedType,
                 filterValue = filterValue,
                 title = filterTitle(normalizedType, filterValue),
                 movies = results
-            ))
+            )
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FilterResultUiState())
 

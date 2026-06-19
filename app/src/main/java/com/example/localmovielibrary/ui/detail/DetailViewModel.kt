@@ -10,8 +10,6 @@ import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.MoviePlaybackPart
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
-import com.example.localmovielibrary.scraper.MissavCookieRequiredException
-import com.example.localmovielibrary.scraper.MovieNumberExtractor
 import com.example.localmovielibrary.scraper.ScrapeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -45,9 +43,6 @@ class DetailViewModel(
 
     private val _isScraping = MutableStateFlow(false)
     val isScraping: StateFlow<Boolean> = _isScraping
-
-    private val _hiddenMissavRequest = MutableStateFlow<HiddenMissavRequest?>(null)
-    val hiddenMissavRequest: StateFlow<HiddenMissavRequest?> = _hiddenMissavRequest
 
     private val _similarMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     val similarMovies: StateFlow<List<MovieEntity>> = _similarMovies
@@ -155,103 +150,51 @@ class DetailViewModel(
     }
 
     fun scrapeWithDmm() {
-        scrapeCurrent(ScrapeSource.Dmm, allowCookieRefresh = false)
+        scrapeCurrent(ScrapeSource.Dmm)
     }
 
     fun scrapeWithDefault() {
-        scrapeCurrent(scrapeRepository.getDefaultScrapeSource(), allowCookieRefresh = true)
+        scrapeCurrent(scrapeRepository.getDefaultScrapeSource())
     }
 
     fun scrapeWithDmm2() {
-        scrapeCurrent(ScrapeSource.Dmm2, allowCookieRefresh = false)
+        scrapeCurrent(ScrapeSource.Dmm2)
     }
 
     fun scrapeWithOfficial() {
-        scrapeCurrent(ScrapeSource.Official, allowCookieRefresh = false)
+        scrapeCurrent(ScrapeSource.Official)
     }
 
     fun scrapeWithJavbus() {
-        scrapeCurrent(ScrapeSource.Javbus, allowCookieRefresh = false)
+        scrapeCurrent(ScrapeSource.Javbus)
     }
 
     fun scrapeWithJavdb() {
-        scrapeCurrent(ScrapeSource.Javdb, allowCookieRefresh = false)
-    }
-
-    fun scrapeWithMissav() {
-        scrapeCurrent(ScrapeSource.Missav, allowCookieRefresh = true)
+        scrapeCurrent(ScrapeSource.TheJavDB)
     }
 
     fun rescrapeWithDefault() {
-        rescrapeCurrent(scrapeRepository.getDefaultScrapeSource(), allowCookieRefresh = true)
+        rescrapeCurrent(scrapeRepository.getDefaultScrapeSource())
     }
 
     fun rescrapeWithDmm() {
-        rescrapeCurrent(ScrapeSource.Dmm, allowCookieRefresh = false)
+        rescrapeCurrent(ScrapeSource.Dmm)
     }
 
     fun rescrapeWithDmm2() {
-        rescrapeCurrent(ScrapeSource.Dmm2, allowCookieRefresh = false)
+        rescrapeCurrent(ScrapeSource.Dmm2)
     }
 
     fun rescrapeWithOfficial() {
-        rescrapeCurrent(ScrapeSource.Official, allowCookieRefresh = false)
+        rescrapeCurrent(ScrapeSource.Official)
     }
 
     fun rescrapeWithJavbus() {
-        rescrapeCurrent(ScrapeSource.Javbus, allowCookieRefresh = false)
+        rescrapeCurrent(ScrapeSource.Javbus)
     }
 
     fun rescrapeWithJavdb() {
-        rescrapeCurrent(ScrapeSource.Javdb, allowCookieRefresh = false)
-    }
-
-    fun rescrapeWithMissav() {
-        rescrapeCurrent(ScrapeSource.Missav, allowCookieRefresh = true)
-    }
-
-    fun retryMissavAfterCookieSaved() {
-        scrapeCurrent(ScrapeSource.Missav, allowCookieRefresh = false)
-    }
-
-    fun onHiddenMissavHtmlReady(requestId: Long, html: String, cookie: String) {
-        val request = _hiddenMissavRequest.value ?: return
-        if (request.id != requestId) return
-        val current = movie.value ?: return
-        _hiddenMissavRequest.value = null
-        scrapeScope.launch {
-            _isScraping.value = true
-            events.trySend(DetailEvent.Message("已通过 WebView 获取页面，正在解析并写入 NFO..."))
-            runCatching {
-                if (request.rescrape) {
-                    scrapeRepository.rescrapeMovieWithMissavHtml(current, html, cookie)
-                    repository.refreshMovieRecoveringMovedStrm(current.id)
-                    null
-                } else {
-                    val result = scrapeRepository.scrapeMovieWithMissavHtmlOutput(current, html, cookie)
-                    scrapeRepository.appendLog("开始刷新单个影片，刷新 MissAV WebView 刮削结果")
-                    refreshScrapedMovie(current, result.info.number, result.strmUri)
-                }
-            }.onSuccess {
-                _isScraping.value = false
-                events.trySend(DetailEvent.Message(if (request.rescrape) "MissAV 重新刮削完成" else "MissAV 刮削完成"))
-                it?.let { movieId -> events.trySend(DetailEvent.OpenMovie(movieId)) }
-            }.onFailure { error ->
-                _isScraping.value = false
-                if (error is CancellationException) throw error
-                scrapeRepository.appendLog("MissAV WebView 刮削失败：${error.message ?: error::class.java.simpleName}")
-                events.trySend(DetailEvent.Message(error.message ?: "MissAV WebView 刮削失败，请查看日志"))
-            }
-        }
-    }
-
-    fun onHiddenMissavFailed(requestId: Long, message: String) {
-        val request = _hiddenMissavRequest.value ?: return
-        if (request.id != requestId) return
-        _hiddenMissavRequest.value = null
-        _isScraping.value = false
-        scrapeRepository.appendLog("MissAV 隐藏 WebView 抓取失败：$message")
-        events.trySend(DetailEvent.Message(message))
+        rescrapeCurrent(ScrapeSource.TheJavDB)
     }
 
     fun clearScrapeFiles() {
@@ -278,7 +221,7 @@ class DetailViewModel(
         }
     }
 
-    private fun scrapeCurrent(source: ScrapeSource, allowCookieRefresh: Boolean) {
+    private fun scrapeCurrent(source: ScrapeSource) {
         val current = movie.value ?: return
         if (_isScraping.value) return
         scrapeScope.launch {
@@ -295,10 +238,6 @@ class DetailViewModel(
             }.onFailure { error ->
                 _isScraping.value = false
                 if (error is CancellationException) throw error
-                if (source == ScrapeSource.Missav && error is MissavCookieRequiredException) {
-                    handleMissavCookieError(current, error, allowCookieRefresh, isRescrape = false)
-                    return@onFailure
-                }
                 scrapeRepository.appendLog("当前影片刮削失败：${error.message ?: error::class.java.simpleName}")
                 events.trySend(DetailEvent.Message(error.message ?: "刮削失败，请查看日志"))
             }
@@ -325,7 +264,7 @@ class DetailViewModel(
         return repository.findMovieByNumber(current.libraryRootUri, number)?.id
     }
 
-    private fun rescrapeCurrent(source: ScrapeSource, allowCookieRefresh: Boolean) {
+    private fun rescrapeCurrent(source: ScrapeSource) {
         val current = movie.value ?: return
         if (_isScraping.value) return
         scrapeScope.launch {
@@ -340,50 +279,10 @@ class DetailViewModel(
             }.onFailure { error ->
                 _isScraping.value = false
                 if (error is CancellationException) throw error
-                if (source == ScrapeSource.Missav && error is MissavCookieRequiredException) {
-                    handleMissavCookieError(current, error, allowCookieRefresh, isRescrape = true)
-                    return@onFailure
-                }
                 scrapeRepository.appendLog("当前影片重新刮削失败：${error.message ?: error::class.java.simpleName}")
                 events.trySend(DetailEvent.Message(error.message ?: "重新刮削失败，请查看日志"))
             }
         }
-    }
-
-    private fun handleMissavCookieError(
-        current: MovieEntity,
-        error: MissavCookieRequiredException,
-        allowCookieRefresh: Boolean,
-        isRescrape: Boolean
-    ) {
-        val number = MovieNumberExtractor.extract(current.videoName)
-            ?: MovieNumberExtractor.extract(current.title)
-            ?: current.videoName.substringBeforeLast('.', current.videoName)
-        if (!allowCookieRefresh) {
-            val message = if (error.hasCookie) {
-                "MissAV 后台请求仍然被 403 阻挡，可能是 OkHttp 指纹被识别；请查看日志"
-            } else {
-                "MissAV 没有获取到可用 Cookie，请到设置页获取 Cookie"
-            }
-            scrapeRepository.appendLog("$message。原始错误：${error.message ?: error::class.java.simpleName}")
-            events.trySend(DetailEvent.Message(message))
-            return
-        }
-
-        if (error.hasCookie) {
-            scrapeRepository.appendLog("MissAV 后台请求被挡，切换到隐藏 WebView 抓取页面：${error.message ?: error::class.java.simpleName}")
-            events.trySend(DetailEvent.Message("MissAV 后台请求被挡，正在用 WebView 抓取页面"))
-        } else {
-            scrapeRepository.appendLog("MissAV 尚未配置 Cookie，使用隐藏 WebView 获取页面和 Cookie")
-            events.trySend(DetailEvent.Message("MissAV 需要 Cookie，正在用 WebView 获取页面"))
-        }
-        _isScraping.value = true
-        _hiddenMissavRequest.value = HiddenMissavRequest(
-            id = System.currentTimeMillis(),
-            number = number,
-            url = settingsRepository.getMissavScrapeLanguage().movieUrl(number),
-            rescrape = isRescrape
-        )
     }
 
     companion object {
@@ -431,20 +330,11 @@ private val ScrapeSource.displayName: String
         ScrapeSource.Official -> "Official"
         ScrapeSource.Mgstage -> "MGStage"
         ScrapeSource.Javbus -> "JavBus"
-        ScrapeSource.Javdb -> "JavDB"
-        ScrapeSource.Missav -> "MissAV"
+        ScrapeSource.TheJavDB -> "TheJavDB"
     }
 
 sealed interface DetailEvent {
     data class Message(val text: String) : DetailEvent
     data class OpenMovie(val movieId: Long) : DetailEvent
-    data class OpenMissavCookie(val number: String) : DetailEvent
     data object Deleted : DetailEvent
 }
-
-data class HiddenMissavRequest(
-    val id: Long,
-    val number: String,
-    val url: String,
-    val rescrape: Boolean = false
-)

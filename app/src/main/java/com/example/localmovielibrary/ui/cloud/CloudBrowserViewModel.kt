@@ -13,10 +13,7 @@ import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
-import com.example.localmovielibrary.scraper.MissavCookieRequiredException
 import com.example.localmovielibrary.scraper.MovieNumberExtractor
-import com.example.localmovielibrary.scraper.ScrapeSource
-import com.example.localmovielibrary.ui.shared.HiddenMissavWebRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,9 +48,6 @@ class CloudBrowserViewModel(
     private val folderBatchQueueLock = Any()
     private val folderBatchQueue = ArrayDeque<PendingFolderBatchAdd>()
     private var isFolderBatchRunning = false
-    private val missavWebViewQueue = ArrayDeque<PendingMissavScrape>()
-    private val missavCloudAddQueue = ArrayDeque<PendingCloudAdd>()
-    private var isMissavCloudAddRunning = false
 
     init {
         loadCurrent()
@@ -198,85 +192,6 @@ class CloudBrowserViewModel(
 
     fun consumeOpenMovie() {
         _uiState.update { it.copy(openMovieId = null) }
-    }
-
-    fun onHiddenMissavHtmlReady(requestId: Long, html: String, cookie: String) {
-        val pending = _uiState.value.pendingMissavScrape ?: return
-        val request = _uiState.value.hiddenMissavRequest ?: return
-        if (request.id != requestId) return
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    hiddenMissavRequest = null,
-                    message = "已通过 WebView 获取 MissAV 页面，正在写入元数据..."
-                )
-            }
-            runCatching {
-                settingsRepository.saveMissavCookies(cookie)
-                val movie = movieRepository.findMovieByNumberAndVariant(pending.libraryRootUri, pending.number, pending.sourceName)
-                    ?: error("没有找到刚添加的影片：${pending.number}")
-                val scrapeResult = scrapeRepository.scrapeMovieWithMissavHtmlOutput(movie, html, cookie)
-                scrapeRepository.appendLog("MissAV WebView 刮削完成，开始刷新单个影片：${pending.number}")
-                val refreshedMovie = movieRepository.scanSingleMovie(
-                    rootUri = Uri.parse(pending.libraryRootUri),
-                    videoUri = Uri.parse(scrapeResult.strmUri),
-                    mergeByMovieNumber = true
-                )
-                if (refreshedMovie != null) {
-                    if (movie.id != refreshedMovie.id && movie.videoUri != refreshedMovie.videoUri) {
-                        movieRepository.deleteMovie(movie.id)
-                        scrapeRepository.appendLog("已删除 MissAV 刮削前临时入库记录：${movie.videoName}")
-                    }
-                    recordRepository.updateStrmLocation(
-                        pickcode = pending.pickcode,
-                        strmUri = refreshedMovie.videoUri,
-                        libraryRootUri = refreshedMovie.libraryRootUri,
-                        movieId = refreshedMovie.id
-                    )
-                } else {
-                    scrapeRepository.appendLog("MissAV WebView 刮削后未定位到整理后的 STRM：${pending.number}")
-                }
-                CloudAddResult(
-                    pickcode = pending.pickcode,
-                    message = "已添加并刮削：${pending.number}"
-                )
-            }.onSuccess { result ->
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - result.pickcode,
-                        pendingMissavScrape = null,
-                        addedPickcodes = it.addedPickcodes + result.pickcode,
-                        message = progressMessage(result.message)
-                    )
-                }
-                finishMissavWebViewTaskAndContinue()
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - pending.pickcode,
-                        pendingMissavScrape = null,
-                        message = error.message ?: "MissAV WebView 刮削失败"
-                    )
-                }
-                finishMissavWebViewTaskAndContinue()
-            }
-        }
-    }
-
-    fun onHiddenMissavFailed(requestId: Long, message: String) {
-        val request = _uiState.value.hiddenMissavRequest ?: return
-        val pending = _uiState.value.pendingMissavScrape
-        if (request.id != requestId) return
-        scrapeRepository.appendLog("网盘添加影片时 MissAV 隐藏 WebView 抓取失败：$message")
-        _uiState.update {
-            it.copy(
-                addingPickcodes = pending?.let { pendingItem -> it.addingPickcodes - pendingItem.pickcode } ?: it.addingPickcodes,
-                hiddenMissavRequest = null,
-                pendingMissavScrape = null,
-                message = message
-            )
-        }
-        finishMissavWebViewTaskAndContinue()
     }
 
     fun addVideoToLibrary(item: Cloud115FileItem) {
@@ -563,17 +478,6 @@ class CloudBrowserViewModel(
             _uiState.update { it.copy(message = "这个视频已经在添加队列中") }
             return
         }
-        if (settingsRepository.getDefaultScrapeSource() == ScrapeSource.Missav) {
-            enqueueMissavCloudAdd(
-                PendingCloudAdd(
-                    item = item,
-                    pickcode = pickcode,
-                    forceDistinct = forceDistinct,
-                    alreadyMarkedAdding = alreadyMarkedAdding
-                )
-            )
-            return
-        }
         viewModelScope.launch {
             _uiState.update {
                 val nextAddingPickcodes = if (alreadyMarkedAdding) {
@@ -604,15 +508,6 @@ class CloudBrowserViewModel(
             }.onFailure { error ->
                 val message = error.message ?: error::class.java.simpleName
                 scrapeRepository.appendLog("网盘添加失败：${item.name} / $pickcode，原因：$message")
-                val pending = buildPendingMissavContext(item, pickcode)
-                if (
-                    settingsRepository.getDefaultScrapeSource() == ScrapeSource.Missav &&
-                    error is MissavCookieRequiredException &&
-                    pending != null
-                ) {
-                    enqueueOrStartMissavWebView(pending)
-                    return@onFailure
-                }
                 _uiState.update {
                     it.copy(
                         addingPickcodes = it.addingPickcodes - pickcode,
@@ -620,118 +515,6 @@ class CloudBrowserViewModel(
                     )
                 }
             }
-        }
-    }
-
-    private fun enqueueMissavCloudAdd(pending: PendingCloudAdd) {
-        if (pending.pickcode in _uiState.value.addedPickcodes ||
-            (!pending.alreadyMarkedAdding && pending.pickcode in _uiState.value.addingPickcodes)
-        ) {
-            _uiState.update { it.copy(message = "这个视频已经在添加队列中") }
-            return
-        }
-        _uiState.update {
-            val nextAddingPickcodes = if (pending.alreadyMarkedAdding) {
-                it.addingPickcodes
-            } else {
-                it.addingPickcodes + pending.pickcode
-            }
-            it.copy(
-                addingPickcodes = nextAddingPickcodes,
-                message = progressMessage("已加入 MissAV 单线程添加队列：${pending.item.name}")
-            )
-        }
-        scrapeRepository.appendLog("MissAV 网盘添加已加入单线程队列：${pending.item.name} / ${pending.pickcode}")
-        missavCloudAddQueue.addLast(pending)
-        startNextMissavCloudAdd()
-    }
-
-    private fun startNextMissavCloudAdd() {
-        if (isMissavCloudAddRunning) return
-        val pending = missavCloudAddQueue.removeFirstOrNull() ?: return
-        isMissavCloudAddRunning = true
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(message = progressMessage("正在处理 MissAV 队列：${pending.item.name}"))
-            }
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    withAddLock(pending.item.name) {
-                        processCloudVideoAdd(pending.item, pending.pickcode, pending.forceDistinct)
-                    }
-                }
-            }.onSuccess { result ->
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - result.pickcode,
-                        addedPickcodes = it.addedPickcodes + result.pickcode,
-                        message = progressMessage(result.message)
-                    )
-                }
-                isMissavCloudAddRunning = false
-                startNextMissavCloudAdd()
-            }.onFailure { error ->
-                val message = error.message ?: error::class.java.simpleName
-                val pendingMissav = buildPendingMissavContext(pending.item, pending.pickcode)
-                if (error is MissavCookieRequiredException && pendingMissav != null) {
-                    scrapeRepository.appendLog("MissAV 需要 WebView 获取页面，暂停队列等待：${pendingMissav.number}")
-                    startMissavWebView(pendingMissav)
-                    return@onFailure
-                }
-                scrapeRepository.appendLog("网盘添加失败：${pending.item.name} / ${pending.pickcode}，原因：$message")
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - pending.pickcode,
-                        message = message
-                    )
-                }
-                isMissavCloudAddRunning = false
-                startNextMissavCloudAdd()
-            }
-        }
-    }
-
-    private fun enqueueOrStartMissavWebView(pending: PendingMissavScrape) {
-        val state = _uiState.value
-        if (state.hiddenMissavRequest != null || state.pendingMissavScrape != null) {
-            if (missavWebViewQueue.none { it.pickcode == pending.pickcode }) {
-                missavWebViewQueue.addLast(pending)
-            }
-            scrapeRepository.appendLog("MissAV 隐藏 WebView 正在处理，加入等待队列：${pending.number}")
-            _uiState.update {
-                it.copy(message = progressMessage("MissAV WebView 正在处理，已将 ${pending.number} 加入等待队列"))
-            }
-            return
-        }
-        startMissavWebView(pending)
-    }
-
-    private fun startMissavWebView(pending: PendingMissavScrape) {
-        scrapeRepository.appendLog("网盘添加影片时 MissAV 返回 Cloudflare/403，切换到隐藏 WebView：${pending.number}")
-        _uiState.update {
-            it.copy(
-                hiddenMissavRequest = HiddenMissavWebRequest(
-                    id = System.currentTimeMillis(),
-                    number = pending.number,
-                    url = settingsRepository.getMissavScrapeLanguage().movieUrl(pending.number)
-                ),
-                pendingMissavScrape = pending,
-                message = progressMessage("MissAV 返回验证页，正在使用隐藏 WebView 获取页面")
-            )
-        }
-    }
-
-    private fun startNextQueuedMissavWebView() {
-        val next = if (missavWebViewQueue.isEmpty()) null else missavWebViewQueue.removeFirst()
-        next?.let { startMissavWebView(it) }
-    }
-
-    private fun finishMissavWebViewTaskAndContinue() {
-        if (isMissavCloudAddRunning) {
-            isMissavCloudAddRunning = false
-            startNextMissavCloudAdd()
-        } else {
-            startNextQueuedMissavWebView()
         }
     }
 
@@ -973,17 +756,6 @@ class CloudBrowserViewModel(
         }
     }
 
-    private suspend fun buildPendingMissavContext(item: Cloud115FileItem, pickcode: String): PendingMissavScrape? {
-        val libraryRoot = settingsRepository.getLibraryRootUri() ?: return null
-        val number = extractMovieNumberWithRules(item.name) ?: return null
-        return PendingMissavScrape(
-            libraryRootUri = libraryRoot,
-            number = number,
-            sourceName = item.name,
-            pickcode = pickcode
-        )
-    }
-
     private inner class CloudAddNumberChecker {
         private var loadedCachedRules = false
         private var forcedRefreshTried = false
@@ -1132,8 +904,6 @@ data class CloudBrowserUiState(
     val excludedVideoNames: Set<String> = emptySet(),
     val addingDomesticFolderCids: Set<Long> = emptySet(),
     val addedDomesticFolderCids: Set<Long> = emptySet(),
-    val hiddenMissavRequest: HiddenMissavWebRequest? = null,
-    val pendingMissavScrape: PendingMissavScrape? = null,
     val pendingReplaceConflict: PendingReplaceConflict? = null,
     val openMovieId: Long? = null,
     val scrollResetVersion: Int = 0,
@@ -1161,20 +931,6 @@ private data class CloudDirectoryLoadResult(
     val items: List<Cloud115FileItem>,
     val addedPickcodes: Set<String>,
     val addedDomesticFolderCids: Set<Long>
-)
-
-data class PendingMissavScrape(
-    val libraryRootUri: String,
-    val number: String,
-    val sourceName: String,
-    val pickcode: String
-)
-
-private data class PendingCloudAdd(
-    val item: Cloud115FileItem,
-    val pickcode: String,
-    val forceDistinct: Boolean,
-    val alreadyMarkedAdding: Boolean
 )
 
 private data class PendingFolderBatchAdd(

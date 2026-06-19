@@ -123,9 +123,9 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.example.localmovielibrary.playback.vr.VrControlMode
 import com.example.localmovielibrary.playback.vr.VrMode
-import com.example.localmovielibrary.subtitle.JavzimuSubtitleResult
 import com.example.localmovielibrary.subtitle.LocalSubtitleFile
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
+import com.example.localmovielibrary.subtitle.SubtitleSearchResult
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -136,7 +136,6 @@ import android.graphics.Color as AndroidColor
 fun PlayerScreen(
     viewModel: PlayerViewModel,
     onBack: () -> Unit,
-    onOpenJavzimuCookie: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
@@ -163,6 +162,8 @@ fun PlayerScreen(
     var seekDragTotalX by remember { mutableFloatStateOf(0f) }
     var seekDragTotalY by remember { mutableFloatStateOf(0f) }
     var seekDragPreviewMs by remember { mutableStateOf<Long?>(null) }
+    val overlayGestureBlocked =
+        uiState.externalSubtitlePanelVisible || playbackModePanelVisible || audioTrackDialogVisible
     var brightnessValue by remember(activity) {
         mutableFloatStateOf(activity?.window?.attributes?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f)
     }
@@ -310,13 +311,6 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(uiState.javzimuWebUrl) {
-        uiState.javzimuWebUrl?.let { url ->
-            viewModel.consumeJavzimuWebUrl()
-            onOpenJavzimuCookie(url)
-        }
-    }
-
     fun setBrightness(value: Float) {
         val window = activity?.window ?: return
         brightnessValue = value.coerceIn(0.02f, 1f)
@@ -346,7 +340,7 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .then(if (vrMode.isVr || controlsLocked) Modifier else Modifier.pointerInput(isLandscape, activity, audioManager) {
+            .then(if (vrMode.isVr || controlsLocked || overlayGestureBlocked) Modifier else Modifier.pointerInput(isLandscape, activity, audioManager) {
                 detectDragGestures(
                     onDragStart = { offset ->
                         gestureMode = null
@@ -411,7 +405,7 @@ fun PlayerScreen(
                     }
                 )
             })
-            .then(if (vrMode.isVr || controlsLocked) Modifier else Modifier.clickable { controlsVisible = !controlsVisible })
+            .then(if (vrMode.isVr || controlsLocked || overlayGestureBlocked) Modifier else Modifier.clickable { controlsVisible = !controlsVisible })
     ) {
         if (vrMode.isVr) {
             VrSphericalPlayerView(
@@ -887,7 +881,7 @@ private fun ExternalSubtitlePanel(
     provider: SubtitleSearchProvider,
     providerOptions: List<SubtitleSearchProvider>,
     localSubtitles: List<LocalSubtitleFile>,
-    onlineSubtitles: List<JavzimuSubtitleResult>,
+    onlineSubtitles: List<SubtitleSearchResult>,
     externalSubtitleEnabled: Boolean,
     activeSubtitleName: String?,
     isSearching: Boolean,
@@ -900,7 +894,7 @@ private fun ExternalSubtitlePanel(
     onSearchOnline: () -> Unit,
     onLocalSelected: (LocalSubtitleFile) -> Unit,
     onLocalDelete: (LocalSubtitleFile) -> Unit,
-    onOnlineSelected: (JavzimuSubtitleResult) -> Unit
+    onOnlineSelected: (SubtitleSearchResult) -> Unit
 ) {
     BoxWithConstraints(
         modifier = Modifier

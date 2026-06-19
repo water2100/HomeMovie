@@ -64,7 +64,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.localmovielibrary.cloud115.Cloud115FileItem
-import com.example.localmovielibrary.ui.shared.HiddenMissavWebView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
@@ -141,13 +140,6 @@ fun CloudBrowserScreen(
             .fillMaxSize()
             .background(CloudBackground)
     ) {
-        uiState.hiddenMissavRequest?.let { request ->
-            HiddenMissavWebView(
-                request = request,
-                onHtmlReady = viewModel::onHiddenMissavHtmlReady,
-                onFailed = viewModel::onHiddenMissavFailed
-            )
-        }
         uiState.pendingReplaceConflict?.let { conflict ->
             AlertDialog(
                 onDismissRequest = viewModel::dismissReplaceConflict,

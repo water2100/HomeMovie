@@ -15,7 +15,7 @@ class JavdbScraper(
     private val client: OkHttpClient = OkHttpClient(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : MovieScraper {
-    override val source: ScrapeSource = ScrapeSource.Javdb
+    override val source: ScrapeSource = ScrapeSource.TheJavDB
 
     override suspend fun scrape(number: String): ScrapedMovieInfo = withContext(ioDispatcher) {
         val normalized = normalizeJavdbNumber(number)
@@ -31,9 +31,9 @@ class JavdbScraper(
             .header("User-Agent", USER_AGENT)
             .build()
         return client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("JavDB request failed HTTP ${response.code}: $url")
+            if (!response.isSuccessful) error("TheJavDB request failed HTTP ${response.code}: $url")
             val body = response.body?.string().orEmpty()
-            if (body.isBlank()) error("JavDB response is empty: $url")
+            if (body.isBlank()) error("TheJavDB response is empty: $url")
             JSONTokener(body).nextValue()
         }
     }
@@ -107,10 +107,10 @@ internal fun extractJavdbMovieObject(root: Any): JSONObject {
             root.firstMovieFromArray("data")?.let { return it }
             root.firstMovieFromArray("movies")?.let { return it }
             root.firstMovieFromArray("results")?.let { return it }
-            error("JavDB response does not contain movie data")
+            error("TheJavDB response does not contain movie data")
         }
-        is JSONArray -> root.firstJSONObjectOrNull() ?: error("JavDB response list is empty")
-        else -> error("Unsupported JavDB response type: ${root::class.java.simpleName}")
+        is JSONArray -> root.firstJSONObjectOrNull() ?: error("TheJavDB response list is empty")
+        else -> error("Unsupported TheJavDB response type: ${root::class.java.simpleName}")
     }
 }
 

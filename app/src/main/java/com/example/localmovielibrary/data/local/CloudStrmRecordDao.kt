@@ -71,6 +71,9 @@ interface CloudStrmRecordDao {
     @Query("DELETE FROM cloud_strm_records WHERE pickcode IN (:pickcodes)")
     suspend fun deleteByPickcodes(pickcodes: List<String>)
 
+    @Query("DELETE FROM cloud_strm_records WHERE strmUri IN (:strmUris)")
+    suspend fun deleteByStrmUris(strmUris: List<String>)
+
     @Query("DELETE FROM cloud_strm_records WHERE movieId = :movieId")
     suspend fun deleteByMovieId(movieId: Long)
 

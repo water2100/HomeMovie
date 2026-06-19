@@ -27,11 +27,11 @@ class AvsubtitlesSubtitleRepository(
 ) {
     private val appContext = context.applicationContext
     private val errorLog = RuntimeErrorLog(appContext)
-    private val fileStore = JavzimuSubtitleRepository(appContext, settingsRepository, client)
+    private val fileStore = LocalSubtitleStore(appContext, settingsRepository)
 
-    suspend fun search(number: String, videoDurationMs: Long): List<JavzimuSubtitleResult> =
+    suspend fun search(number: String, videoDurationMs: Long): List<SubtitleSearchResult> =
         withContext(Dispatchers.IO) {
-            val normalized = normalizeJavzimuSubtitleNumber(number).lowercase(Locale.ROOT)
+            val normalized = normalizeDefaultSubtitleNumber(number).lowercase(Locale.ROOT)
             if (normalized.isBlank()) return@withContext emptyList()
             val searchUrl = "$BASE_URL/search_results.php".toHttpUrl().newBuilder()
                 .addQueryParameter("search", normalized)
@@ -59,7 +59,7 @@ class AvsubtitlesSubtitleRepository(
     suspend fun download(
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         storageSourceUri: Uri? = null
     ): LocalSubtitleFile = withContext(Dispatchers.IO) {
         val revid = result.timestamp.takeIf { it > 0L }
@@ -97,7 +97,7 @@ class AvsubtitlesSubtitleRepository(
             .toList()
     }
 
-    private fun parseSubtitleLinks(movieHtml: String, movieLink: String): List<JavzimuSubtitleResult> {
+    private fun parseSubtitleLinks(movieHtml: String, movieLink: String): List<SubtitleSearchResult> {
         val rows = SUBTITLE_ROW_REGEX.findAll(movieHtml)
             .map { it.value }
             .filter { SUBTITLE_LINK_REGEX.containsMatchIn(it) }
@@ -133,7 +133,7 @@ class AvsubtitlesSubtitleRepository(
                 }
                 val fileName = parseZipName(detailHtml)
                     ?: "avsubtitles-$subId-$revid.zip"
-                JavzimuSubtitleResult(
+                SubtitleSearchResult(
                     cid = subId,
                     ext = "zip",
                     name = subtitleName,

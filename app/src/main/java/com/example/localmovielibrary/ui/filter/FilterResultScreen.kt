@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -49,7 +50,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.ui.home.HomeImageMode
 import com.example.localmovielibrary.ui.shared.MovieArtwork
+import com.example.localmovielibrary.util.extractMovieNumberInfo
+import com.example.localmovielibrary.util.partSortKey
 import kotlinx.coroutines.flow.collectLatest
+import java.util.Locale
 
 private val ResultBackground = Color(0xFF070A0E)
 private val ResultPanel = Color.White.copy(alpha = 0.075f)
@@ -67,31 +71,57 @@ fun FilterResultScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
     var visibleCount by rememberSaveable { mutableStateOf(FILTER_INITIAL_COUNT) }
-    val visibleMovies = remember(uiState.movies, visibleCount) {
-        uiState.movies.take(visibleCount.coerceIn(0, uiState.movies.size))
+    var activeFilterKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var sortModeName by rememberSaveable { mutableStateOf(FilterResultSortMode.ReleaseDate.name) }
+    val sortMode = remember(sortModeName) {
+        FilterResultSortMode.entries.firstOrNull { it.name == sortModeName } ?: FilterResultSortMode.ReleaseDate
+    }
+    val displayMovies = remember(uiState.movies, uiState.filterType, sortModeName) {
+        if (uiState.filterType == "actor") {
+            sortActorMovies(uiState.movies, sortMode)
+        } else {
+            uiState.movies
+        }
+    }
+    val visibleMovies = remember(displayMovies, visibleCount) {
+        displayMovies.take(visibleCount.coerceIn(0, displayMovies.size))
     }
 
-    LaunchedEffect(uiState.filterType, uiState.filterValue) {
-        visibleCount = FILTER_INITIAL_COUNT.coerceAtMost(uiState.movies.size)
-        gridState.scrollToItem(0)
-    }
-
-    LaunchedEffect(uiState.movies.size) {
-        if (visibleCount == 0 && uiState.movies.isNotEmpty()) {
-            visibleCount = FILTER_INITIAL_COUNT.coerceAtMost(uiState.movies.size)
-        } else if (visibleCount > uiState.movies.size) {
-            visibleCount = uiState.movies.size
+    val resetKey = remember(uiState.filterType, uiState.filterValue, sortModeName) {
+        if (uiState.filterType == "actor") {
+            "${uiState.filterType}:${uiState.filterValue}:$sortModeName"
+        } else {
+            "${uiState.filterType}:${uiState.filterValue}"
         }
     }
 
-    LaunchedEffect(gridState, uiState.movies.size) {
+    LaunchedEffect(resetKey) {
+        if (uiState.filterType.isBlank() && uiState.filterValue.isBlank()) return@LaunchedEffect
+        if (activeFilterKey != resetKey) {
+            activeFilterKey = resetKey
+            visibleCount = FILTER_INITIAL_COUNT.coerceAtMost(displayMovies.size)
+            if (displayMovies.isNotEmpty()) {
+                gridState.scrollToItem(0)
+            }
+        }
+    }
+
+    LaunchedEffect(displayMovies.size) {
+        if (visibleCount == 0 && displayMovies.isNotEmpty()) {
+            visibleCount = FILTER_INITIAL_COUNT.coerceAtMost(displayMovies.size)
+        } else if (visibleCount > displayMovies.size) {
+            visibleCount = displayMovies.size
+        }
+    }
+
+    LaunchedEffect(gridState, displayMovies.size) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
             .collectLatest { lastVisibleIndex ->
                 if (
-                    uiState.movies.size > visibleCount &&
+                    displayMovies.size > visibleCount &&
                     lastVisibleIndex >= visibleCount - FILTER_PREFETCH_THRESHOLD
                 ) {
-                    visibleCount = (visibleCount + FILTER_PAGE_SIZE).coerceAtMost(uiState.movies.size)
+                    visibleCount = (visibleCount + FILTER_PAGE_SIZE).coerceAtMost(displayMovies.size)
                 }
             }
     }
@@ -103,10 +133,16 @@ fun FilterResultScreen(
     ) {
         FilterResultTopBar(
             title = uiState.title,
-            count = uiState.movies.size,
+            count = displayMovies.size,
             onBack = onBack
         )
-        if (uiState.movies.isEmpty()) {
+        if (uiState.filterType == "actor") {
+            ActorSortBar(
+                selectedSortMode = sortMode,
+                onSortModeSelected = { sortModeName = it.name }
+            )
+        }
+        if (displayMovies.isEmpty()) {
             FilterEmptyState()
         } else {
             LazyVerticalGrid(
@@ -126,6 +162,30 @@ fun FilterResultScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ActorSortBar(
+    selectedSortMode: FilterResultSortMode,
+    onSortModeSelected: (FilterResultSortMode) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FilterChip(
+            selected = selectedSortMode == FilterResultSortMode.ReleaseDate,
+            onClick = { onSortModeSelected(FilterResultSortMode.ReleaseDate) },
+            label = { Text("发行时间") }
+        )
+        FilterChip(
+            selected = selectedSortMode == FilterResultSortMode.Number,
+            onClick = { onSortModeSelected(FilterResultSortMode.Number) },
+            label = { Text("番号") }
+        )
     }
 }
 
@@ -226,3 +286,56 @@ private fun FilterEmptyState() {
         )
     }
 }
+
+private enum class FilterResultSortMode {
+    ReleaseDate,
+    Number
+}
+
+private data class ActorNumberSortKey(
+    val prefix: String,
+    val number: Int,
+    val partOrder: Int,
+    val suffix: String
+)
+
+private fun sortActorMovies(movies: List<MovieEntity>, sortMode: FilterResultSortMode): List<MovieEntity> =
+    when (sortMode) {
+        FilterResultSortMode.ReleaseDate -> movies.sortedWith(
+            compareByDescending<MovieEntity> { it.releaseSortKey() }
+                .thenBy { it.sortTitle.ifBlank { it.title }.lowercase(Locale.ROOT) }
+        )
+        FilterResultSortMode.Number -> movies
+            .map { movie -> movie to movie.actorNumberSortKey() }
+            .sortedWith(
+                compareBy<Pair<MovieEntity, ActorNumberSortKey?>>({ it.second == null })
+                    .thenBy { it.second?.prefix.orEmpty() }
+                    .thenBy { it.second?.number ?: Int.MAX_VALUE }
+                    .thenBy { it.second?.partOrder ?: Int.MAX_VALUE }
+                    .thenBy { it.second?.suffix.orEmpty() }
+                    .thenBy { it.first.sortTitle.ifBlank { it.first.title }.lowercase(Locale.ROOT) }
+            )
+            .map { it.first }
+    }
+
+private fun MovieEntity.releaseSortKey(): String =
+    premiered?.trim()
+        ?.replace('/', '-')
+        ?.takeIf { it.isNotBlank() }
+        ?: year?.let { "%04d".format(it) }
+        ?: ""
+
+private fun MovieEntity.actorNumberSortKey(): ActorNumberSortKey? {
+    val source = listOf(videoName, title, originalTitle.orEmpty()).joinToString(" ")
+    val info = extractMovieNumberInfo(source) ?: return null
+    val match = ACTOR_NUMBER_SORT_PATTERN.find(info.number) ?: return null
+    return ActorNumberSortKey(
+        prefix = match.groupValues[1].uppercase(Locale.ROOT),
+        number = match.groupValues[2].toIntOrNull() ?: return null,
+        partOrder = partSortKey(info.partLabel),
+        suffix = match.groupValues.getOrNull(3).orEmpty().uppercase(Locale.ROOT)
+    )
+}
+
+private val ACTOR_NUMBER_SORT_PATTERN =
+    Regex("""(?i)^([a-z0-9]{2,12}?)-(\d{2,6})([a-z]{0,2})$""")

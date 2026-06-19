@@ -5,7 +5,6 @@ enum class SubtitleSearchProvider(
     val label: String,
     val fileSuffix: String
 ) {
-    Javzimu("javzimu", "Javzimu.com", "javzimu"),
     Avsubtitles("avsubtitles", "AVSubtitles", "avsubtitles"),
     Xunlei("xunlei", "迅雷字幕", "xunlei"),
     Cloud115("cloud115", "网盘字幕", "cloud115");

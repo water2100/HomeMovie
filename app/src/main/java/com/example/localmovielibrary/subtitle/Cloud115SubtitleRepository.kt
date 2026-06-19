@@ -18,9 +18,9 @@ class Cloud115SubtitleRepository(
 ) {
     private val appContext = context.applicationContext
     private val errorLog = RuntimeErrorLog(appContext)
-    private val fileStore = JavzimuSubtitleRepository(appContext, settingsRepository)
+    private val fileStore = LocalSubtitleStore(appContext, settingsRepository)
 
-    suspend fun search(number: String): List<JavzimuSubtitleResult> = withContext(Dispatchers.IO) {
+    suspend fun search(number: String): List<SubtitleSearchResult> = withContext(Dispatchers.IO) {
         val normalized = normalizeCloud115SubtitleNumber(number)
         if (normalized.isBlank()) return@withContext emptyList()
         errorLog.append(
@@ -40,7 +40,7 @@ class Cloud115SubtitleRepository(
     suspend fun download(
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         storageSourceUri: Uri? = null
     ): LocalSubtitleFile = withContext(Dispatchers.IO) {
         val pickcode = result.signature.takeIf { it.isNotBlank() }
@@ -65,13 +65,13 @@ class Cloud115SubtitleRepository(
         )
     }
 
-    private fun Cloud115FileItem.toSubtitleResult(number: String): JavzimuSubtitleResult? {
+    private fun Cloud115FileItem.toSubtitleResult(number: String): SubtitleSearchResult? {
         val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
             .takeIf { it in SUBTITLE_EXTENSIONS }
             ?: return null
         val pickcode = pickcode?.takeIf { it.isNotBlank() } ?: return null
         if (!name.matchesSubtitleNumber(number)) return null
-        return JavzimuSubtitleResult(
+        return SubtitleSearchResult(
             cid = fid?.toString() ?: pickcode,
             ext = ext,
             name = name,

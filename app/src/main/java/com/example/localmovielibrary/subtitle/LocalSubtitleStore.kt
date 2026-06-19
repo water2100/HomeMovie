@@ -1,4 +1,4 @@
-﻿package com.example.localmovielibrary.subtitle
+package com.example.localmovielibrary.subtitle
 
 import android.content.Context
 import android.net.Uri
@@ -6,27 +6,18 @@ import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.diagnostics.RuntimeErrorLog
-import com.example.localmovielibrary.playback.DEFAULT_USER_AGENT
 import com.example.localmovielibrary.util.normalizeMovieNumber
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
 import java.io.File
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import kotlin.math.abs
-
-class JavzimuCloudflareException(message: String) : IllegalStateException(message)
 
 data class LocalSubtitleFile(
     val name: String,
     val uri: Uri
 )
 
-data class JavzimuSubtitleResult(
+data class SubtitleSearchResult(
     val cid: String,
     val ext: String,
     val name: String,
@@ -35,23 +26,19 @@ data class JavzimuSubtitleResult(
     val extraName: String,
     val timestamp: Long,
     val signature: String,
-    val provider: SubtitleSearchProvider = SubtitleSearchProvider.Javzimu
+    val provider: SubtitleSearchProvider
 ) {
     val displayName: String = buildString {
         append(provider.label)
-        if (language.isNotBlank()) append(" 路 ").append(language)
-        if (extraName.isNotBlank()) append(" 路 ").append(extraName)
-        durationMs?.takeIf { it > 0L }?.let { append(" 路 ").append(formatDuration(it)) }
+        if (language.isNotBlank()) append(" · ").append(language)
+        if (extraName.isNotBlank()) append(" · ").append(extraName)
+        durationMs?.takeIf { it > 0L }?.let { append(" · ").append(formatDuration(it)) }
     }
 }
 
-class JavzimuSubtitleRepository(
-    private val context: Context,
-    private val settingsRepository: AppSettingsRepository,
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+class LocalSubtitleStore(
+    context: Context,
+    private val settingsRepository: AppSettingsRepository
 ) {
     private val appContext = context.applicationContext
     private val errorLog = RuntimeErrorLog(appContext)
@@ -102,54 +89,10 @@ class JavzimuSubtitleRepository(
         }
     }
 
-    suspend fun search(number: String, videoDurationMs: Long): List<JavzimuSubtitleResult> =
-        withContext(Dispatchers.IO) {
-            val normalized = normalizeJavzimuSubtitleNumber(number)
-            if (normalized.isBlank()) return@withContext emptyList()
-            val url = "$BASE_URL/api/search".toHttpUrl().newBuilder()
-                .addQueryParameter("name", normalized)
-                .build()
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", DEFAULT_USER_AGENT)
-                .applyJavzimuCookie()
-                .build()
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (response.code == 403 || body.isJavzimuCloudflareChallengeHtml()) {
-                    throw JavzimuCloudflareException("Javzimu 需要通过 WebView 获取 Cookie")
-                }
-                if (!response.isSuccessful) error("\u5B57\u5E55\u641C\u7D22\u5931\u8D25\uFF1AHTTP ${response.code}")
-                val json = JSONObject(body)
-                if (json.optInt("code", -1) != 0) error("\u5B57\u5E55\u641C\u7D22\u5931\u8D25\uFF1A${json.optString("result", "\u672A\u77E5\u9519\u8BEF")}")
-                val data = json.optJSONArray("data") ?: return@withContext emptyList()
-                buildList {
-                    for (index in 0 until data.length()) {
-                        val item = data.optJSONObject(index) ?: continue
-                        val result = item.toSubtitleResult() ?: continue
-                        if (result.isCloseTo(videoDurationMs)) add(result)
-                    }
-                }
-            }
-        }
-
-    suspend fun download(
-        videoUri: Uri,
-        fileName: String,
-        result: JavzimuSubtitleResult,
-        storageSourceUri: Uri? = null
-    ): LocalSubtitleFile = saveSubtitleBytes(
-        videoUri = videoUri,
-        fileName = fileName,
-        result = result,
-        bytes = withContext(Dispatchers.IO) { downloadBytes(result) },
-        storageSourceUri = storageSourceUri
-    )
-
     suspend fun saveSubtitleBytes(
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         bytes: ByteArray,
         storageSourceUri: Uri? = null
     ): LocalSubtitleFile = withContext(Dispatchers.IO) {
@@ -167,7 +110,7 @@ class JavzimuSubtitleRepository(
         val writableDocumentParents = documentParents.filter { isWritableDocumentParent(it) }
         val localParent = candidates.firstNotNullOfOrNull { resolveLocalParent(it) }
         errorLog.append(
-            event = "javzimu.subtitle.download.begin",
+            event = "subtitle.file.save.begin",
             details = mapOf(
                 "videoUri" to videoUri.toString(),
                 "fileName" to fileName,
@@ -177,20 +120,21 @@ class JavzimuSubtitleRepository(
                 "writableDocumentParents" to writableDocumentParents.joinToString(" | ") { "${it.name}:${it.uri}" },
                 "hasLocalParent" to (localParent != null).toString(),
                 "resultName" to result.name,
-                "resultExt" to result.ext
+                "resultExt" to result.ext,
+                "provider" to result.provider.id
             )
         )
         if (writableDocumentParents.isEmpty() && localParent == null) {
             val message = if (documentParents.isNotEmpty()) {
-                "\u65E0\u6CD5\u5728\u89C6\u9891\u76EE\u5F55\u521B\u5EFA\u5B57\u5E55\u6587\u4EF6\uFF0C\u8BF7\u5728\u76EE\u5F55\u8BBE\u7F6E\u4E2D\u91CD\u65B0\u9009\u62E9\u5F71\u7247\u5E93\u76EE\u5F55\u5E76\u6388\u4E88\u5199\u5165\u6743\u9650"
+                "无法在视频目录创建字幕文件，请在目录设置中重新选择影片库目录并授予写入权限"
             } else {
-                "\u65E0\u6CD5\u5B9A\u4F4D\u89C6\u9891\u6240\u5728\u76EE\u5F55"
+                "无法定位视频所在目录"
             }
             errorLog.append(
                 event = if (documentParents.isNotEmpty()) {
-                    "javzimu.subtitle.download.noWritableParentBeforeRequest"
+                    "subtitle.file.save.noWritableParentBeforeRequest"
                 } else {
-                    "javzimu.subtitle.download.noParentBeforeRequest"
+                    "subtitle.file.save.noParentBeforeRequest"
                 },
                 details = mapOf(
                     "videoUri" to videoUri.toString(),
@@ -211,15 +155,15 @@ class JavzimuSubtitleRepository(
         val targetLocalParent = localParent
             ?: run {
                 val message = if (documentParents.isNotEmpty()) {
-                    "\u65E0\u6CD5\u5728\u89C6\u9891\u76EE\u5F55\u521B\u5EFA\u5B57\u5E55\u6587\u4EF6\uFF0C\u8BF7\u5728\u76EE\u5F55\u8BBE\u7F6E\u4E2D\u91CD\u65B0\u9009\u62E9\u5F71\u7247\u5E93\u76EE\u5F55\u5E76\u6388\u4E88\u5199\u5165\u6743\u9650"
+                    "无法在视频目录创建字幕文件，请在目录设置中重新选择影片库目录并授予写入权限"
                 } else {
-                    "\u65E0\u6CD5\u5B9A\u4F4D\u89C6\u9891\u6240\u5728\u76EE\u5F55"
+                    "无法定位视频所在目录"
                 }
                 errorLog.append(
                     event = if (documentParents.isNotEmpty()) {
-                        "javzimu.subtitle.download.noWritableParent"
+                        "subtitle.file.save.noWritableParent"
                     } else {
-                        "javzimu.subtitle.download.noLocalParent"
+                        "subtitle.file.save.noLocalParent"
                     },
                     details = mapOf(
                         "videoUri" to videoUri.toString(),
@@ -236,7 +180,7 @@ class JavzimuSubtitleRepository(
         val file = targetLocalParent.resolve(targetName)
         runCatching { file.writeBytes(bytes) }.getOrElse { error ->
             errorLog.append(
-                event = "javzimu.subtitle.download.localWriteFailed",
+                event = "subtitle.file.save.localWriteFailed",
                 details = mapOf(
                     "targetFile" to file.absolutePath,
                     "targetName" to targetName
@@ -252,7 +196,7 @@ class JavzimuSubtitleRepository(
         documentParent: DocumentFile,
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         bytes: ByteArray
     ): LocalSubtitleFile? {
         val preferredName = uniqueSubtitleName(videoUri, fileName, result, documentParent)
@@ -263,7 +207,7 @@ class JavzimuSubtitleRepository(
         val nameCandidates = listOf(
             preferredName,
             "${fallbackBase.sanitizeFileName()}.$ext",
-            "${fallbackBase.sanitizeFileName()}.javzimu.$ext",
+            "${fallbackBase.sanitizeFileName()}.${result.provider.fileSuffix}.$ext",
             "subtitle.$ext"
         ).distinct()
         for (targetName in nameCandidates) {
@@ -272,7 +216,7 @@ class JavzimuSubtitleRepository(
                 appContext.contentResolver.openOutputStream(file.uri, "wt")?.use { it.write(bytes) } != null
             }.onFailure { error ->
                 errorLog.append(
-                    event = "javzimu.subtitle.download.documentWriteFailed",
+                    event = "subtitle.file.save.documentWriteFailed",
                     details = mapOf(
                         "parentName" to documentParent.name,
                         "parentUri" to documentParent.uri.toString(),
@@ -285,7 +229,7 @@ class JavzimuSubtitleRepository(
             }.getOrDefault(false)
             if (wrote) {
                 errorLog.append(
-                    event = "javzimu.subtitle.download.documentWriteSuccess",
+                    event = "subtitle.file.save.documentWriteSuccess",
                     details = mapOf(
                         "parentName" to documentParent.name,
                         "parentUri" to documentParent.uri.toString(),
@@ -299,7 +243,7 @@ class JavzimuSubtitleRepository(
             runCatching { file.delete() }
         }
         errorLog.append(
-            event = "javzimu.subtitle.download.documentCreateFailed",
+            event = "subtitle.file.save.documentCreateFailed",
             details = mapOf(
                 "parentName" to documentParent.name,
                 "parentUri" to documentParent.uri.toString(),
@@ -311,87 +255,10 @@ class JavzimuSubtitleRepository(
         return null
     }
 
-    private fun downloadBytes(result: JavzimuSubtitleResult): ByteArray {
-        val cookie = settingsRepository.getJavzimuCookies()
-        val url = "$BASE_URL/api/download".toHttpUrl().newBuilder()
-            .addQueryParameter("cid", result.cid)
-            .addQueryParameter("ext", result.ext)
-            .addQueryParameter("name", result.name)
-            .addQueryParameter("_ts", result.timestamp.toString())
-            .addQueryParameter("_sig", result.signature)
-            .build()
-        errorLog.append(
-            event = "javzimu.subtitle.download.request",
-            details = mapOf(
-                "url" to url.toString(),
-                "resultName" to result.name,
-                "resultExt" to result.ext,
-                "hasJavzimuCookie" to cookie.isNotBlank().toString(),
-                "javzimuCookieLength" to cookie.length.toString()
-            )
-        )
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", DEFAULT_USER_AGENT)
-            .applyJavzimuCookie(cookie)
-            .build()
-        client.newCall(request).execute().use { response ->
-            val bytes = response.body?.bytes() ?: ByteArray(0)
-            if (response.code == 403 || bytes.decodeToString().isJavzimuCloudflareChallengeHtml()) {
-                throw JavzimuCloudflareException("Javzimu 需要通过 WebView 获取 Cookie")
-            }
-            if (!response.isSuccessful) error("\u5B57\u5E55\u4E0B\u8F7D\u5931\u8D25\uFF1AHTTP ${response.code}")
-            if (bytes.isEmpty()) error("\u5B57\u5E55\u4E0B\u8F7D\u7ED3\u679C\u4E3A\u7A7A")
-            return bytes
-        }
-    }
-
-    private fun Request.Builder.applyJavzimuCookie(): Request.Builder {
-        return applyJavzimuCookie(settingsRepository.getJavzimuCookies())
-    }
-
-    private fun Request.Builder.applyJavzimuCookie(cookie: String): Request.Builder {
-        if (cookie.isNotBlank()) header("Cookie", cookie)
-        return this
-    }
-
-    private fun JSONObject.toSubtitleResult(): JavzimuSubtitleResult? {
-        val cid = optString("cid").ifBlank { optString("gcid") }
-        val ext = optString("ext").ifBlank { "srt" }.lowercase(Locale.ROOT)
-        val name = optString("name").ifBlank { "$cid.$ext" }
-        val timestamp = optLong("_ts", 0L)
-        val signature = optString("_sig")
-        if (cid.isBlank() || signature.isBlank() || timestamp <= 0L) return null
-        val rawDuration = optLong("duration", 0L)
-        val durationMs = when {
-            rawDuration <= 0L -> null
-            rawDuration < 10_000L -> rawDuration * 1_000L
-            rawDuration < 24L * 60L * 60L * 1_000L -> rawDuration
-            else -> null
-        }
-        val languages = optJSONArray("languages")
-        return JavzimuSubtitleResult(
-            cid = cid,
-            ext = ext,
-            name = name,
-            durationMs = durationMs,
-            language = languages?.optString(0).orEmpty(),
-            extraName = optString("extra_name"),
-            timestamp = timestamp,
-            signature = signature
-        )
-    }
-
-    private fun JavzimuSubtitleResult.isCloseTo(videoDurationMs: Long): Boolean {
-        val subtitleDuration = durationMs ?: return true
-        if (videoDurationMs <= 0L) return true
-        return abs(subtitleDuration - videoDurationMs) <= MAX_DURATION_DIFF_MS
-    }
-
     private fun uniqueSubtitleName(
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         storageSourceUri: Uri?
     ): String {
         val base = subtitleBaseNames(videoUri, fileName).firstOrNull().orEmpty().ifBlank {
@@ -413,7 +280,7 @@ class JavzimuSubtitleRepository(
     private fun uniqueSubtitleName(
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         documentParent: DocumentFile
     ): String {
         val base = subtitleBaseNames(videoUri, fileName).firstOrNull().orEmpty().ifBlank {
@@ -453,7 +320,7 @@ class JavzimuSubtitleRepository(
             parent.createFile(mimeType, targetName)
         }.onFailure { error ->
             errorLog.append(
-                event = "javzimu.subtitle.download.documentFileCreateException",
+                event = "subtitle.file.save.documentFileCreateException",
                 details = mapOf(
                     "parentName" to parent.name,
                     "parentUri" to parent.uri.toString(),
@@ -469,7 +336,7 @@ class JavzimuSubtitleRepository(
             DocumentsContract.createDocument(appContext.contentResolver, parent.uri, mimeType, targetName)
         }.onFailure { error ->
             errorLog.append(
-                event = "javzimu.subtitle.download.documentsContractCreateException",
+                event = "subtitle.file.save.documentsContractCreateException",
                 details = mapOf(
                     "parentName" to parent.name,
                     "parentUri" to parent.uri.toString(),
@@ -623,24 +490,17 @@ class JavzimuSubtitleRepository(
         }
 
     companion object {
-        private const val BASE_URL = "https://javzimu.com"
-        private const val MAX_DURATION_DIFF_MS = 10 * 60 * 1_000L
         private val SUBTITLE_EXTENSIONS = setOf("srt", "vtt", "ass", "ssa")
         private val VIDEO_OR_STRM_EXTENSIONS = setOf("strm", "mp4", "mkv", "avi", "mov", "wmv", "m4v", "webm", "mpg", "mpeg")
     }
 }
 
-fun normalizeJavzimuSubtitleNumber(number: String): String {
+fun normalizeDefaultSubtitleNumber(number: String): String {
     val value = number.trim().uppercase(Locale.ROOT)
     val match = Regex("""^([A-Z]+)-0*(\d+)$""").matchEntire(value) ?: return value
     val prefix = match.groupValues[1]
-    val number = match.groupValues[2].toIntOrNull()?.toString() ?: match.groupValues[2]
-    return "$prefix-$number"
-}
-
-private fun String.isJavzimuCloudflareChallengeHtml(): Boolean {
-    val lower = lowercase(Locale.ROOT)
-    return "cloudflare" in lower && ("challenge" in lower || "cf-chl" in lower)
+    val digits = match.groupValues[2].toIntOrNull()?.toString() ?: match.groupValues[2]
+    return "$prefix-$digits"
 }
 
 private fun formatDuration(ms: Long): String {
@@ -654,4 +514,3 @@ private fun formatDuration(ms: Long): String {
         "%d:%02d".format(minutes, seconds)
     }
 }
-

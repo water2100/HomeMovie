@@ -30,11 +30,13 @@ class CloudFolderBatchTaskRunner(
     private val _isRunning = MutableStateFlow(false)
     private var job: Job? = null
     private var currentTaskId: Long? = null
+    private var cancelRequested = false
 
     val isRunning: StateFlow<Boolean> = _isRunning
 
     fun start() {
         if (job?.isActive == true) return
+        cancelRequested = false
         job = scope.launch {
             runMutex.withLock {
                 _isRunning.value = true
@@ -49,7 +51,13 @@ class CloudFolderBatchTaskRunner(
     }
 
     fun stop() {
+        cancelRequested = false
         job?.cancel(CancellationException("已手动停止文件夹刮削任务"))
+    }
+
+    fun cancel() {
+        cancelRequested = true
+        job?.cancel(CancellationException("已手动取消文件夹刮削任务"))
     }
 
     private suspend fun runPendingTasks() {
@@ -60,8 +68,12 @@ class CloudFolderBatchTaskRunner(
                 runTask(task)
             }.onFailure { error ->
                 if (error is CancellationException) {
-                    taskRepository.markPaused(task.id, "已手动停止")
-                    scrapeRepository.appendLog("网盘文件夹任务已停止：${task.folderName}")
+                    if (cancelRequested) {
+                        scrapeRepository.appendLog("网盘文件夹任务已取消：${task.folderName}")
+                    } else {
+                        taskRepository.markPaused(task.id, "已手动停止")
+                        scrapeRepository.appendLog("网盘文件夹任务已暂停：${task.folderName}")
+                    }
                     throw error
                 }
                 val message = error.message ?: error::class.java.simpleName

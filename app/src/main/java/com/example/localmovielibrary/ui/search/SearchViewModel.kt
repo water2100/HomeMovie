@@ -99,6 +99,7 @@ private data class SearchResult(
 enum class SearchScope {
     All,
     Title,
+    Number,
     Actor,
     Tag,
     Genre

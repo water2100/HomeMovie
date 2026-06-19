@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
-import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.util.NumberRecognitionRules
@@ -36,25 +35,6 @@ class AppSettingsRepository(context: Context) {
     fun saveCloud115LoginApp(value: String) {
         val normalized = Cloud115LoginApps.find(value).app
         prefs.edit().putString(KEY_CLOUD115_LOGIN_APP, normalized).apply()
-    }
-
-    fun getMissavCookies(): String = prefs.getString(KEY_MISSAV_COOKIES, null).orEmpty()
-
-    fun saveMissavCookies(value: String) {
-        prefs.edit().putString(KEY_MISSAV_COOKIES, value.trim()).commit()
-    }
-
-    fun getMissavScrapeLanguage(): MissavScrapeLanguage =
-        MissavScrapeLanguage.fromId(prefs.getString(KEY_MISSAV_SCRAPE_LANGUAGE, null))
-
-    fun saveMissavScrapeLanguage(language: MissavScrapeLanguage) {
-        prefs.edit().putString(KEY_MISSAV_SCRAPE_LANGUAGE, language.id).apply()
-    }
-
-    fun getJavzimuCookies(): String = prefs.getString(KEY_JAVZIMU_COOKIES, null).orEmpty()
-
-    fun saveJavzimuCookies(value: String) {
-        prefs.edit().putString(KEY_JAVZIMU_COOKIES, value.trim()).commit()
     }
 
     fun getAvsubtitlesCookies(): String = prefs.getString(KEY_AVSUBTITLES_COOKIES, null).orEmpty()
@@ -194,12 +174,17 @@ class AppSettingsRepository(context: Context) {
         val stored = prefs.getString(KEY_PRIORITY_SCRAPE_SOURCES, null)
             ?.split(",")
             ?.mapNotNull { name ->
-                ScrapeSource.entries.firstOrNull { it.name == name.trim() }
+                ScrapeSource.fromStoredName(name)
             }
             ?.filter { it in PRIORITY_SCRAPE_SOURCE_OPTIONS }
             ?.distinct()
             .orEmpty()
-        return stored.ifEmpty { DEFAULT_PRIORITY_SCRAPE_SOURCES }
+        return when {
+            stored.isEmpty() -> DEFAULT_PRIORITY_SCRAPE_SOURCES
+            stored == OLD_DEFAULT_PRIORITY_SCRAPE_SOURCES_AFTER_MIGRATION -> DEFAULT_PRIORITY_SCRAPE_SOURCES
+            stored == OLD_DMM_DEFAULT_PRIORITY_SCRAPE_SOURCES_AFTER_MIGRATION -> DEFAULT_PRIORITY_SCRAPE_SOURCES
+            else -> stored
+        }
     }
 
     fun savePriorityScrapeSources(sources: List<ScrapeSource>) {
@@ -657,9 +642,6 @@ class AppSettingsRepository(context: Context) {
         const val KEY_STRM_BASE_URL = "strm_base_url"
         const val KEY_LIBRARY_ROOT_URI = "library_root_uri"
         const val KEY_LIBRARY_ROOT_URI_HISTORY = "library_root_uri_history"
-        const val KEY_MISSAV_COOKIES = "missav_cookies"
-        const val KEY_MISSAV_SCRAPE_LANGUAGE = "missav_scrape_language"
-        const val KEY_JAVZIMU_COOKIES = "javzimu_cookies"
         const val KEY_AVSUBTITLES_COOKIES = "avsubtitles_cookies"
         const val KEY_SUBTITLE_SEARCH_PROVIDER = "subtitle_search_provider"
         const val KEY_CLOUD115_LOGIN_APP = "cloud115_login_app"
@@ -709,14 +691,16 @@ class AppSettingsRepository(context: Context) {
         const val MAX_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = 102400
         val PRIORITY_SCRAPE_SOURCE_OPTIONS = listOf(
             ScrapeSource.Dmm2,
-            ScrapeSource.Dmm,
             ScrapeSource.Official,
             ScrapeSource.Mgstage,
             ScrapeSource.Javbus,
-            ScrapeSource.Javdb,
-            ScrapeSource.Missav
+            ScrapeSource.TheJavDB
         )
-        val DEFAULT_PRIORITY_SCRAPE_SOURCES = listOf(ScrapeSource.Dmm2, ScrapeSource.Dmm, ScrapeSource.Javbus, ScrapeSource.Javdb)
+        val DEFAULT_PRIORITY_SCRAPE_SOURCES = listOf(ScrapeSource.Dmm2, ScrapeSource.TheJavDB, ScrapeSource.Javbus)
+        private val OLD_DEFAULT_PRIORITY_SCRAPE_SOURCES_AFTER_MIGRATION =
+            listOf(ScrapeSource.Dmm2, ScrapeSource.Javbus, ScrapeSource.TheJavDB)
+        private val OLD_DMM_DEFAULT_PRIORITY_SCRAPE_SOURCES_AFTER_MIGRATION =
+            listOf(ScrapeSource.Dmm2, ScrapeSource.Javbus)
         val DEFAULT_DMM2_SKIPPED_NUMBER_PREFIXES = setOf("ABF", "ABW", "ABP", "REBDB", "TRE", "PPT", "CHN", "BGN")
         val DEFAULT_MGSTAGE_SEARCH_PREFIX_ALIASES = mapOf(
             "SHN" to "116SHN",

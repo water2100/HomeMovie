@@ -138,6 +138,10 @@ class CloudFolderBatchTaskRepository(
         dao.deleteCompleted()
     }
 
+    suspend fun clearUnfinishedTasks(): Int = withContext(Dispatchers.IO) {
+        dao.deleteByStatuses(UNFINISHED_STATUSES)
+    }
+
     companion object {
         val UNFINISHED_STATUSES = listOf(
             CloudFolderBatchTaskStatus.Pending.name,

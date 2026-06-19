@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Article
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -83,7 +84,6 @@ import com.example.localmovielibrary.data.local.CloudFolderBatchTaskEntity
 import com.example.localmovielibrary.data.local.CloudFolderBatchTaskStatus
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
-import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.ui.shared.MovieImageCacheStore
 import kotlinx.coroutines.Dispatchers
@@ -107,7 +107,6 @@ private enum class SettingsPage {
 fun SettingsScreen(
     viewModel: SettingsViewModel,
     onOpenScrapeLogs: () -> Unit,
-    onOpenMissavWeb: () -> Unit,
     openScrapeTasksPage: Boolean = false,
     openUpdatePage: Boolean = false,
     onBack: (() -> Unit)? = null
@@ -271,7 +270,6 @@ fun SettingsScreen(
                         onRemovePrioritySource = viewModel::removePriorityScrapeSource,
                         onMovePrioritySourceUp = viewModel::movePriorityScrapeSourceUp,
                         onMovePrioritySourceDown = viewModel::movePriorityScrapeSourceDown,
-                        onMissavScrapeLanguageSelected = viewModel::updateMissavScrapeLanguage,
                         onRetryCountChange = viewModel::updateImageDownloadRetryCount,
                         onConcurrencyLimitChange = viewModel::updateScrapeConcurrencyLimit,
                         onDmm2SkippedPrefixDraftChange = viewModel::updateNewDmm2SkippedPrefix,
@@ -296,10 +294,12 @@ fun SettingsScreen(
                         uiState = uiState,
                         onStartManualScrapeTasks = viewModel::startManualScrapeTasks,
                         onStopManualScrapeTasks = viewModel::stopManualScrapeTasks,
+                        onCancelManualScrapeTasks = viewModel::cancelManualScrapeTasks,
                         onRefreshScrapeTasks = viewModel::refreshScrapeTaskSummary,
                         onResetFailedScrapeTasks = viewModel::resetFailedScrapeTasks,
                         onStartCloudFolderBatchTasks = viewModel::startCloudFolderBatchTasks,
                         onStopCloudFolderBatchTasks = viewModel::stopCloudFolderBatchTasks,
+                        onCancelCloudFolderBatchTasks = viewModel::cancelCloudFolderBatchTasks,
                         onRefreshCloudFolderBatchTasks = viewModel::refreshCloudFolderBatchTasks
                     )
 
@@ -1085,7 +1085,6 @@ private fun ScrapeSettingsPage(
     onRemovePrioritySource: (ScrapeSource) -> Unit,
     onMovePrioritySourceUp: (ScrapeSource) -> Unit,
     onMovePrioritySourceDown: (ScrapeSource) -> Unit,
-    onMissavScrapeLanguageSelected: (MissavScrapeLanguage) -> Unit,
     onRetryCountChange: (String) -> Unit,
     onConcurrencyLimitChange: (String) -> Unit,
     onDmm2SkippedPrefixDraftChange: (String) -> Unit,
@@ -1108,12 +1107,6 @@ private fun ScrapeSettingsPage(
         onRemove = onRemovePrioritySource,
         onMoveUp = onMovePrioritySourceUp,
         onMoveDown = onMovePrioritySourceDown
-    )
-    SettingsSectionTitle("MissAV 刮削")
-    MissavScrapeLanguagePanel(
-        selected = uiState.missavScrapeLanguage,
-        options = uiState.missavScrapeLanguageOptions,
-        onSelected = onMissavScrapeLanguageSelected
     )
     SettingsSectionTitle("MGStage 刮削")
     MgstagePrefixPanel(
@@ -1297,10 +1290,12 @@ private fun ScrapeTasksPage(
     uiState: SettingsUiState,
     onStartManualScrapeTasks: () -> Unit,
     onStopManualScrapeTasks: () -> Unit,
+    onCancelManualScrapeTasks: () -> Unit,
     onRefreshScrapeTasks: () -> Unit,
     onResetFailedScrapeTasks: () -> Unit,
     onStartCloudFolderBatchTasks: () -> Unit,
     onStopCloudFolderBatchTasks: () -> Unit,
+    onCancelCloudFolderBatchTasks: () -> Unit,
     onRefreshCloudFolderBatchTasks: () -> Unit
 ) {
     SettingsSectionTitle("影片刮削任务")
@@ -1308,6 +1303,7 @@ private fun ScrapeTasksPage(
         uiState = uiState,
         onStart = onStartManualScrapeTasks,
         onStop = onStopManualScrapeTasks,
+        onCancel = onCancelManualScrapeTasks,
         onRefresh = onRefreshScrapeTasks,
         onResetFailed = onResetFailedScrapeTasks
     )
@@ -1316,64 +1312,9 @@ private fun ScrapeTasksPage(
         uiState = uiState,
         onStart = onStartCloudFolderBatchTasks,
         onStop = onStopCloudFolderBatchTasks,
+        onCancel = onCancelCloudFolderBatchTasks,
         onRefresh = onRefreshCloudFolderBatchTasks
     )
-}
-
-@Composable
-private fun MissavScrapeLanguagePanel(
-    selected: MissavScrapeLanguage,
-    options: List<MissavScrapeLanguage>,
-    onSelected: (MissavScrapeLanguage) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text(
-            text = "MissAV 刮削语言",
-            color = Color.White,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            options.forEach { language ->
-                val isSelected = language == selected
-                Button(
-                    onClick = { onSelected(language) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = if (isSelected) {
-                        ButtonDefaults.buttonColors(
-                            containerColor = Color.White,
-                            contentColor = Color.Black
-                        )
-                    } else {
-                        manualTaskSecondaryButtonColors()
-                    }
-                ) {
-                    Text(
-                        text = language.label,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-        Text(
-            text = "当前 URL：${selected.referer}/",
-            color = Color.White.copy(alpha = 0.58f),
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
 }
 
 @Composable
@@ -1583,6 +1524,7 @@ private fun ManualScrapeTaskPanel(
     uiState: SettingsUiState,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onCancel: () -> Unit,
     onRefresh: () -> Unit,
     onResetFailed: () -> Unit
 ) {
@@ -1649,6 +1591,21 @@ private fun ManualScrapeTaskPanel(
             )
         }
         Button(
+            onClick = onCancel,
+            enabled = summary.unfinished > 0,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskCancelButtonColors()
+        ) {
+            Icon(Icons.Rounded.Close, contentDescription = null)
+            Text(
+                text = "取消任务",
+                modifier = Modifier.padding(start = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Button(
             onClick = onResetFailed,
             enabled = summary.failed > 0 && !uiState.isManualScrapeRunning,
             modifier = Modifier.fillMaxWidth(),
@@ -1671,6 +1628,7 @@ private fun CloudFolderBatchTaskPanel(
     uiState: SettingsUiState,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onCancel: () -> Unit,
     onRefresh: () -> Unit
 ) {
     val tasks = uiState.cloudFolderBatchTasks
@@ -1680,6 +1638,7 @@ private fun CloudFolderBatchTaskPanel(
     val failed = tasks.count { it.status == CloudFolderBatchTaskStatus.Failed.name }
     val completed = tasks.count { it.status == CloudFolderBatchTaskStatus.Completed.name }
     val unfinished = pending + running + paused + failed
+    val activeTasks = tasks.filter { it.status != CloudFolderBatchTaskStatus.Completed.name }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1741,6 +1700,21 @@ private fun CloudFolderBatchTaskPanel(
                 overflow = TextOverflow.Ellipsis
             )
         }
+        Button(
+            onClick = onCancel,
+            enabled = unfinished > 0,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskCancelButtonColors()
+        ) {
+            Icon(Icons.Rounded.Close, contentDescription = null)
+            Text(
+                text = "取消任务",
+                modifier = Modifier.padding(start = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1748,14 +1722,14 @@ private fun CloudFolderBatchTaskPanel(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (tasks.isEmpty()) {
+            if (activeTasks.isEmpty()) {
                 Text(
-                    text = "还没有文件夹任务。",
+                    text = "暂无当前文件夹任务。",
                     color = Color.White.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             } else {
-                tasks.forEach { task ->
+                activeTasks.forEach { task ->
                     CloudFolderBatchTaskRow(
                         task = task,
                         runnerRunning = uiState.isCloudFolderBatchRunning
@@ -1878,6 +1852,14 @@ private fun taskPrimaryButtonColors() = ButtonDefaults.buttonColors(
 )
 
 @Composable
+private fun taskCancelButtonColors() = ButtonDefaults.buttonColors(
+    containerColor = Color(0xFF7B2E2E),
+    contentColor = Color.White,
+    disabledContainerColor = Color.White.copy(alpha = 0.10f),
+    disabledContentColor = Color.White.copy(alpha = 0.42f)
+)
+
+@Composable
 private fun PriorityScrapeSourcePanel(
     sources: List<ScrapeSource>,
     options: List<ScrapeSource>,
@@ -1921,12 +1903,12 @@ private fun PriorityScrapeSourcePanel(
             }
         }
         Text(
-            text = "默认刮削会按这里的顺序依次尝试，成功一个就停止。手动指定 DMM、JavBus 等来源时不受这个顺序影响。",
+            text = "默认刮削会按这里的顺序依次尝试，成功一个就停止。手动指定 TheJavDB、JavBus 等来源时不受这个顺序影响。",
             color = Color.White.copy(alpha = 0.52f),
             style = MaterialTheme.typography.bodySmall
         )
         Text(
-            text = "使用 JavDB 接口刮削，日本节点仍然可用，下载图片需要日本节点。",
+            text = "使用 TheJavDB 接口刮削，日本节点仍然可用，下载图片需要日本节点。",
             color = Color.White.copy(alpha = 0.52f),
             style = MaterialTheme.typography.bodySmall
         )
@@ -1940,7 +1922,7 @@ private fun PriorityScrapeSourcePanel(
             title = { Text("优先级刮削顺序") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("例如 DMM2 -> DMM -> JavBus，前一个失败后会自动尝试下一个。")
+                    Text("例如 DMM2 -> TheJavDB -> JavBus，前一个失败后会自动尝试下一个。")
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2475,48 +2457,6 @@ private fun SavedCloud115AccountSelector(
 }
 
 @Composable
-private fun MissavCookieStatusCard(
-    hasCookie: Boolean,
-    onOpenMissavWeb: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = if (hasCookie) Icons.Rounded.CheckCircle else Icons.Rounded.Public,
-                contentDescription = null,
-                tint = if (hasCookie) Color(0xFF7BD88F) else Color.White.copy(alpha = 0.72f)
-            )
-            Column(modifier = Modifier.padding(start = 10.dp)) {
-                Text(
-                    text = if (hasCookie) "已获取 MissAV Cookie" else "尚未获取 MissAV Cookie",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = if (hasCookie) "后续 MissAV 刮削会自动携带 Cookie。" else "需要 MissAV 时可以先打开页面获取一次 Cookie。",
-                    color = Color.White.copy(alpha = 0.62f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-        OutlinedButton(
-            onClick = onOpenMissavWeb,
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Icon(Icons.Rounded.Public, contentDescription = null)
-            Text(if (hasCookie) "刷新 MissAV Cookie" else "获取 MissAV Cookie", modifier = Modifier.padding(start = 8.dp))
-        }
-    }
-}
-
-@Composable
 private fun ImageCachePanel(
     sizeText: String,
     onRefresh: () -> Unit,
@@ -2664,12 +2604,5 @@ private val ScrapeSource.label: String
         ScrapeSource.Official -> "Official"
         ScrapeSource.Mgstage -> "MGStage"
         ScrapeSource.Javbus -> "JavBus"
-        ScrapeSource.Javdb -> "JavDB"
-        ScrapeSource.Missav -> "MissAV"
-    }
-
-private val MissavScrapeLanguage.label: String
-    get() = when (this) {
-        MissavScrapeLanguage.Japanese -> "日语"
-        MissavScrapeLanguage.Chinese -> "中文"
+        ScrapeSource.TheJavDB -> "TheJavDB"
     }

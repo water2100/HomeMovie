@@ -58,4 +58,7 @@ interface CloudFolderBatchTaskDao {
 
     @Query("DELETE FROM cloud_folder_batch_tasks WHERE status = 'Completed'")
     suspend fun deleteCompleted(): Int
+
+    @Query("DELETE FROM cloud_folder_batch_tasks WHERE status IN (:statuses)")
+    suspend fun deleteByStatuses(statuses: List<String>): Int
 }

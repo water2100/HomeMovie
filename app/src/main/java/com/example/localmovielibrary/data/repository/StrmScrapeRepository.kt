@@ -10,7 +10,6 @@ import com.example.localmovielibrary.scraper.DmmScraper
 import com.example.localmovielibrary.scraper.JavdbScraper
 import com.example.localmovielibrary.scraper.JavbusScraper
 import com.example.localmovielibrary.scraper.MgstageScraper
-import com.example.localmovielibrary.scraper.MissavScraper
 import com.example.localmovielibrary.scraper.MovieNumberExtractor
 import com.example.localmovielibrary.scraper.MovieScraperRegistry
 import com.example.localmovielibrary.scraper.NetworkProbe
@@ -61,14 +60,8 @@ class StrmScrapeRepository(
     private val mgstageScraper: MgstageScraper = MgstageScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javbusScraper: JavbusScraper = JavbusScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javdbScraper: JavdbScraper = JavdbScraper(client = httpClient, ioDispatcher = ioDispatcher),
-    private val missavScraper: MissavScraper = MissavScraper(
-        cookieProvider = settingsRepository::getMissavCookies,
-        languageProvider = settingsRepository::getMissavScrapeLanguage,
-        client = httpClient,
-        ioDispatcher = ioDispatcher
-    ),
     private val scraperRegistry: MovieScraperRegistry = MovieScraperRegistry(
-        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, javdbScraper, missavScraper)
+        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, javdbScraper)
     ),
     private val imageDownloadService: ImageDownloadService = ImageDownloadService(
         httpClient = httpClient,
@@ -81,7 +74,6 @@ class StrmScrapeRepository(
     private val backgroundScope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private var actorAvatarJob: Job? = null
     private val scrapeAdmissionMutex = Mutex()
-    private val missavScrapeMutex = Mutex()
     private val _scrapeQueueState = MutableStateFlow(ScrapeQueueState())
     private val _actorAvatarUpdateState = MutableStateFlow(ActorAvatarUpdateState())
     val scrapeQueueState: StateFlow<ScrapeQueueState> = _scrapeQueueState
@@ -269,32 +261,6 @@ class StrmScrapeRepository(
         return ScrapedMovieWriteResult(info = info, strmUri = strmUri)
     }
 
-    suspend fun scrapeMovieWithMissavHtml(movie: MovieEntity, html: String, cookie: String): ScrapedMovieInfo =
-        scrapeMovieWithMissavHtmlOutput(movie, html, cookie).info
-
-    suspend fun scrapeMovieWithMissavHtmlOutput(movie: MovieEntity, html: String, cookie: String): ScrapedMovieWriteResult =
-        runQueuedScrapeTask(
-            label = "missav-webview-scrape:${movie.videoName}",
-            serialMutex = missavScrapeMutex
-        ) {
-            if (cookie.isNotBlank()) {
-                settingsRepository.saveMissavCookies(cookie)
-                logStore.append("MissAV WebView cookie saved")
-            }
-            val target = findTargetForMovie(movie)
-            val number = extractMovieNumberWithRules(target.file.name.orEmpty())
-                ?: error("无法从文件名提取番号：${target.file.name}")
-
-            logStore.append("Parse MissAV WebView HTML: $number")
-            appendMovieDivider("Start MissAV WebView scrape", number, target.file.name.orEmpty(), ScrapeSource.Missav)
-            val info = missavScraper.scrapeFromHtml(number, html)
-            logStore.append("MissAV WebView metadata parsed: ${info.title.ifBlank { number }}")
-            val strmUri = writeOrganizedScrapeFiles(target, info, number)
-            downloadActorAvatars(info)
-            logStore.append("MissAV WebView scrape finished: $number")
-            ScrapedMovieWriteResult(info = info, strmUri = strmUri)
-        }
-
     suspend fun rescrapeMovie(movie: MovieEntity, source: ScrapeSource): ScrapedMovieInfo = runQueuedScrapeTask(
         label = "rescrape:${movie.videoName}:${source.label}",
         serialMutex = source.serialScrapeMutex()
@@ -312,29 +278,6 @@ class StrmScrapeRepository(
         logStore.append("Movie rescrape finished: $number")
         info
     }
-
-    suspend fun rescrapeMovieWithMissavHtml(movie: MovieEntity, html: String, cookie: String): ScrapedMovieInfo =
-        runQueuedScrapeTask(
-            label = "missav-webview-rescrape:${movie.videoName}",
-            serialMutex = missavScrapeMutex
-        ) {
-            if (cookie.isNotBlank()) {
-                settingsRepository.saveMissavCookies(cookie)
-                logStore.append("MissAV WebView cookie saved")
-            }
-            val target = findTargetForMovie(movie)
-            val number = extractMovieNumberWithRules(target.file.name.orEmpty(), movie.title)
-                ?: error("无法从文件名提取番号：${target.file.name}")
-
-            logStore.append("Parse MissAV WebView HTML for rescrape: $number")
-            appendMovieDivider("Start MissAV WebView rescrape", number, target.file.name.orEmpty(), ScrapeSource.Missav)
-            val info = missavScraper.scrapeFromHtml(number, html)
-            logStore.append("MissAV WebView rescrape parsed: ${info.title.ifBlank { number }}")
-            rewriteScrapeFilesInPlace(target, info)
-            downloadActorAvatars(info)
-            logStore.append("MissAV WebView rescrape finished: $number")
-            info
-        }
 
     suspend fun scrapeUnscrapedStrm(source: ScrapeSource): ScrapeRunResult = runQueuedScrapeTask(
         label = "batch:${source.label}",
@@ -1116,12 +1059,10 @@ class StrmScrapeRepository(
             ScrapeSource.Official -> "Official"
             ScrapeSource.Mgstage -> "MGStage"
             ScrapeSource.Javbus -> "JavBus"
-            ScrapeSource.Javdb -> "JavDB"
-            ScrapeSource.Missav -> "MissAV"
+            ScrapeSource.TheJavDB -> "TheJavDB"
         }
 
-    private fun ScrapeSource.serialScrapeMutex(): Mutex? =
-        if (this == ScrapeSource.Missav) missavScrapeMutex else null
+    private fun ScrapeSource.serialScrapeMutex(): Mutex? = null
 
     private fun numberPrefix(number: String): String? =
         number.substringBefore('-', missingDelimiterValue = number)

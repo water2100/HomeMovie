@@ -1,10 +1,6 @@
 ﻿package com.example.localmovielibrary.ui.detail
 
 import android.net.Uri
-import android.annotation.SuppressLint
-import android.webkit.CookieManager
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -79,18 +75,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.data.repository.MoviePlaybackPart
 import com.example.localmovielibrary.scraper.ActorAvatarStore
-import com.example.localmovielibrary.scraper.MissavScraper
 import com.example.localmovielibrary.ui.shared.UriImage
 import com.example.localmovielibrary.ui.shared.artworkCacheRevision
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -108,14 +101,12 @@ fun DetailScreen(
     onPlay: (videoUri: String, title: String, fileName: String) -> Unit,
     onFilterClick: (filterType: String, filterValue: String) -> Unit,
     onMovieClick: (Long) -> Unit,
-    onOpenMovie: (Long) -> Unit,
-    onOpenMissavCookie: (String) -> Unit
+    onOpenMovie: (Long) -> Unit
 ) {
     val movie by viewModel.movie.collectAsStateWithLifecycle()
     val isScraping by viewModel.isScraping.collectAsStateWithLifecycle()
     val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
     val playbackParts by viewModel.playbackParts.collectAsStateWithLifecycle()
-    val hiddenMissavRequest by viewModel.hiddenMissavRequest.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var cachedMovie by remember { mutableStateOf<MovieEntity?>(null) }
     var showPathDialog by rememberSaveable { mutableStateOf(false) }
@@ -138,7 +129,6 @@ fun DetailScreen(
                     snackbarJob.cancel()
                 }
                 is DetailEvent.OpenMovie -> onOpenMovie(event.movieId)
-                is DetailEvent.OpenMissavCookie -> onOpenMissavCookie(event.number)
                 DetailEvent.Deleted -> onBack()
             }
         }
@@ -160,13 +150,6 @@ fun DetailScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            hiddenMissavRequest?.let { request ->
-                HiddenMissavWebView(
-                    request = request,
-                    onHtmlReady = viewModel::onHiddenMissavHtmlReady,
-                    onFailed = viewModel::onHiddenMissavFailed
-                )
-            }
             val displayMovie = movie ?: cachedMovie
             displayMovie?.let {
                 MovieDetailScreen(
@@ -192,14 +175,12 @@ fun DetailScreen(
                     onScrapeOfficial = viewModel::scrapeWithOfficial,
                     onScrapeJavbus = viewModel::scrapeWithJavbus,
                     onScrapeJavdb = viewModel::scrapeWithJavdb,
-                    onScrapeMissav = viewModel::scrapeWithMissav,
                     onRescrapeDefault = viewModel::rescrapeWithDefault,
                     onRescrapeDmm = viewModel::rescrapeWithDmm,
                     onRescrapeDmm2 = viewModel::rescrapeWithDmm2,
                     onRescrapeOfficial = viewModel::rescrapeWithOfficial,
                     onRescrapeJavbus = viewModel::rescrapeWithJavbus,
                     onRescrapeJavdb = viewModel::rescrapeWithJavdb,
-                    onRescrapeMissav = viewModel::rescrapeWithMissav,
                     onClearScrapeRequest = { showClearScrapeConfirm = true },
                     onDeleteRequest = { showDeleteConfirm = true },
                     onActorClick = { onFilterClick("actor", it) },
@@ -280,14 +261,12 @@ fun MovieDetailScreen(
     onScrapeOfficial: () -> Unit,
     onScrapeJavbus: () -> Unit,
     onScrapeJavdb: () -> Unit,
-    onScrapeMissav: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
     onRescrapeJavdb: () -> Unit,
-    onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
     onActorClick: (String) -> Unit,
@@ -351,14 +330,12 @@ fun MovieDetailScreen(
                     onScrapeOfficial = onScrapeOfficial,
                     onScrapeJavbus = onScrapeJavbus,
                     onScrapeJavdb = onScrapeJavdb,
-                    onScrapeMissav = onScrapeMissav,
                     onRescrapeDefault = onRescrapeDefault,
                     onRescrapeDmm = onRescrapeDmm,
                     onRescrapeDmm2 = onRescrapeDmm2,
                     onRescrapeOfficial = onRescrapeOfficial,
                     onRescrapeJavbus = onRescrapeJavbus,
                     onRescrapeJavdb = onRescrapeJavdb,
-                    onRescrapeMissav = onRescrapeMissav,
                     onClearScrapeRequest = onClearScrapeRequest
                 )
                 ReleaseAndOverview(movie = movie, onTagClick = onTagClick)
@@ -600,14 +577,12 @@ private fun MobileActionBar(
     onScrapeOfficial: () -> Unit,
     onScrapeJavbus: () -> Unit,
     onScrapeJavdb: () -> Unit,
-    onScrapeMissav: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
     onRescrapeJavdb: () -> Unit,
-    onRescrapeMissav: () -> Unit,
     onClearScrapeRequest: () -> Unit
 ) {
     var moreExpanded by remember { mutableStateOf(false) }
@@ -660,13 +635,6 @@ private fun MobileActionBar(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("从 DMM 刮削") },
-                        onClick = {
-                            moreExpanded = false
-                            onScrapeDmm()
-                        }
-                    )
-                    DropdownMenuItem(
                         text = { Text("从 DMM2 刮削") },
                         onClick = {
                             moreExpanded = false
@@ -688,17 +656,10 @@ private fun MobileActionBar(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("从 JavDB 刮削") },
+                        text = { Text("从 TheJavDB 刮削") },
                         onClick = {
                             moreExpanded = false
                             onScrapeJavdb()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("从 MissAV 刮削") },
-                        onClick = {
-                            moreExpanded = false
-                            onScrapeMissav()
                         }
                     )
                 }
@@ -708,13 +669,6 @@ private fun MobileActionBar(
                         onClick = {
                             moreExpanded = false
                             onRescrapeDefault()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("用 DMM 重新刮削") },
-                        onClick = {
-                            moreExpanded = false
-                            onRescrapeDmm()
                         }
                     )
                     DropdownMenuItem(
@@ -739,17 +693,10 @@ private fun MobileActionBar(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("用 JavDB 重新刮削") },
+                        text = { Text("用 TheJavDB 重新刮削") },
                         onClick = {
                             moreExpanded = false
                             onRescrapeJavdb()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("用 MissAV 重新刮削") },
-                        onClick = {
-                            moreExpanded = false
-                            onRescrapeMissav()
                         }
                     )
                 }
@@ -1081,93 +1028,6 @@ fun DetailSectionTitle(title: String) {
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.ExtraBold
     )
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-private fun HiddenMissavWebView(
-    request: HiddenMissavRequest,
-    onHtmlReady: (requestId: Long, html: String, cookie: String) -> Unit,
-    onFailed: (requestId: Long, message: String) -> Unit
-) {
-    var completed by remember(request.id) { mutableStateOf(false) }
-
-    LaunchedEffect(request.id) {
-        delay(25_000)
-        if (!completed) {
-            completed = true
-            onFailed(request.id, "MissAV WebView 抓取超时，可能需要可见页面手动验证")
-        }
-    }
-
-    AndroidView(
-        modifier = Modifier
-            .size(1.dp)
-            .zIndex(-1f),
-        factory = { context ->
-            WebView(context).apply {
-                CookieManager.getInstance().setAcceptCookie(true)
-                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.databaseEnabled = true
-                settings.userAgentString = MissavScraper.USER_AGENT
-                webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        if (completed || view == null) return
-                        view.evaluateJavascript("(function(){return document.documentElement.outerHTML;})()") { encodedHtml ->
-                            if (completed) return@evaluateJavascript
-                            val html = runCatching { JSONArray("[$encodedHtml]").getString(0) }.getOrDefault("")
-                            when {
-                                html.isBlank() -> Unit
-                                html.isCloudflareChallengeHtml() -> Unit
-                                html.isMissavUsableHtml(request.number) -> {
-                                    completed = true
-                                    onHtmlReady(request.id, html, collectMissavCookies())
-                                }
-                            }
-                        }
-                    }
-                }
-                loadUrl(request.url)
-            }
-        },
-        update = { webView ->
-            if (!completed && webView.url != request.url) {
-                webView.loadUrl(request.url)
-            }
-        }
-    )
-}
-
-private fun collectMissavCookies(): String {
-    CookieManager.getInstance().flush()
-    return listOf(
-        CookieManager.getInstance().getCookie("https://missav.ai").orEmpty(),
-        CookieManager.getInstance().getCookie("https://missav.ai/ja").orEmpty(),
-        CookieManager.getInstance().getCookie("https://missav.ai/cn").orEmpty(),
-        CookieManager.getInstance().getCookie("https://www.missav.ai").orEmpty()
-    )
-        .flatMap { it.split(";") }
-        .map { it.trim() }
-        .filter { it.isNotBlank() && it.contains("=") }
-        .distinctBy { it.substringBefore("=") }
-        .joinToString("; ")
-}
-
-private fun String.isCloudflareChallengeHtml(): Boolean {
-    val lower = lowercase()
-    return "cloudflare" in lower && ("challenge" in lower || "cf-chl" in lower)
-}
-
-private fun String.isMissavUsableHtml(number: String): Boolean {
-    if (isCloudflareChallengeHtml()) return false
-    val lower = lowercase()
-    val normalized = number.lowercase().replace("_", "-")
-    val compact = normalized.replace("-", "")
-    return "missav" in lower &&
-        (normalized in lower || compact in lower || "og:title" in lower || "space-y-2" in lower || "text-nord6" in lower)
 }
 
 @Composable

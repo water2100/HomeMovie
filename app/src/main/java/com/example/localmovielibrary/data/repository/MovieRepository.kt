@@ -156,6 +156,7 @@ class MovieRepository(
         val pattern = "%${text.escapeLikePattern()}%"
         when (scope.lowercase(Locale.ROOT)) {
             "title" -> movieDao.searchMoviesByTitleLite(pattern)
+            "number" -> movieDao.searchMoviesByNumberLite(text.movieNumberCandidateLikePattern())
             "actor" -> filterMetadataMovies(movieDao.getMoviesForActorLookupLite(pattern), text, exact = false) { it.actors }
             "tag" -> filterMetadataMovies(movieDao.getMoviesForTagLookupLite(pattern), text, exact = false) { it.tags }
             "genre" -> filterMetadataMovies(movieDao.getMoviesForGenreLookupLite(pattern), text, exact = false) { it.genres }
@@ -177,6 +178,11 @@ class MovieRepository(
             else -> emptyList()
         }
     }
+
+    fun observeFilteredMovies(type: String, value: String): Flow<List<MovieEntity>> =
+        movieDao.observeMovieListInvalidation()
+            .map { filterMovies(type, value) }
+            .distinctUntilChanged()
 
     private suspend fun filterMetadataMovies(
         candidates: List<MovieEntity>,
@@ -375,36 +381,64 @@ class MovieRepository(
     suspend fun deleteMovieWithFiles(movieId: Long): DeleteMovieResult = withContext(Dispatchers.IO) {
         val movie = movieDao.getMovieLite(movieId)
         val pickcodes = linkedSetOf<String>()
-        runCatching {
-            if (movie != null && movie.videoName.endsWith(".strm", ignoreCase = true)) {
-                val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
-                val target = root?.let {
-                    findFileWithParentFast(it, movie.libraryRootUri, movie.videoUri)
-                        ?: findFileWithParent(it, movie.videoUri)
-                        ?: findStrmWithParentByMovieNumber(it, movie)
-                }
-                if (target != null) {
-                    val movieDirectory = target.parent.takeIf { it.uri != root.uri }
-                    val actorDirectory = movieDirectory
-                        ?.parentFile
-                        ?.takeIf { it.uri != root.uri }
-                    val filesToRead = if (target.parent.uri != root.uri) {
-                        target.parent.listFiles().filter { it.isFile && it.name.orEmpty().endsWith(".strm", ignoreCase = true) }
-                    } else {
-                        listOf(target.file)
-                    }
-                    filesToRead.forEach { file ->
-                        readPickcode(file)?.let { pickcodes += it }
-                    }
-                    if (target.parent.uri != root.uri) {
-                        deleteRecursively(target.parent)
-                        cleanupEmptyActorDirectory(actorDirectory, root)
-                    } else {
-                        target.file.delete()
+        val strmUrisToClear = linkedSetOf<String>()
+        if (movie != null) {
+            val relatedRecords = relatedCloudStrmRecords(movie)
+            pickcodes += relatedRecords.map { it.pickcode }
+            strmUrisToClear += relatedRecords.map { it.strmUri }.filter { it.isNotBlank() }
+            strmUrisToClear += movie.videoUri
+
+            runCatching {
+                if (movie.videoName.endsWith(".strm", ignoreCase = true)) {
+                    val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
+                    if (root != null) {
+                        val targets = buildList {
+                            findFileWithParentFast(root, movie.libraryRootUri, movie.videoUri)?.let { add(it) }
+                            findFileWithParent(root, movie.videoUri)?.let { add(it) }
+                            relatedRecords.forEach { record ->
+                                val recordRootUri = record.libraryRootUri ?: movie.libraryRootUri
+                                findFileWithParentFast(root, recordRootUri, record.strmUri)?.let { add(it) }
+                                findFileWithParent(root, record.strmUri)?.let { add(it) }
+                            }
+                            findStrmWithParentByMovieNumber(root, movie)?.let { add(it) }
+                        }.distinctBy { it.file.uri.toString() }
+
+                        val movieDirectories = linkedMapOf<String, FileWithParent>()
+                        val rootFiles = linkedMapOf<String, FileWithParent>()
+                        targets.forEach { target ->
+                            val filesToRead = if (target.parent.uri != root.uri) {
+                                target.parent.listFiles().filter { it.isFile && it.name.orEmpty().endsWith(".strm", ignoreCase = true) }
+                            } else {
+                                listOf(target.file)
+                            }
+                            filesToRead.forEach { file ->
+                                readPickcode(file)?.let { pickcodes += it }
+                                strmUrisToClear += file.uri.toString()
+                            }
+                            if (target.parent.uri != root.uri) {
+                                movieDirectories[target.parent.uri.toString()] = target
+                            } else {
+                                rootFiles[target.file.uri.toString()] = target
+                            }
+                        }
+
+                        movieDirectories.values.forEach { target ->
+                            val actorDirectory = target.parent.parentFile?.takeIf { it.uri != root.uri }
+                            deleteRecursively(target.parent)
+                            cleanupEmptyActorDirectory(actorDirectory, root)
+                        }
+                        rootFiles.values.forEach { it.file.delete() }
                     }
                 }
             }
         }
+        if (pickcodes.isNotEmpty()) {
+            cloudStrmRecordDao.deleteByPickcodes(pickcodes.toList())
+        }
+        if (strmUrisToClear.isNotEmpty()) {
+            cloudStrmRecordDao.deleteByStrmUris(strmUrisToClear.toList())
+        }
+        cloudStrmRecordDao.deleteByMovieId(movieId)
         movieDao.deleteById(movieId)
         DeleteMovieResult(movieId = movieId, pickcodes = pickcodes)
     }
@@ -431,15 +465,18 @@ class MovieRepository(
         if (existing != null && existing.uri != target.file.uri) {
             error("同目录已存在：$normalizedFileName")
         }
-        val pickcodes = (cloudStrmRecordDao.getByMovieId(old.id).map { it.pickcode } + listOfNotNull(readPickcode(target.file)))
+        val strmContent = contentResolver.openInputStream(target.file.uri)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            ?: error("无法读取当前 STRM 文件")
+        val pickcodes = (cloudStrmRecordDao.getByMovieId(old.id).map { it.pickcode } + listOfNotNull(PickcodeExtractor.extract(strmContent)))
             .filter { it.isNotBlank() }
             .toSet()
-        if (!target.file.renameTo(normalizedFileName)) {
-            error("重命名失败，请检查影片库目录写入权限")
+        val renamedFile = copyStrmTextFile(target.parent, normalizedFileName, strmContent)
+        if (!target.file.delete()) {
+            runCatching { renamedFile.delete() }
+            error("重命名失败：无法删除旧 STRM，请检查影片库目录写入权限")
         }
-        val renamedFile = target.parent.findFile(normalizedFileName)
-            ?: target.parent.listFiles().firstOrNull { it.isFile && it.name == normalizedFileName }
-            ?: target.file
         val refreshed = scanner.scanFile(rootUri, renamedFile.uri)
             ?: error("重命名成功，但重新扫描 STRM 失败")
         val movie = refreshed.copy(
@@ -600,6 +637,14 @@ class MovieRepository(
         )
     }
 
+    suspend fun clearUnfinishedScrapeTasks(): Int = withContext(Dispatchers.IO) {
+        movieDao.updateScrapeTaskStatusesAndClearFailureReason(
+            fromStatuses = ScrapeTaskStatus.unfinishedNames,
+            toStatus = ScrapeTaskStatus.None.name,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
     suspend fun clearFinishedScrapeTasks(): Int = withContext(Dispatchers.IO) {
         movieDao.updateScrapeTaskStatuses(
             fromStatuses = listOf(ScrapeTaskStatus.Completed.name),
@@ -707,6 +752,22 @@ class MovieRepository(
             .distinctBy { it.videoUri }
             .sortedWith(compareBy<MoviePlaybackPart> { it.label.playbackPartUiSortKey() }.thenBy { it.fileName.lowercase(Locale.ROOT) })
             .toList()
+    }
+
+    private suspend fun relatedCloudStrmRecords(movie: MovieEntity): List<CloudStrmRecordEntity> {
+        val byMovieId = cloudStrmRecordDao.getByMovieId(movie.id)
+        val number = extractMovieNumberInfo(movie.videoName)?.number
+            ?: extractMovieNumberInfo(movie.title)?.number
+            ?: movie.videoName.movieNumberKeyFromText()
+            ?: movie.title.movieNumberKeyFromText()
+        val byNumber = number
+            ?.let { cloudStrmRecordDao.getByMovieNumber(it) }
+            .orEmpty()
+            .filter { record ->
+                (record.libraryRootUri == null || record.libraryRootUri == movie.libraryRootUri) &&
+                    (record.movieId == null || record.movieId == movie.id || record.strmUri == movie.videoUri || !canOpenUri(record.strmUri))
+            }
+        return (byMovieId + byNumber).distinctBy { it.pickcode }
     }
 
     private fun canOpenUri(uriString: String): Boolean =
@@ -997,6 +1058,23 @@ class MovieRepository(
             } ?: return false
             true
         }.getOrDefault(false)
+    }
+
+    private fun copyStrmTextFile(directory: DocumentFile, fileName: String, content: String): DocumentFile {
+        directory.findFile(fileName)?.let { existing ->
+            if (existing.isFile) error("同目录已存在：$fileName")
+        }
+        val file = directory.createFile("application/octet-stream", fileName)
+            ?: error("无法创建 STRM 文件：$fileName")
+        runCatching {
+            contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
+                output.write(content.toByteArray(Charsets.UTF_8))
+            } ?: error("无法写入 STRM 文件：$fileName")
+        }.onFailure { error ->
+            runCatching { file.delete() }
+            throw error
+        }
+        return file
     }
 }
 

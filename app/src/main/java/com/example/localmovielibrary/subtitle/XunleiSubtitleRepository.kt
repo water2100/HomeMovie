@@ -25,9 +25,9 @@ class XunleiSubtitleRepository(
 ) {
     private val appContext = context.applicationContext
     private val errorLog = RuntimeErrorLog(appContext)
-    private val fileStore = JavzimuSubtitleRepository(appContext, settingsRepository, client)
+    private val fileStore = LocalSubtitleStore(appContext, settingsRepository)
 
-    suspend fun search(number: String, videoDurationMs: Long): List<JavzimuSubtitleResult> =
+    suspend fun search(number: String, videoDurationMs: Long): List<SubtitleSearchResult> =
         withContext(Dispatchers.IO) {
             val normalized = normalizeXunleiSubtitleNumber(number)
             if (normalized.isBlank()) return@withContext emptyList()
@@ -64,7 +64,7 @@ class XunleiSubtitleRepository(
     suspend fun download(
         videoUri: Uri,
         fileName: String,
-        result: JavzimuSubtitleResult,
+        result: SubtitleSearchResult,
         storageSourceUri: Uri? = null
     ): LocalSubtitleFile = withContext(Dispatchers.IO) {
         val url = result.signature.takeIf { it.startsWith("http", ignoreCase = true) }
@@ -92,7 +92,7 @@ class XunleiSubtitleRepository(
         )
     }
 
-    private fun JSONObject.toSubtitleResult(): JavzimuSubtitleResult? {
+    private fun JSONObject.toSubtitleResult(): SubtitleSearchResult? {
         val url = optString("url").trim()
         val cid = optString("cid").ifBlank { optString("gcid") }.trim()
         val ext = optString("ext").ifBlank { url.substringAfterLast('.', "srt") }
@@ -116,7 +116,7 @@ class XunleiSubtitleRepository(
                 }
             }
         }.joinToString("/")
-        return JavzimuSubtitleResult(
+        return SubtitleSearchResult(
             cid = cid,
             ext = ext,
             name = name,
@@ -129,7 +129,7 @@ class XunleiSubtitleRepository(
         )
     }
 
-    private fun JavzimuSubtitleResult.isCloseTo(videoDurationMs: Long): Boolean {
+    private fun SubtitleSearchResult.isCloseTo(videoDurationMs: Long): Boolean {
         val subtitleDuration = durationMs ?: return true
         if (videoDurationMs <= 0L) return true
         return abs(subtitleDuration - videoDurationMs) <= MAX_DURATION_DIFF_MS

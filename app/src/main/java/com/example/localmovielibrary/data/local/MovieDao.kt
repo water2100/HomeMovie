@@ -329,6 +329,21 @@ interface MovieDao {
             '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri, scrapeFailureReason, scrapeTaskStatus,
             scannedAtMillis, isFavorite, isWatched, updatedAt
         FROM movies
+        WHERE videoName LIKE :pattern OR title LIKE :pattern OR originalTitle LIKE :pattern OR uniqueIds LIKE :pattern
+        ORDER BY sortTitle COLLATE NOCASE
+        """
+    )
+    suspend fun searchMoviesByNumberLite(pattern: String): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri, scrapeFailureReason, scrapeTaskStatus,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
         WHERE tags LIKE :pattern
         ORDER BY sortTitle COLLATE NOCASE
         """
@@ -431,6 +446,9 @@ interface MovieDao {
 
     @Query("UPDATE movies SET scrapeTaskStatus = :toStatus, updatedAt = :updatedAt WHERE scrapeTaskStatus IN (:fromStatuses)")
     suspend fun updateScrapeTaskStatuses(fromStatuses: List<String>, toStatus: String, updatedAt: Long): Int
+
+    @Query("UPDATE movies SET scrapeTaskStatus = :toStatus, scrapeFailureReason = NULL, updatedAt = :updatedAt WHERE scrapeTaskStatus IN (:fromStatuses)")
+    suspend fun updateScrapeTaskStatusesAndClearFailureReason(fromStatuses: List<String>, toStatus: String, updatedAt: Long): Int
 
     @Query("DELETE FROM movies WHERE id = :id")
     suspend fun deleteById(id: Long)

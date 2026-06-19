@@ -60,10 +60,8 @@ import com.example.localmovielibrary.ui.player.PlayerScreen
 import com.example.localmovielibrary.ui.player.PlayerViewModel
 import com.example.localmovielibrary.ui.search.SearchScreen
 import com.example.localmovielibrary.ui.search.SearchViewModel
-import com.example.localmovielibrary.ui.settings.JavzimuCookieWebViewScreen
 import com.example.localmovielibrary.ui.settings.SettingsScreen
 import com.example.localmovielibrary.ui.settings.SettingsViewModel
-import com.example.localmovielibrary.ui.settings.MissavCookieWebViewScreen
 import kotlinx.coroutines.delay
 
 @Composable
@@ -226,8 +224,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     )
                     SettingsScreen(
                         viewModel = viewModel,
-                        onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
-                        onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) }
+                        onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) }
                     )
                 }
                 composable(Route.SettingsUpdate) {
@@ -246,7 +243,6 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     SettingsScreen(
                         viewModel = viewModel,
                         onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
-                        onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) },
                         openUpdatePage = true,
                         onBack = { navController.popBackStack() }
                     )
@@ -267,56 +263,8 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     SettingsScreen(
                         viewModel = viewModel,
                         onOpenScrapeLogs = { navController.navigate(Route.ScrapeLogs) },
-                        onOpenMissavWeb = { navController.navigate(Route.missavCookieWeb("ADN-764")) },
                         openScrapeTasksPage = true,
                         onBack = { navController.popBackStack() }
-                    )
-                }
-                composable(
-                    route = Route.MissavCookieWeb,
-                    arguments = listOf(navArgument("number") { type = NavType.StringType })
-                ) { entry ->
-                    val number = Uri.decode(entry.arguments?.getString("number").orEmpty())
-                    val viewModel: SettingsViewModel = viewModel(
-                        factory = SettingsViewModel.factory(
-                            repository = appContainer.settingsRepository,
-                            movieRepository = appContainer.movieRepository,
-                            cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
-                            scrapeRepository = appContainer.strmScrapeRepository,
-                            appUpdateRepository = appContainer.appUpdateRepository,
-                            cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
-                            cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
-                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
-                        )
-                    )
-                    MissavCookieWebViewScreen(
-                        number = number,
-                        scrapeLanguage = appContainer.settingsRepository.getMissavScrapeLanguage(),
-                        onBack = { navController.popBackStack() },
-                        onSaveCookie = { cookie ->
-                            viewModel.saveMissavCookies(cookie)
-                            navController.previousBackStackEntry
-                                ?.savedStateHandle
-                                ?.set("missavCookieSaved", true)
-                            navController.popBackStack()
-                        }
-                    )
-                }
-                composable(
-                    route = Route.JavzimuCookieWeb,
-                    arguments = listOf(navArgument("url") { type = NavType.StringType })
-                ) { entry ->
-                    val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
-                    JavzimuCookieWebViewScreen(
-                        url = url,
-                        onBack = { navController.popBackStack() },
-                        onSaveCookie = { cookie ->
-                            appContainer.settingsRepository.saveJavzimuCookies(cookie)
-                            navController.previousBackStackEntry
-                                ?.savedStateHandle
-                                ?.set("javzimuCookieSaved", true)
-                            navController.popBackStack()
-                        }
                     )
                 }
                 composable(Route.ScrapeLogs) {
@@ -353,15 +301,6 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             settingsRepository = appContainer.settingsRepository
                         )
                     )
-                    val missavCookieSaved by entry.savedStateHandle
-                        .getStateFlow("missavCookieSaved", false)
-                        .collectAsState()
-                    LaunchedEffect(missavCookieSaved) {
-                        if (missavCookieSaved) {
-                            entry.savedStateHandle["missavCookieSaved"] = false
-                            viewModel.retryMissavAfterCookieSaved()
-                        }
-                    }
                     DetailScreen(
                         viewModel = viewModel,
                         onBack = { navController.popBackStack() },
@@ -373,8 +312,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                         onOpenMovie = { newMovieId ->
                             navController.popBackStack()
                             navController.navigate(Route.detail(newMovieId))
-                        },
-                        onOpenMissavCookie = { number -> navController.navigate(Route.missavCookieWeb(number)) }
+                        }
                     )
                 }
                 composable(
@@ -430,20 +368,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             playbackProgressRepository = appContainer.playbackProgressRepository
                         )
                     )
-                    val javzimuCookieSaved by entry.savedStateHandle
-                        .getStateFlow("javzimuCookieSaved", false)
-                        .collectAsState()
-                    LaunchedEffect(javzimuCookieSaved) {
-                        if (javzimuCookieSaved) {
-                            entry.savedStateHandle["javzimuCookieSaved"] = false
-                            val cookie = appContainer.settingsRepository.getJavzimuCookies()
-                            if (cookie.isNotBlank()) viewModel.onJavzimuCookieReady(cookie)
-                        }
-                    }
                     PlayerScreen(
                         viewModel = viewModel,
-                        onBack = { navController.popBackStack() },
-                        onOpenJavzimuCookie = { url -> navController.navigate(Route.javzimuCookieWeb(url)) }
+                        onBack = { navController.popBackStack() }
                     )
                 }
             }
@@ -617,16 +544,11 @@ private object Route {
     const val SettingsUpdate = "settings/update"
     const val SettingsScrapeTasks = "settings/scrapeTasks"
     const val ScrapeLogs = "scrapeLogs"
-    const val MissavCookieWeb = "missavCookieWeb/{number}"
-    const val JavzimuCookieWeb = "javzimuCookieWeb/{url}"
     const val Detail = "movieDetail/{movieId}"
     const val FilterResult = "filterResult/{filterType}/{filterValue}"
     const val Player = "player/{videoUri}?title={title}&fileName={fileName}"
 
     fun detail(movieId: Long) = "movieDetail/$movieId"
-
-    fun missavCookieWeb(number: String) = "missavCookieWeb/${Uri.encode(number)}"
-    fun javzimuCookieWeb(url: String) = "javzimuCookieWeb/${Uri.encode(url)}"
 
     fun filterResult(filterType: String, filterValue: String) =
         "filterResult/${Uri.encode(filterType)}/${Uri.encode(filterValue)}"

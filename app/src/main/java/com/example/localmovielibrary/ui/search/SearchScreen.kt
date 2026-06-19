@@ -145,7 +145,7 @@ private fun SearchHeader(
                     }
                 }
             },
-            placeholder = { Text("\u641C\u7D22\u6807\u9898\u3001\u6F14\u5458\u3001\u7C7B\u578B\u3001\u6807\u7B7E\u6216\u5E74\u4EFD") },
+            placeholder = { Text("\u641C\u7D22\u6807\u9898\u3001\u6F14\u5458\u3001\u756A\u53F7\u3001\u7C7B\u578B\u3001\u6807\u7B7E\u6216\u5E74\u4EFD") },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White,
@@ -313,6 +313,7 @@ private fun SearchNoResults() {
 private fun searchScopeLabel(scope: SearchScope): String = when (scope) {
     SearchScope.All -> "\u5168\u90E8"
     SearchScope.Title -> "\u6807\u9898"
+    SearchScope.Number -> "\u756A\u53F7"
     SearchScope.Actor -> "\u6F14\u5458"
     SearchScope.Tag -> "\u6807\u7B7E"
     SearchScope.Genre -> "\u7C7B\u578B"

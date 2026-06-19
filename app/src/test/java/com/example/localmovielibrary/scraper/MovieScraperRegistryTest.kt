@@ -11,13 +11,13 @@ class MovieScraperRegistryTest {
         val registry = MovieScraperRegistry(
             listOf(
                 FakeMovieScraper(ScrapeSource.Dmm, "dmm-title"),
-                FakeMovieScraper(ScrapeSource.Missav, "missav-title")
+                FakeMovieScraper(ScrapeSource.TheJavDB, "thejavdb-title")
             )
         )
 
-        val info = registry.scrape(ScrapeSource.Missav, "ABC-123")
+        val info = registry.scrape(ScrapeSource.TheJavDB, "ABC-123")
 
-        assertEquals("missav-title", info.title)
+        assertEquals("thejavdb-title", info.title)
         assertEquals("ABC-123", info.number)
     }
 

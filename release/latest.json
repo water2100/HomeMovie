@@ -1,13 +1,13 @@
 {
-  "versionCode": 15,
-  "versionName": "2.0.0",
-  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v2.0.0/HomeMovie-v2.0.0-debug.apk",
-  "sha256": "3C8D5B9790F02760DDB678C1A44538BAF38EA8A3F6F521EBF42DC7CFFF88C574",
-  "size": 22951579,
+  "versionCode": 16,
+  "versionName": "2.0.1",
+  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v2.0.1/HomeMovie-v2.0.1-debug.apk",
+  "sha256": "29B19F6C3E64555C10CD50213CFEAF76D825A8F23E464C63A49A128231C9D6C2",
+  "size": 22886043,
   "notes": [
-    "移除实时字幕与本地 ASR 识别功能，删除设置页独立字幕栏，保留播放器内在线字幕/本地字幕面板。",
-    "移除 sherpa-onnx/onnxruntime native 库和翻译提示词资源，APK 体积明显减小。",
-    "播放器字幕入口统一为播放器内字幕面板，设置页仅保留外挂字幕样式设置。",
-    "修复并保留近期的网盘字幕搜索、网盘文件夹任务、MGStage/JavDB 刮削、番号识别和播放器体验优化。"
+    "优化 STRM 删除与重命名：删除时会强制清理失效影片记录、网盘已添加状态和 STRM 索引，重命名改为复制新 STRM 后删除旧文件，降低 SAF 重命名失败概率。",
+    "优化刮削任务界面：网盘文件夹任务列表只显示当前未完成任务，不再展示已完成的历史文件夹。",
+    "修复播放器侧滑字幕面板与底层音量/亮度手势冲突，选择字幕时不再误触发播放器手势。",
+    "补充演员影片排序、番号搜索、刮削任务取消等近期体验优化。"
   ]
 }

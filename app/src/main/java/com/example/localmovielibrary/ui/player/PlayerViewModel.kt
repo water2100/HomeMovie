@@ -36,14 +36,13 @@ import com.example.localmovielibrary.playback.vr.VrModeSettings
 import com.example.localmovielibrary.subtitle.AvsubtitlesCloudflareException
 import com.example.localmovielibrary.subtitle.AvsubtitlesSubtitleRepository
 import com.example.localmovielibrary.subtitle.Cloud115SubtitleRepository
-import com.example.localmovielibrary.subtitle.JavzimuSubtitleRepository
-import com.example.localmovielibrary.subtitle.JavzimuCloudflareException
-import com.example.localmovielibrary.subtitle.JavzimuSubtitleResult
+import com.example.localmovielibrary.subtitle.LocalSubtitleStore
 import com.example.localmovielibrary.subtitle.LocalSubtitleFile
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
+import com.example.localmovielibrary.subtitle.SubtitleSearchResult
 import com.example.localmovielibrary.subtitle.XunleiSubtitleRepository
 import com.example.localmovielibrary.subtitle.normalizeCloud115SubtitleNumber
-import com.example.localmovielibrary.subtitle.normalizeJavzimuSubtitleNumber
+import com.example.localmovielibrary.subtitle.normalizeDefaultSubtitleNumber
 import com.example.localmovielibrary.subtitle.normalizeXunleiSubtitleNumber
 import com.example.localmovielibrary.util.normalizeMovieNumber
 import kotlinx.coroutines.CancellationException
@@ -77,7 +76,7 @@ class PlayerViewModel(
     private val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f)
     private var speedIndex = 1
     private val resolver = PlaybackResolver(application.contentResolver, directLinkRepository)
-    private val javzimuSubtitleRepository = JavzimuSubtitleRepository(application, settingsRepository)
+    private val localSubtitleStore = LocalSubtitleStore(application, settingsRepository)
     private val avsubtitlesSubtitleRepository = AvsubtitlesSubtitleRepository(application, settingsRepository)
     private val xunleiSubtitleRepository = XunleiSubtitleRepository(application, settingsRepository)
     private val cloud115SubtitleRepository = Cloud115SubtitleRepository(application, settingsRepository, cloud115Client)
@@ -87,7 +86,6 @@ class PlayerViewModel(
     private val progressPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var progressJob: Job? = null
     private var initialSubtitleJob: Job? = null
-    private var pendingJavzimuAction: PendingJavzimuAction? = null
     private var lastPersistedPositionMs = Long.MIN_VALUE
     private var lastPersistedDurationMs = 0L
     private var lastPersistedAtMs = 0L
@@ -282,7 +280,7 @@ class PlayerViewModel(
             PickcodeExtractor.extract(videoUri.toString()) != null -> {
                 if (forceRefresh) "正在刷新 115 播放直链..." else "正在向 115 请求播放直链..."
             }
-            isStrmSource(videoUri, fileName) -> "正在读取 STRM 播放入口..."
+            isStrmSource(videoUri, fileName) -> "正在解析播放地址..."
             else -> "正在解析播放地址..."
         }
 
@@ -530,7 +528,7 @@ class PlayerViewModel(
         viewModelScope.launch {
             val storageSourceUri = resolveSubtitleStorageSourceUri()
             val localFiles = runCatching {
-                javzimuSubtitleRepository.listLocalSubtitles(videoUri, fileName, storageSourceUri)
+                localSubtitleStore.listLocalSubtitles(videoUri, fileName, storageSourceUri)
             }.getOrElse { emptyList() }
             _uiState.update { it.copy(localSubtitles = localFiles) }
             if (number == null) {
@@ -606,7 +604,6 @@ class PlayerViewModel(
         viewModelScope.launch {
             runCatching {
                 when (provider) {
-                    SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.search(number, videoDurationMs)
                     SubtitleSearchProvider.Cloud115 -> cloud115SubtitleRepository.search(number)
@@ -630,14 +627,6 @@ class PlayerViewModel(
                 }
             }.onFailure { error ->
                 when (error) {
-                    is JavzimuCloudflareException -> {
-                        startJavzimuCookieRefresh(
-                            action = PendingJavzimuAction.Search(videoDurationMs),
-                            number = number
-                        )
-                        return@onFailure
-                    }
-
                     is AvsubtitlesCloudflareException -> {
                         errorLog.append(
                             event = "player.avsubtitles.search.cloudflare",
@@ -674,7 +663,7 @@ class PlayerViewModel(
                     settingsRepository.saveExternalSubtitleEnabled(mediaKey, false)
                     clearExternalSubtitleTrack(closePanel = false)
                 }
-                val deleted = javzimuSubtitleRepository.deleteLocalSubtitle(subtitle)
+                val deleted = localSubtitleStore.deleteLocalSubtitle(subtitle)
                 if (!deleted) error("字幕文件删除失败")
                 listLocalExternalSubtitles()
             }.onSuccess { localFiles ->
@@ -729,7 +718,7 @@ class PlayerViewModel(
         }
     }
 
-    fun downloadAndLoadSubtitle(result: JavzimuSubtitleResult) {
+    fun downloadAndLoadSubtitle(result: SubtitleSearchResult) {
         if (!_uiState.value.subtitleFeaturesEnabled) return
         if (_uiState.value.externalSubtitleDownloading) return
         _uiState.update {
@@ -743,14 +732,13 @@ class PlayerViewModel(
             runCatching {
                 val storageSourceUri = resolveSubtitleStorageSourceUri()
                 when (result.provider) {
-                    SubtitleSearchProvider.Javzimu -> javzimuSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                     SubtitleSearchProvider.Avsubtitles -> avsubtitlesSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                     SubtitleSearchProvider.Xunlei -> xunleiSubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                     SubtitleSearchProvider.Cloud115 -> cloud115SubtitleRepository.download(videoUri, fileName, result, storageSourceUri)
                 }
             }.onSuccess { subtitle ->
                 val localFiles = runCatching {
-                    javzimuSubtitleRepository.listLocalSubtitles(videoUri, fileName, resolveSubtitleStorageSourceUri())
+                    localSubtitleStore.listLocalSubtitles(videoUri, fileName, resolveSubtitleStorageSourceUri())
                 }.getOrElse { _uiState.value.localSubtitles + subtitle }
                 _uiState.update {
                     it.copy(
@@ -763,19 +751,6 @@ class PlayerViewModel(
                 applyExternalSubtitle(subtitle)
             }.onFailure { error ->
                 when (error) {
-                    is JavzimuCloudflareException -> {
-                        errorLog.append(
-                            event = "player.javzimu.download.cloudflare",
-                            details = subtitleLogDetails(result),
-                            error = error
-                        )
-                        startJavzimuCookieRefresh(
-                            action = PendingJavzimuAction.Download(result),
-                            number = _uiState.value.externalSubtitleQueryNumber
-                        )
-                        return@onFailure
-                    }
-
                     is AvsubtitlesCloudflareException -> {
                         errorLog.append(
                             event = "player.avsubtitles.download.cloudflare",
@@ -800,7 +775,7 @@ class PlayerViewModel(
         }
     }
 
-    private fun subtitleLogDetails(result: JavzimuSubtitleResult): Map<String, String?> =
+    private fun subtitleLogDetails(result: SubtitleSearchResult): Map<String, String?> =
         mapOf(
             "videoUri" to videoUri.toString(),
             "fileName" to fileName,
@@ -810,14 +785,12 @@ class PlayerViewModel(
             "resultName" to result.name,
             "resultExt" to result.ext,
             "provider" to result.provider.id,
-            "hasJavzimuCookie" to settingsRepository.getJavzimuCookies().isNotBlank().toString(),
-            "javzimuCookieLength" to settingsRepository.getJavzimuCookies().length.toString(),
             "hasAvsubtitlesCookie" to settingsRepository.getAvsubtitlesCookies().isNotBlank().toString(),
             "avsubtitlesCookieLength" to settingsRepository.getAvsubtitlesCookies().length.toString()
         )
     private suspend fun listLocalExternalSubtitles(): List<LocalSubtitleFile> =
         runCatching {
-            javzimuSubtitleRepository.listLocalSubtitles(videoUri, fileName, resolveSubtitleStorageSourceUri())
+            localSubtitleStore.listLocalSubtitles(videoUri, fileName, resolveSubtitleStorageSourceUri())
         }.getOrElse { emptyList() }
 
     private fun preferredExternalSubtitle(
@@ -850,58 +823,6 @@ class PlayerViewModel(
     private fun isStrmSource(uri: Uri, name: String): Boolean =
         name.substringAfterLast('.', "").equals("strm", ignoreCase = true) ||
             uri.toString().substringBefore('?').endsWith(".strm", ignoreCase = true)
-
-    fun onJavzimuCookieReady(cookie: String) {
-        settingsRepository.saveJavzimuCookies(cookie)
-        val action = pendingJavzimuAction
-        pendingJavzimuAction = null
-        _uiState.update {
-            it.copy(
-                externalSubtitleMessage = "\u5DF2\u83B7\u53D6 Javzimu Cookie\uFF0C\u6B63\u5728\u91CD\u8BD5",
-                externalSubtitleSearching = false,
-                externalSubtitleDownloading = false,
-                externalSubtitleError = null
-            )
-        }
-        when (action) {
-            is PendingJavzimuAction.Search -> searchExternalSubtitles(action.videoDurationMs)
-            is PendingJavzimuAction.Download -> downloadAndLoadSubtitle(action.result)
-            null -> Unit
-        }
-    }
-
-    fun onJavzimuCookieFailed(message: String) {
-        pendingJavzimuAction = null
-        _uiState.update {
-            it.copy(
-                externalSubtitleSearching = false,
-                externalSubtitleDownloading = false,
-                externalSubtitleError = message
-            )
-        }
-    }
-
-    private fun startJavzimuCookieRefresh(action: PendingJavzimuAction, number: String) {
-        pendingJavzimuAction = action
-        val normalized = normalizeJavzimuSubtitleNumber(number)
-        _uiState.update {
-            it.copy(
-                javzimuWebUrl = "https://javzimu.com/search/$normalized",
-                externalSubtitleSearching = false,
-                externalSubtitleDownloading = false,
-                externalSubtitleMessage = "\u8BF7\u5728 Javzimu WebView \u4E2D\u5B8C\u6210\u9A8C\u8BC1\u540E\u8FD4\u56DE\uFF0C\u4F1A\u81EA\u52A8\u91CD\u8BD5",
-                externalSubtitleError = null
-            )
-        }
-    }
-
-    fun consumeJavzimuWebUrl(): String? {
-        val url = _uiState.value.javzimuWebUrl
-        if (url != null) {
-            _uiState.update { it.copy(javzimuWebUrl = null) }
-        }
-        return url
-    }
 
     private fun applyExternalSubtitle(subtitle: LocalSubtitleFile, closePanel: Boolean = true) {
         val request = _uiState.value.playbackRequest ?: return
@@ -1090,12 +1011,11 @@ data class PlayerUiState(
     val externalSubtitleProvider: SubtitleSearchProvider = SubtitleSearchProvider.Xunlei,
     val subtitleSearchProviderOptions: List<SubtitleSearchProvider> = SubtitleSearchProvider.entries,
     val localSubtitles: List<LocalSubtitleFile> = emptyList(),
-    val onlineSubtitles: List<JavzimuSubtitleResult> = emptyList(),
+    val onlineSubtitles: List<SubtitleSearchResult> = emptyList(),
     val externalSubtitleEnabled: Boolean = false,
     val activeExternalSubtitleName: String? = null,
     val externalSubtitleMessage: String? = null,
     val externalSubtitleError: String? = null,
-    val javzimuWebUrl: String? = null,
     val audioTracks: List<AudioTrackOption> = emptyList(),
     val audioTrackAutomatic: Boolean = true,
     val subtitleFeaturesEnabled: Boolean = true,
@@ -1119,17 +1039,11 @@ data class ExternalSubtitleStyleSettings(
     val backgroundAlphaPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT
 )
 
-private sealed interface PendingJavzimuAction {
-    data class Search(val videoDurationMs: Long) : PendingJavzimuAction
-    data class Download(val result: JavzimuSubtitleResult) : PendingJavzimuAction
-}
-
 private fun normalizeSubtitleSearchNumber(number: String, provider: SubtitleSearchProvider): String =
     when (provider) {
         SubtitleSearchProvider.Xunlei -> normalizeXunleiSubtitleNumber(number)
         SubtitleSearchProvider.Cloud115 -> normalizeCloud115SubtitleNumber(number)
-        SubtitleSearchProvider.Javzimu,
-        SubtitleSearchProvider.Avsubtitles -> normalizeJavzimuSubtitleNumber(number)
+        SubtitleSearchProvider.Avsubtitles -> normalizeDefaultSubtitleNumber(number)
     }
 
 private fun LocalSubtitleFile.mimeType(): String {

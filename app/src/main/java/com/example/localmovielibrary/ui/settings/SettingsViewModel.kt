@@ -21,7 +21,6 @@ import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.ScrapeTaskSummary
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
 import com.example.localmovielibrary.scraper.ScrapeSource
-import com.example.localmovielibrary.scraper.MissavScrapeLanguage
 import com.example.localmovielibrary.util.NumberRecognitionRules
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -211,25 +210,6 @@ class SettingsViewModel(
                 isCloud115QrLoginActive = false,
                 cloud115QrToken = null,
                 cloud115QrStatusText = "已取消 115 二维码登录"
-            )
-        }
-    }
-
-    fun updateMissavCookies(value: String) {
-        _uiState.update { it.copy(missavCookies = value, savedMessage = null) }
-    }
-
-    fun saveMissavCookies(value: String) {
-        repository.saveMissavCookies(value)
-        _uiState.value = loadState().copy(savedMessage = "MissAV Cookie 已保存")
-    }
-
-    fun updateMissavScrapeLanguage(language: MissavScrapeLanguage) {
-        repository.saveMissavScrapeLanguage(language)
-        _uiState.update {
-            it.copy(
-                missavScrapeLanguage = language,
-                savedMessage = null
             )
         }
     }
@@ -655,8 +635,6 @@ class SettingsViewModel(
     fun save() {
         val state = _uiState.value
         repository.saveCookies(state.cookies)
-        repository.saveMissavCookies(state.missavCookies)
-        repository.saveMissavScrapeLanguage(state.missavScrapeLanguage)
         repository.saveUpdateManifestUrl(state.updateManifestUrl)
         repository.saveUpdateProxyBaseUrl(state.updateProxyBaseUrl)
         repository.saveUpdateProxyEnabled(state.useUpdateProxyEnabled)
@@ -752,6 +730,29 @@ class SettingsViewModel(
                 cloudFolderBatchTaskMessage = "正在暂停网盘文件夹任务...",
                 savedMessage = "已请求暂停网盘文件夹任务"
             )
+        }
+    }
+
+    fun cancelCloudFolderBatchTasks() {
+        cloudFolderBatchTaskRunner.cancel()
+        viewModelScope.launch {
+            val count = cloudFolderBatchTaskRepository.clearUnfinishedTasks()
+            _uiState.update {
+                it.copy(
+                    isCloudFolderBatchRunning = false,
+                    isScraping = it.isManualScrapeRunning,
+                    cloudFolderBatchTaskMessage = if (count > 0) {
+                        "已取消 $count 个网盘文件夹任务"
+                    } else {
+                        "没有可取消的网盘文件夹任务"
+                    },
+                    savedMessage = if (count > 0) {
+                        "已取消 $count 个网盘文件夹任务"
+                    } else {
+                        "没有可取消的网盘文件夹任务"
+                    }
+                )
+            }
         }
     }
 
@@ -856,6 +857,30 @@ class SettingsViewModel(
         }
     }
 
+    fun cancelManualScrapeTasks() {
+        manualScrapeJob?.cancel(CancellationException("已手动取消刮削任务"))
+        viewModelScope.launch {
+            val count = movieRepository.clearUnfinishedScrapeTasks()
+            _uiState.update {
+                it.copy(
+                    isManualScrapeRunning = false,
+                    isScraping = it.isCloudFolderBatchRunning,
+                    scrapeTaskSummary = movieRepository.scrapeTaskSummary(),
+                    scrapeTaskMessage = if (count > 0) {
+                        "已取消 $count 个刮削任务"
+                    } else {
+                        "没有可取消的刮削任务"
+                    },
+                    savedMessage = if (count > 0) {
+                        "已取消 $count 个刮削任务"
+                    } else {
+                        "没有可取消的刮削任务"
+                    }
+                )
+            }
+        }
+    }
+
     fun stopManualScrapeTasks() {
         if (manualScrapeJob?.isActive != true) return
         manualScrapeJob?.cancel(CancellationException("已手动暂停刮削任务"))
@@ -923,9 +948,6 @@ class SettingsViewModel(
         val lastUpdateResult = appUpdateRepository.lastCheckResult
         return SettingsUiState(
             cookies = repository.getCookies(),
-            missavCookies = repository.getMissavCookies(),
-            missavScrapeLanguage = repository.getMissavScrapeLanguage(),
-            missavScrapeLanguageOptions = MissavScrapeLanguage.entries,
             updateManifestUrl = repository.getUpdateManifestUrl(),
             updateProxyBaseUrl = repository.getUpdateProxyBaseUrl(),
             useUpdateProxyEnabled = repository.isUpdateProxyEnabled(),
@@ -1003,9 +1025,6 @@ class SettingsViewModel(
 
 data class SettingsUiState(
     val cookies: String = "",
-    val missavCookies: String = "",
-    val missavScrapeLanguage: MissavScrapeLanguage = MissavScrapeLanguage.Default,
-    val missavScrapeLanguageOptions: List<MissavScrapeLanguage> = MissavScrapeLanguage.entries,
     val updateManifestUrl: String = "",
     val updateProxyBaseUrl: String = AppSettingsRepository.DEFAULT_UPDATE_PROXY_BASE_URL,
     val useUpdateProxyEnabled: Boolean = true,
@@ -1074,7 +1093,5 @@ data class SettingsUiState(
     val cloudFolderBatchTaskMessage: String = "",
     val savedMessage: String? = null
 ) {
-    val hasMissavCookie: Boolean
-        get() = missavCookies.isNotBlank()
 }
 
