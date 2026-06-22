@@ -382,25 +382,31 @@ class MovieRepository(
         val movie = movieDao.getMovieLite(movieId)
         val pickcodes = linkedSetOf<String>()
         val strmUrisToClear = linkedSetOf<String>()
+        val movieIdsToClear = linkedSetOf(movieId)
         if (movie != null) {
             val relatedRecords = relatedCloudStrmRecords(movie)
             pickcodes += relatedRecords.map { it.pickcode }
             strmUrisToClear += relatedRecords.map { it.strmUri }.filter { it.isNotBlank() }
+            movieIdsToClear += relatedRecords.mapNotNull { it.movieId }
             strmUrisToClear += movie.videoUri
 
             runCatching {
                 if (movie.videoName.endsWith(".strm", ignoreCase = true)) {
                     val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
                     if (root != null) {
+                        val directFiles = linkedMapOf<String, DocumentFile>()
                         val targets = buildList {
                             findFileWithParentFast(root, movie.libraryRootUri, movie.videoUri)?.let { add(it) }
-                            findFileWithParent(root, movie.videoUri)?.let { add(it) }
+                            DocumentFile.fromSingleUri(context, Uri.parse(movie.videoUri))
+                                ?.takeIf { it.isFile }
+                                ?.let { directFiles[it.uri.toString()] = it }
                             relatedRecords.forEach { record ->
                                 val recordRootUri = record.libraryRootUri ?: movie.libraryRootUri
                                 findFileWithParentFast(root, recordRootUri, record.strmUri)?.let { add(it) }
-                                findFileWithParent(root, record.strmUri)?.let { add(it) }
+                                DocumentFile.fromSingleUri(context, Uri.parse(record.strmUri))
+                                    ?.takeIf { it.isFile }
+                                    ?.let { directFiles[it.uri.toString()] = it }
                             }
-                            findStrmWithParentByMovieNumber(root, movie)?.let { add(it) }
                         }.distinctBy { it.file.uri.toString() }
 
                         val movieDirectories = linkedMapOf<String, FileWithParent>()
@@ -428,9 +434,18 @@ class MovieRepository(
                             cleanupEmptyActorDirectory(actorDirectory, root)
                         }
                         rootFiles.values.forEach { it.file.delete() }
+                        directFiles.values.forEach { it.delete() }
                     }
                 }
             }
+        }
+        if (pickcodes.isNotEmpty()) {
+            val indexedRecords = cloudStrmRecordDao.getExistingRecords(pickcodes.toList())
+            strmUrisToClear += indexedRecords.map { it.strmUri }.filter { it.isNotBlank() }
+            movieIdsToClear += indexedRecords.mapNotNull { it.movieId }
+        }
+        if (strmUrisToClear.isNotEmpty()) {
+            movieIdsToClear += movieDao.getMoviesByVideoUrisLite(strmUrisToClear.toList()).map { it.id }
         }
         if (pickcodes.isNotEmpty()) {
             cloudStrmRecordDao.deleteByPickcodes(pickcodes.toList())
@@ -438,8 +453,8 @@ class MovieRepository(
         if (strmUrisToClear.isNotEmpty()) {
             cloudStrmRecordDao.deleteByStrmUris(strmUrisToClear.toList())
         }
-        cloudStrmRecordDao.deleteByMovieId(movieId)
-        movieDao.deleteById(movieId)
+        cloudStrmRecordDao.deleteByMovieIds(movieIdsToClear.toList())
+        movieDao.deleteByIds(movieIdsToClear.toList())
         DeleteMovieResult(movieId = movieId, pickcodes = pickcodes)
     }
 

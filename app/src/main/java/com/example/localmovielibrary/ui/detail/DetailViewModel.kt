@@ -113,9 +113,16 @@ class DetailViewModel(
     fun deleteMovie() {
         val current = movie.value ?: return
         viewModelScope.launch {
-            val result = repository.deleteMovieWithFiles(current.id)
-            cloudStrmRecordRepository.deleteForMovie(current.id, result.pickcodes)
-            events.send(DetailEvent.Deleted)
+            events.send(DetailEvent.Message("正在删除影片..."))
+            runCatching {
+                val result = repository.deleteMovieWithFiles(current.id)
+                cloudStrmRecordRepository.deleteForMovie(current.id, result.pickcodes)
+            }.onSuccess {
+                events.send(DetailEvent.Deleted)
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                events.send(DetailEvent.Message(error.message ?: "删除失败"))
+            }
         }
     }
 

@@ -209,18 +209,18 @@ class CloudStrmRecordRepository(
                 walk(root, rootUri)
             }
         }
-        records += indexKnownMovieRecords()
+        records += indexKnownMovieRecords(records.map { it.pickcode }.toSet())
+        dao.clear()
         dao.upsertAll(records)
         CloudStrmIndexResult(indexed = records.size, renamed = renamed)
     }
 
-    private suspend fun indexKnownMovieRecords(): List<CloudStrmRecordEntity> {
-        val existing = dao.getAllPickcodes().toSet()
+    private suspend fun indexKnownMovieRecords(existingPickcodes: Set<String>): List<CloudStrmRecordEntity> {
         val now = System.currentTimeMillis()
         return movieDao.getMoviesSnapshotLite()
             .asSequence()
             .filter { it.videoName.endsWith(".strm", ignoreCase = true) || it.videoUri.endsWith(".strm", ignoreCase = true) }
-            .mapNotNull { movie -> movie.toCloudStrmRecord(now, existing) }
+            .mapNotNull { movie -> movie.toCloudStrmRecord(now, existingPickcodes) }
             .toList()
     }
 

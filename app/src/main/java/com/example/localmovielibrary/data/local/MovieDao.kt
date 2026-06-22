@@ -125,6 +125,20 @@ interface MovieDao {
             '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri, scrapeFailureReason, scrapeTaskStatus,
             scannedAtMillis, isFavorite, isWatched, updatedAt
         FROM movies
+        WHERE videoUri IN (:videoUris)
+        """
+    )
+    suspend fun getMoviesByVideoUrisLite(videoUris: List<String>): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT 
+            id, libraryRootUri, videoUri, videoName, sortTitle, title, originalTitle,
+            NULL AS plot, NULL AS outline, year, premiered, runtimeMinutes, mpaa,
+            '' AS studios, series, '' AS directors, '' AS actors, '' AS genres, '' AS tags, rating,
+            '' AS uniqueIds, posterUri, fanartUri, thumbUri, nfoUri, scrapeFailureReason, scrapeTaskStatus,
+            scannedAtMillis, isFavorite, isWatched, updatedAt
+        FROM movies
         WHERE libraryRootUri = :rootUri
         """
     )
