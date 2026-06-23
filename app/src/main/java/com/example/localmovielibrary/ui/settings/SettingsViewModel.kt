@@ -578,6 +578,25 @@ class SettingsViewModel(
         _uiState.update { it.copy(cloudAddButtonMessageEnabled = enabled, savedMessage = null) }
     }
 
+    fun updateNewCloudVideoExtension(value: String) {
+        _uiState.update { it.copy(newCloudVideoExtension = value, savedMessage = null) }
+    }
+
+    fun addCloudVideoExtension() {
+        val extension = _uiState.value.newCloudVideoExtension.trim()
+        if (extension.isBlank()) {
+            _uiState.update { it.copy(savedMessage = "请输入视频扩展名") }
+            return
+        }
+        repository.addCloudVideoExtension(extension)
+        _uiState.value = loadState().copy(savedMessage = "已添加视频扩展名：${extension.removePrefix(".")}")
+    }
+
+    fun removeCloudVideoExtension(extension: String) {
+        repository.removeCloudVideoExtension(extension)
+        _uiState.value = loadState().copy(savedMessage = "已移除视频扩展名")
+    }
+
     fun updateNewExcludedVideoName(value: String) {
         _uiState.update { it.copy(newExcludedVideoName = value, savedMessage = null) }
     }
@@ -651,6 +670,7 @@ class SettingsViewModel(
         repository.saveDomesticPageEnabled(state.domesticPageEnabled)
         repository.saveLibraryNoMediaEnabled(state.libraryNoMediaEnabled)
         repository.saveCloudAddButtonMessageEnabled(state.cloudAddButtonMessageEnabled)
+        repository.saveCloudVideoExtensions(state.cloudVideoExtensions)
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
         repository.saveCloudScrapeSkipBelowSizeMb(state.cloudScrapeSkipBelowSizeMbText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
         _uiState.value = loadState().copy(savedMessage = "设置已保存")
@@ -981,6 +1001,7 @@ class SettingsViewModel(
             domesticPageEnabled = repository.isDomesticPageEnabled(),
             libraryNoMediaEnabled = repository.isLibraryNoMediaEnabled(),
             cloudAddButtonMessageEnabled = repository.isCloudAddButtonMessageEnabled(),
+            cloudVideoExtensions = repository.getCloudVideoExtensions(),
             cloudExcludedVideoNames = repository.getCloudExcludedVideoNames().toList().sorted(),
             cloudScrapeSkipBelowSizeMbText = repository.getCloudScrapeSkipBelowSizeMb().toString(),
             externalSubtitleFontSizeSp = repository.getExternalSubtitleFontSizeSp(),
@@ -1069,6 +1090,8 @@ data class SettingsUiState(
     val domesticPageEnabled: Boolean = false,
     val libraryNoMediaEnabled: Boolean = true,
     val cloudAddButtonMessageEnabled: Boolean = true,
+    val cloudVideoExtensions: List<String> = emptyList(),
+    val newCloudVideoExtension: String = "",
     val cloudExcludedVideoNames: List<String> = emptyList(),
     val newExcludedVideoName: String = "",
     val cloudScrapeSkipBelowSizeMbText: String = AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB.toString(),

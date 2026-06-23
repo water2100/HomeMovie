@@ -22,51 +22,40 @@ class Cloud115ApiClient(
     override suspend fun listFiles(cid: Long): List<Cloud115FileItem> = withContext(Dispatchers.IO) {
         val cookies = cookieProvider.loadCookies()
             ?: error("115 Cookie 未配置，请先到设置页填写 Cookie")
-        val request = Request.Builder()
-            .url("$FILES_URL?aid=1&cid=$cid&o=user_ptime&asc=0&offset=0&show_dir=1&limit=1000&format=json")
-            .get()
-            .header("Cookie", cookies)
-            .header("User-Agent", USER_AGENT)
-            .header("Accept", "application/json, text/plain, */*")
-            .build()
+        val result = mutableListOf<Cloud115FileItem>()
+        var offset = 0
 
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("115 目录读取失败：HTTP ${response.code}")
-            }
-            val raw = response.body?.string().orEmpty()
-            val json = JSONObject(raw)
-            val data = json.optJSONArray("data") ?: error("115 目录响应为空")
-            buildList {
-                for (index in 0 until data.length()) {
-                    val item = data.optJSONObject(index) ?: continue
-                    val name = item.optString("n").takeIf { it.isNotBlank() } ?: continue
-                    val fid = item.optString("fid").takeIf { it.isNotBlank() }?.toLongOrNull()
-                    val cidValue = item.optString("cid").takeIf { it.isNotBlank() }?.toLongOrNull()
-                    add(
-                        Cloud115FileItem(
-                            name = name,
-                            cid = cidValue,
-                            fid = fid,
-                            pickcode = item.optString("pc").takeIf { it.isNotBlank() },
-                            size = item.optString("s").toLongOrNull(),
-                            modifiedAt = item.optTimestamp(
-                                "t",
-                                "user_ptime",
-                                "ptime",
-                                "pt",
-                                "te",
-                                "tu",
-                                "tp",
-                                "mtime",
-                                "utime"
-                            ),
-                            isDirectory = fid == null
-                        )
-                    )
+        while (true) {
+            val request = Request.Builder()
+                .url("$FILES_URL?aid=1&cid=$cid&o=user_ptime&asc=0&offset=$offset&show_dir=1&limit=$FILES_PAGE_SIZE&format=json")
+                .get()
+                .header("Cookie", cookies)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json, text/plain, */*")
+                .build()
+
+            val page = httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("115 目录读取失败：HTTP ${response.code}")
                 }
+                val raw = response.body?.string().orEmpty()
+                val json = JSONObject(raw)
+                val data = json.optJSONArray("data") ?: error("115 目录响应为空")
+                val count = json.optString("count").toIntOrNull() ?: json.optInt("count", -1)
+                val items = parseCloud115Items(data)
+                Cloud115ListPage(items = items, totalCount = count)
             }
+
+            if (page.items.isEmpty()) break
+            result += page.items
+
+            val reachedTotal = page.totalCount >= 0 && result.size >= page.totalCount
+            if (page.items.size < FILES_PAGE_SIZE || reachedTotal) break
+
+            offset += FILES_PAGE_SIZE
         }
+
+        result
     }
 
     override suspend fun searchFiles(
@@ -105,25 +94,7 @@ class Cloud115ApiClient(
                 error(json.optString("error", "115 搜索失败"))
             }
             val data = json.optJSONArray("data") ?: return@withContext emptyList()
-            buildList {
-                for (index in 0 until data.length()) {
-                    val item = data.optJSONObject(index) ?: continue
-                    val name = item.optString("n").takeIf { it.isNotBlank() } ?: continue
-                    val fid = item.optString("fid").takeIf { it.isNotBlank() }?.toLongOrNull()
-                    val cidValue = item.optString("cid").takeIf { it.isNotBlank() }?.toLongOrNull()
-                    add(
-                        Cloud115FileItem(
-                            name = name,
-                            cid = cidValue,
-                            fid = fid,
-                            pickcode = item.optString("pc").takeIf { it.isNotBlank() },
-                            size = item.optString("s").toLongOrNull(),
-                            modifiedAt = item.optTimestamp("t", "te", "tp", "pt", "mtime", "utime"),
-                            isDirectory = fid == null
-                        )
-                    )
-                }
-            }
+            parseCloud115Items(data)
         }
     }
 
@@ -187,6 +158,37 @@ class Cloud115ApiClient(
         return null
     }
 
+    private fun parseCloud115Items(data: org.json.JSONArray): List<Cloud115FileItem> =
+        buildList {
+            for (index in 0 until data.length()) {
+                val item = data.optJSONObject(index) ?: continue
+                val name = item.optString("n").takeIf { it.isNotBlank() } ?: continue
+                val fid = item.optString("fid").takeIf { it.isNotBlank() }?.toLongOrNull()
+                val cidValue = item.optString("cid").takeIf { it.isNotBlank() }?.toLongOrNull()
+                add(
+                    Cloud115FileItem(
+                        name = name,
+                        cid = cidValue,
+                        fid = fid,
+                        pickcode = item.optString("pc").takeIf { it.isNotBlank() },
+                        size = item.optString("s").toLongOrNull(),
+                        modifiedAt = item.optTimestamp(
+                            "t",
+                            "user_ptime",
+                            "ptime",
+                            "pt",
+                            "te",
+                            "tu",
+                            "tp",
+                            "mtime",
+                            "utime"
+                        ),
+                        isDirectory = fid == null
+                    )
+                )
+            }
+        }
+
     private fun JSONObject.optTimestamp(vararg keys: String): Long? {
         keys.forEach { key ->
             val value = optString(key).takeIf { it.isNotBlank() && it != "0" } ?: return@forEach
@@ -198,8 +200,14 @@ class Cloud115ApiClient(
     }
 
     private companion object {
+        const val FILES_PAGE_SIZE = 1000
         const val FILES_URL = "https://webapi.115.com/files"
         const val SEARCH_URL = "https://webapi.115.com/files/search"
         const val DOWNLOAD_URL = "https://proapi.115.com/app/chrome/downurl"
     }
 }
+
+private data class Cloud115ListPage(
+    val items: List<Cloud115FileItem>,
+    val totalCount: Int
+)

@@ -256,6 +256,9 @@ fun SettingsScreen(
                         onStartCloud115QrLogin = viewModel::startCloud115QrLogin,
                         onCancelCloud115QrLogin = viewModel::cancelCloud115QrLogin,
                         onCloudAddButtonMessageEnabledChange = viewModel::updateCloudAddButtonMessageEnabled,
+                        onCloudVideoExtensionDraftChange = viewModel::updateNewCloudVideoExtension,
+                        onAddCloudVideoExtension = viewModel::addCloudVideoExtension,
+                        onRemoveCloudVideoExtension = viewModel::removeCloudVideoExtension,
                         onExcludedVideoNameDraftChange = viewModel::updateNewExcludedVideoName,
                         onAddExcludedVideoName = viewModel::addExcludedVideoName,
                         onRemoveExcludedVideoName = viewModel::removeExcludedVideoName,
@@ -836,6 +839,9 @@ private fun CloudSettingsPage(
     onStartCloud115QrLogin: () -> Unit,
     onCancelCloud115QrLogin: () -> Unit,
     onCloudAddButtonMessageEnabledChange: (Boolean) -> Unit,
+    onCloudVideoExtensionDraftChange: (String) -> Unit,
+    onAddCloudVideoExtension: () -> Unit,
+    onRemoveCloudVideoExtension: (String) -> Unit,
     onExcludedVideoNameDraftChange: (String) -> Unit,
     onAddExcludedVideoName: () -> Unit,
     onRemoveExcludedVideoName: (String) -> Unit,
@@ -871,6 +877,14 @@ private fun CloudSettingsPage(
     CloudAddBehaviorPanel(
         enabled = uiState.cloudAddButtonMessageEnabled,
         onEnabledChange = onCloudAddButtonMessageEnabledChange
+    )
+    SettingsSectionTitle("识别为视频的扩展名")
+    CloudVideoExtensionsPanel(
+        extensions = uiState.cloudVideoExtensions,
+        draft = uiState.newCloudVideoExtension,
+        onDraftChange = onCloudVideoExtensionDraftChange,
+        onAdd = onAddCloudVideoExtension,
+        onRemove = onRemoveCloudVideoExtension
     )
     SettingsSectionTitle("排除视频")
     ExcludedCloudVideosPanel(
@@ -1059,6 +1073,119 @@ private fun ExcludedCloudVideosPanel(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     TextButton(onClick = { onRemove(name) }) {
+                                        Text("删除")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showManageDialog = false }) {
+                    Text("完成")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun CloudVideoExtensionsPanel(
+    extensions: List<String>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var showManageDialog by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "识别为视频的扩展名",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "当前 ${extensions.size} 个扩展名。网盘列表、网盘文件夹任务、国产目录和 STRM 生成都会使用这份规则。",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            OutlinedButton(
+                onClick = { showManageDialog = true },
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("管理")
+            }
+        }
+    }
+
+    if (showManageDialog) {
+        AlertDialog(
+            onDismissRequest = { showManageDialog = false },
+            title = { Text("识别为视频的扩展名") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("填写扩展名即可，不需要带点，例如 mp4、mkv、rmvb。")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = onDraftChange,
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            shape = RoundedCornerShape(18.dp),
+                            label = { Text("视频扩展名") },
+                            placeholder = { Text("例如 mp4") }
+                        )
+                        Button(
+                            onClick = onAdd,
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Text("添加")
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (extensions.isEmpty()) {
+                            Text("暂无视频扩展名")
+                        } else {
+                            extensions.forEach { extension ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color.Black.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                                        .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = extension,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    TextButton(onClick = { onRemove(extension) }) {
                                         Text("删除")
                                     }
                                 }

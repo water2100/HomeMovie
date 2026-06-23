@@ -283,6 +283,7 @@ class CloudBrowserViewModel(
             path = folder.name,
             excludedVideoNames = settingsRepository.getCloudExcludedVideoNames(),
             skipBelowSizeBytes = settingsRepository.getCloudScrapeSkipBelowSizeBytes(),
+            videoExtensions = settingsRepository.getCloudVideoExtensions(),
             candidates = candidates,
             summary = summary,
             numberChecker = numberChecker,
@@ -523,6 +524,7 @@ class CloudBrowserViewModel(
         path: String,
         excludedVideoNames: Set<String>,
         skipBelowSizeBytes: Long,
+        videoExtensions: Collection<String>,
         candidates: MutableList<Cloud115FileItem>,
         summary: CloudFolderBatchSummary,
         numberChecker: CloudAddNumberChecker,
@@ -548,7 +550,7 @@ class CloudBrowserViewModel(
         }
         children
             .asSequence()
-            .filter { !it.isDirectory && it.isVideoFile() }
+            .filter { !it.isDirectory && it.isVideoFile(videoExtensions) }
             .sortedBy { it.name.lowercase() }
             .forEach { item ->
                 val reason = item.batchSkipReason(excludedVideoNames, skipBelowSizeBytes)
@@ -570,6 +572,7 @@ class CloudBrowserViewModel(
                     path = "$path/${child.name}",
                     excludedVideoNames = excludedVideoNames,
                     skipBelowSizeBytes = skipBelowSizeBytes,
+                    videoExtensions = videoExtensions,
                     candidates = candidates,
                     summary = summary,
                     numberChecker = numberChecker,
@@ -801,7 +804,9 @@ class CloudBrowserViewModel(
             runCatching {
                 val sortOption = _uiState.value.sortOption
                 val sortAscending = _uiState.value.sortAscending
+                val videoExtensions = settingsRepository.getCloudVideoExtensions()
                 val items = strmRepository.listFiles(current.cid)
+                    .filter { it.isDirectory || it.isVideoFile(videoExtensions) }
                 coroutineScope {
                     val addedPickcodes = async { strmRepository.existingPickcodesForVisibleItems(items) }
                     val addedDomesticFolderCids = async { domesticMovieRepository.addedFolderCidsForVisibleItems(items) }
@@ -987,8 +992,10 @@ private fun Cloud115FileItem.batchSkipReason(
     return null
 }
 
-private fun Cloud115FileItem.isVideoFile(): Boolean =
-    CLOUD_VIDEO_EXTENSIONS.any { name.endsWith(it, ignoreCase = true) }
+private fun Cloud115FileItem.isVideoFile(videoExtensions: Collection<String>): Boolean {
+    val extension = name.substringAfterLast('.', "").lowercase()
+    return extension in videoExtensions
+}
 
 private fun formatCloudSize(size: Long): String {
     if (size <= 0L) return "0 B"
@@ -1002,5 +1009,4 @@ private fun formatCloudSize(size: Long): String {
     return "%.1f %s".format(amount, units[index])
 }
 
-private val CLOUD_VIDEO_EXTENSIONS = listOf(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".iso", ".flv", ".webm")
 

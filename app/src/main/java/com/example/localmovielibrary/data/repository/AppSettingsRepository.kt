@@ -499,6 +499,48 @@ class AppSettingsRepository(context: Context) {
         saveCloudExcludedVideoNames(getCloudExcludedVideoNames() - name)
     }
 
+    fun getCloudVideoExtensions(): List<String> {
+        val stored = prefs.getString(KEY_CLOUD_VIDEO_EXTENSIONS_ORDER, null)
+            ?.split(",")
+            ?.mapNotNull { it.normalizedVideoExtensionOrNull() }
+            ?.distinct()
+            ?.takeIf { it.isNotEmpty() }
+        if (stored != null) return stored
+
+        val legacy = prefs.getStringSet(KEY_CLOUD_VIDEO_EXTENSIONS, null)
+            ?.mapNotNull { it.normalizedVideoExtensionOrNull() }
+            ?.toSet()
+            .orEmpty()
+        if (legacy.isEmpty()) return DEFAULT_CLOUD_VIDEO_EXTENSIONS
+
+        val ordered = DEFAULT_CLOUD_VIDEO_EXTENSIONS.filter { it in legacy }.toMutableList()
+        ordered += legacy.filter { it !in DEFAULT_CLOUD_VIDEO_EXTENSIONS }.sorted()
+        return ordered
+    }
+
+    fun saveCloudVideoExtensions(extensions: Collection<String>) {
+        val normalized = extensions
+            .mapNotNull { it.normalizedVideoExtensionOrNull() }
+            .distinct()
+            .ifEmpty { DEFAULT_CLOUD_VIDEO_EXTENSIONS }
+        prefs.edit()
+            .putString(KEY_CLOUD_VIDEO_EXTENSIONS_ORDER, normalized.joinToString(","))
+            .remove(KEY_CLOUD_VIDEO_EXTENSIONS)
+            .apply()
+    }
+
+    fun addCloudVideoExtension(extension: String) {
+        val cleaned = extension.normalizedVideoExtensionOrNull() ?: return
+        val current = getCloudVideoExtensions()
+        if (cleaned in current) return
+        saveCloudVideoExtensions(current + cleaned)
+    }
+
+    fun removeCloudVideoExtension(extension: String) {
+        val cleaned = extension.normalizedVideoExtensionOrNull() ?: return
+        saveCloudVideoExtensions(getCloudVideoExtensions().filterNot { it == cleaned })
+    }
+
     fun getCloudScrapeSkipBelowSizeMb(): Int =
         prefs.getInt(KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB, DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
             .coerceIn(0, MAX_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
@@ -579,6 +621,13 @@ class AppSettingsRepository(context: Context) {
     private fun String.normalizedMgstageNumberPrefixOrNull(): String? =
         normalizedNumberPrefixOrNull()
             ?.takeIf { value -> value.any { it.isLetter() } }
+
+    private fun String.normalizedVideoExtensionOrNull(): String? =
+        trim()
+            .removePrefix(".")
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+            .takeIf { it.isNotBlank() }
 
     private fun parseMgstageSearchPrefixAliases(jsonText: String): Map<String, String>? =
         runCatching {
@@ -677,6 +726,8 @@ class AppSettingsRepository(context: Context) {
         const val KEY_DOMESTIC_PAGE_ENABLED = "domestic_page_enabled"
         const val KEY_LIBRARY_NOMEDIA_ENABLED = "library_nomedia_enabled"
         const val KEY_CLOUD_ADD_BUTTON_MESSAGE_ENABLED = "cloud_add_button_message_enabled"
+        const val KEY_CLOUD_VIDEO_EXTENSIONS = "cloud_video_extensions"
+        const val KEY_CLOUD_VIDEO_EXTENSIONS_ORDER = "cloud_video_extensions_order"
         const val KEY_CLOUD_EXCLUDED_VIDEO_NAMES = "cloud_excluded_video_names"
         const val KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = "cloud_scrape_skip_below_size_mb"
         const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
@@ -772,6 +823,11 @@ class AppSettingsRepository(context: Context) {
             "乐鱼体育-ya116.com官方指定欧洲杯下注的网站.mp4",
             "有趣的小视频.mp4",
             "苍老师强力推荐.mp4"
+        )
+        val DEFAULT_CLOUD_VIDEO_EXTENSIONS = listOf(
+            "mp4", "mkv", "ts", "rmvb", "avi", "mov", "mpeg", "mpg",
+            "wmv", "3gp", "asf", "m4v", "flv", "m2ts", "tp", "f4v",
+            "rm", "iso", "webm"
         )
     }
 }

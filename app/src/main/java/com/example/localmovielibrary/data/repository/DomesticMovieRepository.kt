@@ -78,8 +78,9 @@ class DomesticMovieRepository(
         val existing = dao.getByFolderCid(folderCid)
 
         val children = cloud115Client.listFiles(folderCid)
+        val videoExtensions = settingsRepository.getCloudVideoExtensions()
         val videos = children
-            .filter { !it.isDirectory && it.isVideoFile() && !it.pickcode.isNullOrBlank() }
+            .filter { !it.isDirectory && it.isVideoFile(videoExtensions) && !it.pickcode.isNullOrBlank() }
             .sortedWith(compareBy<Cloud115FileItem> { it.name.naturalSortKey() }.thenBy { it.name.lowercase(Locale.ROOT) })
         val primaryVideo = videos.firstOrNull()
             ?: error("这个文件夹内没有可添加的视频")
@@ -202,9 +203,9 @@ class DomesticMovieRepository(
         return File(path).let { it.exists() && it.length() > 0 }
     }
 
-    private fun Cloud115FileItem.isVideoFile(): Boolean {
+    private fun Cloud115FileItem.isVideoFile(videoExtensions: Collection<String>): Boolean {
         val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        return ext in VIDEO_EXTENSIONS
+        return ext in videoExtensions
     }
 
     private fun Cloud115FileItem.isImageFile(): Boolean {
@@ -236,7 +237,6 @@ class DomesticMovieRepository(
 
     companion object {
         private const val IMAGE_INDEX_CACHE_TTL_MS = 5 * 60_000L
-        private val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "wmv", "m4v", "ts", "iso", "flv", "webm")
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
     }
 }

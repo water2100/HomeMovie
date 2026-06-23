@@ -21,8 +21,9 @@ class Cloud115StrmRepository(
     suspend fun listFiles(cid: Long): List<Cloud115FileItem> = cloud115Client.listFiles(cid)
 
     suspend fun existingPickcodesForVisibleItems(items: List<Cloud115FileItem>): Set<String> = withContext(Dispatchers.IO) {
+        val videoExtensions = settingsRepository.getCloudVideoExtensions()
         val pickcodes = items
-            .filter { !it.isDirectory && it.isVideoFile() }
+            .filter { !it.isDirectory && it.isVideoFile(videoExtensions) }
             .mapNotNull { it.pickcode?.takeIf(String::isNotBlank) }
             .toSet()
         recordRepository.existingPickcodesForVisibleItems(pickcodes)
@@ -30,7 +31,8 @@ class Cloud115StrmRepository(
 
     suspend fun generateStrmForVideo(item: Cloud115FileItem, forceDistinct: Boolean = false): GeneratedStrmFile = withContext(Dispatchers.IO) {
         if (item.isDirectory) error("请选择一个视频文件")
-        if (!item.isVideoFile()) error("当前文件不是支持的视频格式")
+        val videoExtensions = settingsRepository.getCloudVideoExtensions()
+        if (!item.isVideoFile(videoExtensions)) error("当前文件不是支持的视频格式")
         val pickcode = item.pickcode?.takeIf { it.isNotBlank() } ?: error("这个文件没有 pickcode，无法生成 STRM")
         recordRepository.getCached(pickcode)?.let { existing ->
             return@withContext GeneratedStrmFile(
@@ -200,14 +202,15 @@ class Cloud115StrmRepository(
             ?.let { Uri.decode(pathSegments[it + 1]) }
     }
 
-    private fun Cloud115FileItem.isVideoFile(): Boolean =
-        VIDEO_EXTENSIONS.any { name.endsWith(it, ignoreCase = true) }
+    private fun Cloud115FileItem.isVideoFile(videoExtensions: Collection<String>): Boolean {
+        val extension = name.substringAfterLast('.', "").lowercase()
+        return extension in videoExtensions
+    }
 
     private fun String.sanitizeFileName(): String =
         replace(Regex("""[\\/:*?"<>|]"""), "_").trim().ifBlank { "video" }
 
     companion object {
-        val VIDEO_EXTENSIONS = listOf(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".iso", ".flv", ".webm")
     }
 }
 

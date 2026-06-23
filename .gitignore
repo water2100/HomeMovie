@@ -2,6 +2,9 @@
 .idea/
 .kotlin/
 .codex_tmp/
+.agents/
+.trellis/
+AGENTS.md
 build/
 local.properties
 *.iml

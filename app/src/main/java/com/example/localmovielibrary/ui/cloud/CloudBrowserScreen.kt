@@ -354,8 +354,7 @@ private fun CloudFileList(
             contentType = {
                 when {
                     it.isDirectory -> "cloud-folder"
-                    it.isVideoFile() -> "cloud-video"
-                    else -> "cloud-file"
+                    else -> "cloud-video"
                 }
             }
         ) { item ->
@@ -363,7 +362,7 @@ private fun CloudFileList(
                 item = item,
                 isAdding = item.pickcode != null && item.pickcode in addingPickcodes,
                 isAdded = item.pickcode != null && item.pickcode in addedPickcodes,
-                isExcludedVideo = item.isVideoFile() && item.name.trim() in excludedVideoNames,
+                isExcludedVideo = !item.isDirectory && item.name.trim() in excludedVideoNames,
                 showDomesticAdd = isDomesticRoot && item.isDirectory && item.cid != null,
                 isDomesticAdding = item.cid != null && item.cid in addingDomesticFolderCids,
                 isDomesticAdded = item.cid != null && item.cid in addedDomesticFolderCids,
@@ -415,7 +414,7 @@ private fun CloudFileRow(
                                 if (folderCid.isNotBlank()) folderMenuExpanded = true
                             }
                         )
-                        item.isVideoFile() -> Modifier.clickable(onClick = onPlayVideo)
+                        !item.isDirectory -> Modifier.clickable(onClick = onPlayVideo)
                         else -> Modifier
                     }
                 )
@@ -468,7 +467,7 @@ private fun CloudFileRow(
                     isAdded = false,
                     onAddVideo = onAddFolder
                 )
-                item.isVideoFile() && !isExcludedVideo -> AddVideoButton(isAdding = isAdding, isAdded = isAdded, onAddVideo = onAddVideo)
+                !item.isDirectory && !isExcludedVideo -> AddVideoButton(isAdding = isAdding, isAdded = isAdded, onAddVideo = onAddVideo)
             }
         }
 
@@ -575,7 +574,3 @@ private fun Cloud115FileItem.cloudSubtitle(): String {
     }
 }
 
-private fun Cloud115FileItem.isVideoFile(): Boolean =
-    videoExtensions.any { name.endsWith(it, ignoreCase = true) }
-
-private val videoExtensions = listOf(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".iso", ".flv", ".webm")
