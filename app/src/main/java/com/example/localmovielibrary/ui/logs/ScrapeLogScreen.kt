@@ -6,11 +6,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -60,6 +62,7 @@ fun ScrapeLogScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .navigationBarsPadding()
             .background(LogBackground)
     ) {
         Row(
@@ -124,33 +127,47 @@ fun ScrapeLogScreen(
 }
 
 @Composable
-private fun LogContent(
+private fun ColumnScope.LogContent(
     uiState: ScrapeLogUiState,
     onLoadMore: () -> Unit
 ) {
-    Box(
+    Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
+            .weight(1f)
             .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(18.dp))
-            .padding(14.dp)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         when {
             uiState.isLoading -> LogText("正在读取日志...")
             uiState.visibleLines.isEmpty() -> LogText("当天暂无日志")
-            else -> LogTextContent(
-                text = uiState.visibleLines.joinToString("\n"),
-                hasMoreLines = uiState.hasMoreLines,
-                visibleLineCount = uiState.visibleLineCount,
-                totalLineCount = uiState.totalLineCount,
-                onLoadMore = onLoadMore
-            )
+            else -> {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    LogTextContent(
+                        lines = uiState.visibleLines,
+                        hasMoreLines = uiState.hasMoreLines,
+                        visibleLineCount = uiState.visibleLineCount,
+                        totalLineCount = uiState.totalLineCount,
+                        onLoadMore = onLoadMore
+                    )
+                }
+                OutlinedButton(
+                    onClick = onLoadMore,
+                    enabled = uiState.hasMoreLines,
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("日志 ${uiState.visibleLineCount} / ${uiState.totalLineCount}${if (uiState.hasMoreLines) " · 加载更多" else " · 已全部显示"}")
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun LogTextContent(
-    text: String,
+    lines: List<String>,
     hasMoreLines: Boolean,
     visibleLineCount: Int,
     totalLineCount: Int,
@@ -167,17 +184,44 @@ private fun LogTextContent(
                 .fillMaxWidth()
                 .verticalScroll(scrollState)
         ) {
-            LogText(text)
-        }
-        if (hasMoreLines) {
-            OutlinedButton(
-                onClick = onLoadMore,
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("加载更多 $visibleLineCount / $totalLineCount")
+            Column {
+                lines.forEach { line ->
+                    Text(
+                        text = line,
+                        color = line.logLineColor(),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
+        OutlinedButton(
+            onClick = onLoadMore,
+            enabled = hasMoreLines,
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                if (hasMoreLines) {
+                    "加载更多日志 $visibleLineCount / $totalLineCount"
+                } else {
+                    "已显示全部日志 $visibleLineCount / $totalLineCount"
+                }
+            )
+        }
+    }
+}
+
+private fun String.logLineColor(): Color {
+    val normalized = lowercase()
+    return when {
+        listOf("failed", "error", "exception", "失败", "错误", "异常", "http 4", "http 5")
+            .any(normalized::contains) -> Color(0xFFFF8A80)
+        listOf("warning", "warn", "skipped", "retry", "跳过", "警告", "重试", "未刮削")
+            .any(normalized::contains) -> Color(0xFFFFD180)
+        listOf("success", "succeeded", "finished", "completed", "成功", "完成", "已写入")
+            .any(normalized::contains) -> Color(0xFF80CBC4)
+        else -> Color.White.copy(alpha = 0.78f)
     }
 }
 

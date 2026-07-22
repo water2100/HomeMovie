@@ -40,11 +40,23 @@ class CloudStrmRecordRepository(
         dao.getExistingRecords(pickcodes.toList())
     }
 
+    suspend fun getByMovieId(movieId: Long): List<CloudStrmRecordEntity> = withContext(Dispatchers.IO) {
+        dao.getByMovieId(movieId)
+    }
+
+    suspend fun saveVideoSize(pickcode: String, sizeBytes: Long) = withContext(Dispatchers.IO) {
+        if (sizeBytes <= 0L) return@withContext
+        dao.get(pickcode)?.let { record ->
+            dao.upsert(record.copy(videoSizeBytes = sizeBytes, updatedAt = System.currentTimeMillis()))
+        }
+    }
+
     suspend fun upsertGenerated(
         pickcode: String,
         fileName: String,
         strmUri: String,
         libraryRootUri: String?,
+        videoSizeBytes: Long? = null,
         movieId: Long? = null
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
@@ -60,6 +72,7 @@ class CloudStrmRecordRepository(
                 strmUri = strmUri,
                 libraryRootUri = libraryRootUri,
                 movieId = movieId ?: existing?.movieId,
+                videoSizeBytes = videoSizeBytes ?: existing?.videoSizeBytes,
                 createdAt = existing?.createdAt ?: now,
                 updatedAt = now
             )
@@ -198,6 +211,7 @@ class CloudStrmRecordRepository(
                     strmUri = targetFile.uri.toString(),
                     libraryRootUri = rootUri,
                     movieId = null,
+                    videoSizeBytes = null,
                     createdAt = now,
                     updatedAt = now
                 )
@@ -242,6 +256,7 @@ class CloudStrmRecordRepository(
             strmUri = videoUri,
             libraryRootUri = libraryRootUri,
             movieId = id,
+            videoSizeBytes = null,
             createdAt = scannedAtMillis.takeIf { it > 0 } ?: now,
             updatedAt = now
         )

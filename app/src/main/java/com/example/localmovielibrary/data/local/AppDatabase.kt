@@ -14,7 +14,7 @@ import androidx.room.TypeConverters
         DomesticVideoSourceEntity::class,
         CloudFolderBatchTaskEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = false
 )
 @TypeConverters(MovieTypeConverters::class)

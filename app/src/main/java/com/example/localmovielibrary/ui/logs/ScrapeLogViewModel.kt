@@ -14,8 +14,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private const val INITIAL_VISIBLE_LINES = 180
-private const val LOG_PAGE_SIZE = 180
+private const val INITIAL_VISIBLE_LINES = 200
+private const val LOG_PAGE_SIZE = 200
 private const val LOG_UPDATE_DEBOUNCE_MS = 120L
 
 @OptIn(FlowPreview::class)

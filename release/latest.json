@@ -1,12 +1,14 @@
 {
-  "versionCode": 17,
-  "versionName": "2.0.2",
-  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v2.0.2/HomeMovie-v2.0.2-debug.apk",
-  "sha256": "E9F9CD4AE295665C7A7448F9FCB5EA6D004C4ED1580BA0F1D1687BB293CE906B",
-  "size": 22886047,
+  "versionCode": 19,
+  "versionName": "2.0.4",
+  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v2.0.4/HomeMovie-v2.0.4-debug.apk",
+  "sha256": "7604E75722AD7F2639D8417F8217D2308A912E88BF0D0A02673D2010E27086FE",
+  "size": 23066267,
   "notes": [
-    "修复影片详情页删除可能无响应的问题：删除时不再递归扫描整个影片库，避免大目录下卡住。",
-    "优化 STRM 删除清理：按 movieId、pickcode 和 strmUri 联动清理影片记录与网盘已添加索引，减少顽固残留。",
-    "优化 STRM 索引重建：重建时会清空旧索引后重新写入，避免旧记录继续残留。"
+    "新增播放器快进与后退时间设置。",
+    "最近添加会随影视库刷新立即同步。",
+    "修复最近播放记录及分集、版本、STRM 播放地址的匹配。",
+    "精简影片库排序菜单，移除无效、重复或不可靠的排序项。",
+    "优化自定义 JSON 刮削、115 网盘目录加载与字幕功能。"
   ]
 }

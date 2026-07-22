@@ -20,7 +20,10 @@ import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.ScrapeTaskSummary
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
+import com.example.localmovielibrary.scraper.CustomJsonScrapeConfig
+import com.example.localmovielibrary.scraper.CustomJsonPathCandidate
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.scraper.ScrapedMovieInfo
 import com.example.localmovielibrary.util.NumberRecognitionRules
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -48,6 +51,7 @@ class SettingsViewModel(
     private var manualScrapeJob: Job? = null
     private var appUpdateJob: Job? = null
     private var mgstageRuleJob: Job? = null
+    private var customJsonTestJob: Job? = null
 
     init {
         refreshScrapeTaskSummary()
@@ -276,6 +280,14 @@ class SettingsViewModel(
                 savedMessage = null
             )
         }
+    }
+
+    fun updateScrapeProxyAddress(value: String) {
+        _uiState.update { it.copy(scrapeProxyAddress = value.take(300), savedMessage = null) }
+    }
+
+    fun updateScrapeProxyEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(useScrapeProxyEnabled = enabled, savedMessage = null) }
     }
 
     fun checkForAppUpdate() {
@@ -578,6 +590,11 @@ class SettingsViewModel(
         _uiState.update { it.copy(cloudAddButtonMessageEnabled = enabled, savedMessage = null) }
     }
 
+    fun updateCloudDeleteEnabled(enabled: Boolean) {
+        repository.saveCloudDeleteEnabled(enabled)
+        _uiState.update { it.copy(cloudDeleteEnabled = enabled, savedMessage = null) }
+    }
+
     fun updateNewExcludedVideoName(value: String) {
         _uiState.update { it.copy(newExcludedVideoName = value, savedMessage = null) }
     }
@@ -612,6 +629,16 @@ class SettingsViewModel(
         }
     }
 
+    fun updatePlayerSeekBackSeconds(value: Int) {
+        repository.savePlayerSeekBackSeconds(value)
+        _uiState.update { it.copy(playerSeekBackSeconds = repository.getPlayerSeekBackSeconds(), savedMessage = "后退时间已调整") }
+    }
+
+    fun updatePlayerSeekForwardSeconds(value: Int) {
+        repository.savePlayerSeekForwardSeconds(value)
+        _uiState.update { it.copy(playerSeekForwardSeconds = repository.getPlayerSeekForwardSeconds(), savedMessage = "快进时间已调整") }
+    }
+
     fun updateExternalSubtitleBottomPaddingPercent(value: Int) {
         repository.saveExternalSubtitleBottomPaddingPercent(value)
         _uiState.update {
@@ -632,6 +659,21 @@ class SettingsViewModel(
         }
     }
 
+    fun updateStartupAnimationEnabled(enabled: Boolean) {
+        repository.saveStartupAnimationEnabled(enabled)
+        _uiState.update { it.copy(startupAnimationEnabled = enabled, savedMessage = null) }
+    }
+
+    fun updateStartupAnimationImageUri(uri: String) {
+        repository.saveStartupAnimationImageUri(uri)
+        _uiState.update { it.copy(startupAnimationImageUri = uri, savedMessage = "已选择开场动画图片") }
+    }
+
+    fun clearStartupAnimationImage() {
+        repository.clearStartupAnimationImageUri()
+        _uiState.update { it.copy(startupAnimationImageUri = "", savedMessage = "已恢复默认开场画面") }
+    }
+
     fun save() {
         val state = _uiState.value
         repository.saveCookies(state.cookies)
@@ -644,6 +686,8 @@ class SettingsViewModel(
         repository.saveDefaultScrapeSource(state.defaultScrapeSource)
         repository.saveImageDownloadRetryCount(state.imageDownloadRetryCountText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT)
         repository.saveScrapeConcurrencyLimit(state.scrapeConcurrencyLimitText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_SCRAPE_CONCURRENCY_LIMIT)
+        repository.saveScrapeProxyAddress(state.scrapeProxyAddress)
+        repository.saveScrapeProxyEnabled(state.useScrapeProxyEnabled)
         repository.saveDmm2SkippedNumberPrefixes(state.dmm2SkippedPrefixes.toSet())
         repository.saveRemoteScrapeConfigUrl(state.remoteScrapeConfigUrl)
         repository.saveCustomMgstagePrefixNumberMappings(state.mgstageCustomPrefixes)
@@ -651,9 +695,134 @@ class SettingsViewModel(
         repository.saveDomesticPageEnabled(state.domesticPageEnabled)
         repository.saveLibraryNoMediaEnabled(state.libraryNoMediaEnabled)
         repository.saveCloudAddButtonMessageEnabled(state.cloudAddButtonMessageEnabled)
+        repository.saveCloudDeleteEnabled(state.cloudDeleteEnabled)
         repository.saveCloudExcludedVideoNames(state.cloudExcludedVideoNames.toSet())
         repository.saveCloudScrapeSkipBelowSizeMb(state.cloudScrapeSkipBelowSizeMbText.toIntOrNull() ?: AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB)
+        repository.saveCustomJsonScrapeConfigs(state.customJsonScrapeConfigs, state.selectedCustomJsonScrapeConfigIndex)
         _uiState.value = loadState().copy(savedMessage = "设置已保存")
+    }
+
+    fun updateCustomJsonScrapeConfig(config: CustomJsonScrapeConfig) {
+        _uiState.update { state ->
+            val configs = state.customJsonScrapeConfigs.toMutableList()
+            val selected = state.selectedCustomJsonScrapeConfigIndex.coerceIn(0, (configs.size - 1).coerceAtLeast(0))
+            if (configs.isEmpty()) configs += config else configs[selected] = config
+            state.copy(
+                customJsonScrapeConfig = config,
+                customJsonScrapeConfigs = configs,
+                savedMessage = null
+            )
+        }
+    }
+
+    fun selectCustomJsonScrapeConfig(index: Int) {
+        _uiState.update { state ->
+            val selected = index.coerceIn(0, (state.customJsonScrapeConfigs.size - 1).coerceAtLeast(0))
+            val config = state.customJsonScrapeConfigs.getOrElse(selected) { state.customJsonScrapeConfig }
+            state.copy(
+                selectedCustomJsonScrapeConfigIndex = selected,
+                customJsonScrapeConfig = config,
+                customJsonTestResult = null,
+                customJsonPathCandidates = emptyList(),
+                savedMessage = null
+            )
+        }
+    }
+
+    fun addCustomJsonScrapeConfig() {
+        _uiState.update { state ->
+            val configs = state.customJsonScrapeConfigs + CustomJsonScrapeConfig(name = "自定义 JSON ${state.customJsonScrapeConfigs.size + 1}")
+            state.copy(
+                customJsonScrapeConfigs = configs,
+                selectedCustomJsonScrapeConfigIndex = configs.lastIndex,
+                customJsonScrapeConfig = configs.last(),
+                customJsonTestResult = null,
+                customJsonPathCandidates = emptyList(),
+                savedMessage = null,
+            )
+        }
+    }
+
+    fun duplicateCustomJsonScrapeConfig() {
+        _uiState.update { state ->
+            val copy = state.customJsonScrapeConfig.copy(name = state.customJsonScrapeConfig.name.ifBlank { "自定义 JSON" } + " 副本")
+            val configs = state.customJsonScrapeConfigs + copy
+            state.copy(
+                customJsonScrapeConfigs = configs,
+                selectedCustomJsonScrapeConfigIndex = configs.lastIndex,
+                customJsonScrapeConfig = copy,
+                customJsonTestResult = null,
+                customJsonPathCandidates = emptyList(),
+                savedMessage = null,
+            )
+        }
+    }
+
+    fun deleteCustomJsonScrapeConfig() {
+        _uiState.update { state ->
+            if (state.customJsonScrapeConfigs.size <= 1) {
+                val reset = CustomJsonScrapeConfig(name = "自定义 JSON")
+                state.copy(
+                    customJsonScrapeConfigs = listOf(reset),
+                    selectedCustomJsonScrapeConfigIndex = 0,
+                    customJsonScrapeConfig = reset,
+                    customJsonTestResult = null,
+                    customJsonPathCandidates = emptyList(),
+                    savedMessage = null,
+                )
+            } else {
+                val configs = state.customJsonScrapeConfigs.toMutableList().also { it.removeAt(state.selectedCustomJsonScrapeConfigIndex.coerceIn(0, it.lastIndex)) }
+                val selected = state.selectedCustomJsonScrapeConfigIndex.coerceAtMost(configs.lastIndex)
+                state.copy(
+                    customJsonScrapeConfigs = configs,
+                    selectedCustomJsonScrapeConfigIndex = selected,
+                    customJsonScrapeConfig = configs[selected],
+                    customJsonTestResult = null,
+                    customJsonPathCandidates = emptyList(),
+                    savedMessage = null,
+                )
+            }
+        }
+    }
+
+    fun dismissCustomJsonTestResult() {
+        _uiState.update { it.copy(customJsonTestResult = null) }
+    }
+
+    fun testCustomJsonScrapeConfig() {
+        val config = _uiState.value.customJsonScrapeConfig
+        customJsonTestJob?.cancel()
+        customJsonTestJob = viewModelScope.launch {
+            _uiState.update { it.copy(isTestingCustomJsonScrape = true, savedMessage = null) }
+            repository.saveCustomJsonScrapeConfigs(_uiState.value.customJsonScrapeConfigs, _uiState.value.selectedCustomJsonScrapeConfigIndex)
+            runCatching {
+                val sampleNumber = config.sampleNumber.ifBlank { "SSIS-115" }
+                val info = scrapeRepository.testCustomJsonScrape(sampleNumber)
+                val candidates = scrapeRepository.previewCustomJsonPathCandidates(sampleNumber)
+                info to candidates
+            }
+                .onSuccess { (info, candidates) ->
+                    _uiState.update {
+                        it.copy(
+                            isTestingCustomJsonScrape = false,
+                            customJsonTestResult = info,
+                            customJsonPathCandidates = candidates,
+                            savedMessage = "自定义 JSON 测试成功：" + info.title.ifBlank { info.number }
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    _uiState.update {
+                        it.copy(
+                            isTestingCustomJsonScrape = false,
+                            customJsonTestResult = null,
+                            customJsonPathCandidates = emptyList(),
+                            savedMessage = error.message ?: "自定义 JSON 测试失败"
+                        )
+                    }
+                }
+        }
     }
 
     fun scanLibrary(uri: Uri) {
@@ -946,6 +1115,8 @@ class SettingsViewModel(
         scrapeTaskMessage: String = ""
     ): SettingsUiState {
         val lastUpdateResult = appUpdateRepository.lastCheckResult
+        val customJsonConfigs = repository.getCustomJsonScrapeConfigs()
+        val selectedCustomJsonConfigIndex = repository.getSelectedCustomJsonScrapeConfigIndex()
         return SettingsUiState(
             cookies = repository.getCookies(),
             updateManifestUrl = repository.getUpdateManifestUrl(),
@@ -966,8 +1137,13 @@ class SettingsViewModel(
             defaultScrapeSource = repository.getDefaultScrapeSource(),
             priorityScrapeSources = repository.getPriorityScrapeSources(),
             priorityScrapeSourceOptions = AppSettingsRepository.PRIORITY_SCRAPE_SOURCE_OPTIONS,
+            customJsonScrapeConfigs = customJsonConfigs,
+            selectedCustomJsonScrapeConfigIndex = selectedCustomJsonConfigIndex,
+            customJsonScrapeConfig = customJsonConfigs.getOrElse(selectedCustomJsonConfigIndex) { customJsonConfigs.firstOrNull() ?: CustomJsonScrapeConfig() },
             imageDownloadRetryCountText = repository.getImageDownloadRetryCount().toString(),
             scrapeConcurrencyLimitText = repository.getScrapeConcurrencyLimit().toString(),
+            scrapeProxyAddress = repository.getScrapeProxyAddress(),
+            useScrapeProxyEnabled = repository.isScrapeProxyEnabled(),
             dmm2SkippedPrefixes = repository.getDmm2SkippedNumberPrefixes().toList().sorted(),
             remoteScrapeConfigUrl = repository.getRemoteScrapeConfigUrl(),
             mgstageCustomPrefixes = repository.getCustomMgstagePrefixNumberMappings().toSortedMap(),
@@ -981,11 +1157,16 @@ class SettingsViewModel(
             domesticPageEnabled = repository.isDomesticPageEnabled(),
             libraryNoMediaEnabled = repository.isLibraryNoMediaEnabled(),
             cloudAddButtonMessageEnabled = repository.isCloudAddButtonMessageEnabled(),
+            cloudDeleteEnabled = repository.isCloudDeleteEnabled(),
             cloudExcludedVideoNames = repository.getCloudExcludedVideoNames().toList().sorted(),
             cloudScrapeSkipBelowSizeMbText = repository.getCloudScrapeSkipBelowSizeMb().toString(),
+            playerSeekBackSeconds = repository.getPlayerSeekBackSeconds(),
+            playerSeekForwardSeconds = repository.getPlayerSeekForwardSeconds(),
             externalSubtitleFontSizeSp = repository.getExternalSubtitleFontSizeSp(),
             externalSubtitleBottomPaddingPercent = repository.getExternalSubtitleBottomPaddingPercent(),
             externalSubtitleBackgroundAlphaPercent = repository.getExternalSubtitleBackgroundAlphaPercent(),
+            startupAnimationEnabled = repository.isStartupAnimationEnabled(),
+            startupAnimationImageUri = repository.getStartupAnimationImageUri(),
             selectedCloud115LoginApp = Cloud115LoginApps.find(repository.getCloud115LoginApp()),
             savedCloud115Accounts = emptyList(),
             scrapeTaskSummary = scrapeTaskSummary,
@@ -1047,8 +1228,16 @@ data class SettingsUiState(
     val defaultScrapeSource: ScrapeSource = ScrapeSource.Priority,
     val priorityScrapeSources: List<ScrapeSource> = AppSettingsRepository.DEFAULT_PRIORITY_SCRAPE_SOURCES,
     val priorityScrapeSourceOptions: List<ScrapeSource> = AppSettingsRepository.PRIORITY_SCRAPE_SOURCE_OPTIONS,
+    val customJsonScrapeConfigs: List<CustomJsonScrapeConfig> = listOf(CustomJsonScrapeConfig()),
+    val selectedCustomJsonScrapeConfigIndex: Int = 0,
+    val customJsonScrapeConfig: CustomJsonScrapeConfig = CustomJsonScrapeConfig(),
+    val isTestingCustomJsonScrape: Boolean = false,
+    val customJsonTestResult: ScrapedMovieInfo? = null,
+    val customJsonPathCandidates: List<CustomJsonPathCandidate> = emptyList(),
     val imageDownloadRetryCountText: String = AppSettingsRepository.DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT.toString(),
     val scrapeConcurrencyLimitText: String = AppSettingsRepository.DEFAULT_SCRAPE_CONCURRENCY_LIMIT.toString(),
+    val scrapeProxyAddress: String = "",
+    val useScrapeProxyEnabled: Boolean = false,
     val dmm2SkippedPrefixes: List<String> = emptyList(),
     val newDmm2SkippedPrefix: String = "",
     val remoteScrapeConfigUrl: String = AppSettingsRepository.DEFAULT_REMOTE_SCRAPE_CONFIG_URL,
@@ -1069,12 +1258,17 @@ data class SettingsUiState(
     val domesticPageEnabled: Boolean = false,
     val libraryNoMediaEnabled: Boolean = true,
     val cloudAddButtonMessageEnabled: Boolean = true,
+    val cloudDeleteEnabled: Boolean = false,
     val cloudExcludedVideoNames: List<String> = emptyList(),
     val newExcludedVideoName: String = "",
     val cloudScrapeSkipBelowSizeMbText: String = AppSettingsRepository.DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB.toString(),
+    val playerSeekBackSeconds: Int = AppSettingsRepository.DEFAULT_PLAYER_SEEK_SECONDS,
+    val playerSeekForwardSeconds: Int = AppSettingsRepository.DEFAULT_PLAYER_SEEK_SECONDS,
     val externalSubtitleFontSizeSp: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP,
     val externalSubtitleBottomPaddingPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT,
     val externalSubtitleBackgroundAlphaPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT,
+    val startupAnimationEnabled: Boolean = false,
+    val startupAnimationImageUri: String = "",
     val selectedCloud115LoginApp: Cloud115LoginApp = Cloud115LoginApps.default,
     val savedCloud115Accounts: List<SavedCloud115Account> = emptyList(),
     val selectedCloud115AccountFileName: String? = null,

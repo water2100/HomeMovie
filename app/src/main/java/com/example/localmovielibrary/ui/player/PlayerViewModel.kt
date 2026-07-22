@@ -40,6 +40,7 @@ import com.example.localmovielibrary.subtitle.LocalSubtitleStore
 import com.example.localmovielibrary.subtitle.LocalSubtitleFile
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.subtitle.SubtitleSearchResult
+import com.example.localmovielibrary.subtitle.SubtitleTimeShiftStore
 import com.example.localmovielibrary.subtitle.XunleiSubtitleRepository
 import com.example.localmovielibrary.subtitle.normalizeCloud115SubtitleNumber
 import com.example.localmovielibrary.subtitle.normalizeDefaultSubtitleNumber
@@ -57,6 +58,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -77,15 +79,20 @@ class PlayerViewModel(
     private var speedIndex = 1
     private val resolver = PlaybackResolver(application.contentResolver, directLinkRepository)
     private val localSubtitleStore = LocalSubtitleStore(application, settingsRepository)
+    private val subtitleTimeShiftStore = SubtitleTimeShiftStore(application)
     private val avsubtitlesSubtitleRepository = AvsubtitlesSubtitleRepository(application, settingsRepository)
     private val xunleiSubtitleRepository = XunleiSubtitleRepository(application, settingsRepository)
     private val cloud115SubtitleRepository = Cloud115SubtitleRepository(application, settingsRepository, cloud115Client)
     private val errorLog = RuntimeErrorLog(application)
-    private var mediaKey = videoUri.toString()
+    private val subtitleSearchCache = mutableMapOf<String, CachedSubtitleSearch>()
+    private val playbackMediaKey = videoUri.toString()
+    private var mediaKey = playbackMediaKey
     private var subtitleStorageSourceUri: Uri? = null
+    private var activeExternalSubtitle: LocalSubtitleFile? = null
     private val progressPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var progressJob: Job? = null
     private var initialSubtitleJob: Job? = null
+    private var subtitleOffsetApplyJob: Job? = null
     private var lastPersistedPositionMs = Long.MIN_VALUE
     private var lastPersistedDurationMs = 0L
     private var lastPersistedAtMs = 0L
@@ -123,7 +130,7 @@ class PlayerViewModel(
                     }
                     showLoading("正在启动播放器...")
                     val subtitleFeaturesEnabled = canUseLibrarySubtitleFeatures(request)
-                    val resumePositionMs = playbackProgressRepository.getResumePosition(mediaKey)
+                    val resumePositionMs = playbackProgressRepository.getResumePosition(playbackMediaKey)
                     val player = createPlayer(request, resumePositionMs)
                     _uiState.value = PlayerUiState(
                         playbackRequest = request,
@@ -169,8 +176,8 @@ class PlayerViewModel(
 
         return ExoPlayer.Builder(application)
             .setMediaSourceFactory(mediaSourceFactory)
-            .setSeekBackIncrementMs(10_000)
-            .setSeekForwardIncrementMs(10_000)
+            .setSeekBackIncrementMs(settingsRepository.getPlayerSeekBackSeconds() * 1_000L)
+            .setSeekForwardIncrementMs(settingsRepository.getPlayerSeekForwardSeconds() * 1_000L)
             .build()
             .apply {
                 setAudioAttributes(
@@ -360,7 +367,7 @@ class PlayerViewModel(
         viewModelScope.launch {
             val previousPlayer = _uiState.value.player
             val resumePositionMs = previousPlayer?.currentPosition?.coerceAtLeast(0L)
-                ?: playbackProgressRepository.getResumePosition(mediaKey)
+                ?: playbackProgressRepository.getResumePosition(playbackMediaKey)
             previousPlayer?.let { persistProgress(it, force = true) }
             progressJob?.cancel()
             initialSubtitleJob?.cancel()
@@ -513,16 +520,19 @@ class PlayerViewModel(
         val number = normalizeMovieNumber(fileName) ?: normalizeMovieNumber(title)
         val provider = settingsRepository.getSubtitleSearchProvider()
         val subtitleNumber = number?.let { normalizeSubtitleSearchNumber(it, provider) }
+        val cachedSearch = subtitleNumber
+            ?.takeIf { it.isNotBlank() }
+            ?.let { subtitleSearchCache[subtitleSearchKey(provider, it, videoDurationMs)] }
         _uiState.update {
             it.copy(
                 externalSubtitlePanelVisible = true,
                 externalSubtitleQueryNumber = subtitleNumber.orEmpty(),
                 externalSubtitleProvider = provider,
-                externalSubtitleMessage = null,
+                externalSubtitleMessage = cachedSearch?.message,
                 externalSubtitleError = null,
                 externalSubtitleSearching = false,
                 externalSubtitleDownloading = false,
-                onlineSubtitles = emptyList()
+                onlineSubtitles = cachedSearch?.results ?: it.onlineSubtitles
             )
         }
         viewModelScope.launch {
@@ -542,7 +552,7 @@ class PlayerViewModel(
             }
             _uiState.update {
                 it.copy(
-                    externalSubtitleMessage = if (localFiles.isNotEmpty()) {
+                    externalSubtitleMessage = cachedSearch?.message ?: if (localFiles.isNotEmpty()) {
                         "\u5DF2\u627E\u5230\u672C\u5730\u5B57\u5E55\uFF0C\u53EF\u76F4\u63A5\u52A0\u8F7D\uFF1B\u4E5F\u53EF\u4EE5\u624B\u52A8\u641C\u7D22\u5728\u7EBF\u5B57\u5E55"
                     } else {
                         "\u5F53\u524D\u76EE\u5F55\u6CA1\u6709\u672C\u5730\u5B57\u5E55\uFF0C\u53EF\u624B\u52A8\u641C\u7D22\u5728\u7EBF\u5B57\u5E55"
@@ -593,6 +603,18 @@ class PlayerViewModel(
             return
         }
         if (_uiState.value.externalSubtitleSearching) return
+        val cacheKey = subtitleSearchKey(provider, number, videoDurationMs)
+        subtitleSearchCache[cacheKey]?.let { cached ->
+            _uiState.update {
+                it.copy(
+                    onlineSubtitles = cached.results,
+                    externalSubtitleSearching = false,
+                    externalSubtitleMessage = cached.message,
+                    externalSubtitleError = null
+                )
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 externalSubtitleSearching = true,
@@ -609,19 +631,13 @@ class PlayerViewModel(
                     SubtitleSearchProvider.Cloud115 -> cloud115SubtitleRepository.search(number)
                 }
             }.onSuccess { results ->
+                val message = subtitleSearchEmptyMessage(provider, results)
+                subtitleSearchCache[cacheKey] = CachedSubtitleSearch(results = results, message = message)
                 _uiState.update {
                     it.copy(
                         onlineSubtitles = results,
                         externalSubtitleSearching = false,
-                        externalSubtitleMessage = if (results.isEmpty()) {
-                            if (provider == SubtitleSearchProvider.Cloud115) {
-                                "网盘中没有找到包含番号的字幕文件"
-                            } else {
-                                "\u6CA1\u6709\u627E\u5230\u65F6\u957F\u5339\u914D\u7684\u5B57\u5E55"
-                            }
-                        } else {
-                            null
-                        },
+                        externalSubtitleMessage = message,
                         externalSubtitleError = null
                     )
                 }
@@ -660,6 +676,7 @@ class PlayerViewModel(
             runCatching {
                 val wasActive = subtitle.name == _uiState.value.activeExternalSubtitleName
                 if (wasActive) {
+                    activeExternalSubtitle = null
                     settingsRepository.saveExternalSubtitleEnabled(mediaKey, false)
                     clearExternalSubtitleTrack(closePanel = false)
                 }
@@ -688,6 +705,7 @@ class PlayerViewModel(
     fun setExternalSubtitleEnabled(enabled: Boolean) {
         if (!_uiState.value.subtitleFeaturesEnabled) return
         if (!enabled) {
+            activeExternalSubtitle = null
             settingsRepository.saveExternalSubtitleEnabled(mediaKey, false)
             clearExternalSubtitleTrack(closePanel = false)
             return
@@ -764,14 +782,38 @@ class PlayerViewModel(
                     details = subtitleLogDetails(result),
                     error = error
                 )
+                val shouldRemoveResult = result.provider == SubtitleSearchProvider.Xunlei
+                if (shouldRemoveResult) {
+                    removeFailedXunleiSubtitleFromSearchResults(result)
+                }
                 _uiState.update {
                     it.copy(
                         externalSubtitleDownloading = false,
                         externalSubtitleMessage = null,
-                        externalSubtitleError = error.message ?: "\u5B57\u5E55\u4E0B\u8F7D\u5931\u8D25"
+                        externalSubtitleError = if (shouldRemoveResult) {
+                            "迅雷字幕文件不存在或下载失败，已从当前列表移除"
+                        } else {
+                            error.message ?: "字幕下载失败"
+                        }
                     )
                 }
             }
+        }
+    }
+
+    private fun removeFailedXunleiSubtitleFromSearchResults(result: SubtitleSearchResult) {
+        val identity = result.searchIdentity()
+        subtitleSearchCache.entries.toList().forEach { (key, cached) ->
+            val remaining = cached.results.filterNot { it.searchIdentity() == identity }
+            if (remaining.size != cached.results.size) {
+                subtitleSearchCache[key] = cached.copy(
+                    results = remaining,
+                    message = subtitleSearchEmptyMessage(result.provider, remaining)
+                )
+            }
+        }
+        _uiState.update { state ->
+            state.copy(onlineSubtitles = state.onlineSubtitles.filterNot { it.searchIdentity() == identity })
         }
     }
 
@@ -824,31 +866,76 @@ class PlayerViewModel(
         name.substringAfterLast('.', "").equals("strm", ignoreCase = true) ||
             uri.toString().substringBefore('?').endsWith(".strm", ignoreCase = true)
 
+    fun adjustExternalSubtitleOffset(deltaMs: Long) {
+        val subtitle = activeExternalSubtitle ?: return
+        val next = (settingsRepository.getExternalSubtitleOffsetMs(mediaKey, subtitle.subtitleOffsetKey()) + deltaMs)
+            .coerceIn(AppSettingsRepository.MIN_EXTERNAL_SUBTITLE_OFFSET_MS, AppSettingsRepository.MAX_EXTERNAL_SUBTITLE_OFFSET_MS)
+        settingsRepository.saveExternalSubtitleOffsetMs(mediaKey, subtitle.subtitleOffsetKey(), next)
+        _uiState.update { it.copy(externalSubtitleOffsetMs = next) }
+        scheduleExternalSubtitleOffsetApply(subtitle)
+    }
+
+    fun resetExternalSubtitleOffset() {
+        val subtitle = activeExternalSubtitle ?: return
+        settingsRepository.saveExternalSubtitleOffsetMs(mediaKey, subtitle.subtitleOffsetKey(), 0L)
+        _uiState.update { it.copy(externalSubtitleOffsetMs = 0L) }
+        scheduleExternalSubtitleOffsetApply(subtitle)
+    }
+
+    private fun scheduleExternalSubtitleOffsetApply(subtitle: LocalSubtitleFile) {
+        subtitleOffsetApplyJob?.cancel()
+        subtitleOffsetApplyJob = viewModelScope.launch {
+            delay(SUBTITLE_OFFSET_APPLY_DEBOUNCE_MS)
+            applyExternalSubtitle(subtitle, closePanel = false)
+        }
+    }
+
     private fun applyExternalSubtitle(subtitle: LocalSubtitleFile, closePanel: Boolean = true) {
         val request = _uiState.value.playbackRequest ?: return
         val player = _uiState.value.player ?: return
         val position = player.currentPosition.coerceAtLeast(0L)
         val wasPlaying = player.playWhenReady
-        player.setMediaItem(createMediaItem(request, subtitle), position)
-        player.prepare()
-        player.playWhenReady = wasPlaying
-        settingsRepository.savePreferredExternalSubtitle(mediaKey, subtitle.name, enabled = true)
-        _uiState.update {
-            it.copy(
-                activeExternalSubtitleName = subtitle.name,
-                externalSubtitleEnabled = true,
-                externalSubtitlePanelVisible = if (closePanel) false else it.externalSubtitlePanelVisible,
-                externalSubtitleMessage = null,
-                externalSubtitleError = null
-            )
+        viewModelScope.launch {
+            runCatching {
+                val offsetMs = settingsRepository.getExternalSubtitleOffsetMs(mediaKey, subtitle.subtitleOffsetKey())
+                val playbackSubtitle = withContext(Dispatchers.IO) {
+                    subtitleTimeShiftStore.prepareSubtitle(subtitle, offsetMs)
+                }
+                Triple(offsetMs, playbackSubtitle, subtitle)
+            }.onSuccess { (offsetMs, playbackSubtitle, originalSubtitle) ->
+                player.setMediaItem(createMediaItem(request, playbackSubtitle), position)
+                player.prepare()
+                player.playWhenReady = wasPlaying
+                activeExternalSubtitle = originalSubtitle
+                settingsRepository.savePreferredExternalSubtitle(mediaKey, originalSubtitle.name, enabled = true)
+                _uiState.update {
+                    it.copy(
+                        activeExternalSubtitleName = originalSubtitle.name,
+                        externalSubtitleEnabled = true,
+                        externalSubtitleOffsetMs = offsetMs,
+                        externalSubtitlePanelVisible = if (closePanel) false else it.externalSubtitlePanelVisible,
+                        externalSubtitleMessage = null,
+                        externalSubtitleError = null
+                    )
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                _uiState.update {
+                    it.copy(externalSubtitleError = error.message ?: "字幕时间轴调整失败")
+                }
+            }
         }
     }
 
     private fun clearExternalSubtitleTrack(closePanel: Boolean = true) {
+        subtitleOffsetApplyJob?.cancel()
+        subtitleOffsetApplyJob = null
+        activeExternalSubtitle = null
         if (_uiState.value.activeExternalSubtitleName == null) {
             _uiState.update {
                 it.copy(
                     externalSubtitleEnabled = false,
+                    externalSubtitleOffsetMs = 0L,
                     externalSubtitlePanelVisible = if (closePanel) false else it.externalSubtitlePanelVisible,
                     externalSubtitleMessage = null,
                     externalSubtitleError = null
@@ -867,6 +954,7 @@ class PlayerViewModel(
             it.copy(
                 activeExternalSubtitleName = null,
                 externalSubtitleEnabled = false,
+                externalSubtitleOffsetMs = 0L,
                 externalSubtitlePanelVisible = if (closePanel) false else it.externalSubtitlePanelVisible,
                 externalSubtitleMessage = null,
                 externalSubtitleError = null
@@ -919,7 +1007,7 @@ class PlayerViewModel(
         force: Boolean
     ) {
         if (playbackState == Player.STATE_ENDED) {
-            playbackProgressRepository.clear(mediaKey)
+            playbackProgressRepository.clear(playbackMediaKey)
             lastPersistedPositionMs = Long.MIN_VALUE
             lastPersistedDurationMs = 0L
             lastPersistedAtMs = 0L
@@ -934,7 +1022,7 @@ class PlayerViewModel(
             if (positionDelta < PROGRESS_SAVE_POSITION_DELTA_MS && durationStable && intervalNotReached) return
         }
         playbackProgressRepository.save(
-            mediaKey = mediaKey,
+            mediaKey = playbackMediaKey,
             positionMs = positionMs,
             durationMs = durationMs
         )
@@ -945,7 +1033,7 @@ class PlayerViewModel(
 
     private fun clearProgress() {
         progressPersistenceScope.launch {
-            playbackProgressRepository.clear(mediaKey)
+            playbackProgressRepository.clear(playbackMediaKey)
             lastPersistedPositionMs = Long.MIN_VALUE
             lastPersistedDurationMs = 0L
             lastPersistedAtMs = 0L
@@ -956,6 +1044,7 @@ class PlayerViewModel(
         val player = uiState.value.player
         progressJob?.cancel()
         initialSubtitleJob?.cancel()
+        subtitleOffsetApplyJob?.cancel()
         if (player != null) {
             player.release()
         }
@@ -968,6 +1057,7 @@ class PlayerViewModel(
         private const val PLAYBACK_RESOLVE_TIMEOUT_MS = 45_000L
         private const val SLOW_PLAYBACK_RESOLVE_LOG_MS = 8_000L
         private const val SLOW_SUBTITLE_LOAD_LOG_MS = 3_000L
+        private const val SUBTITLE_OFFSET_APPLY_DEBOUNCE_MS = 400L
 
         fun factory(
             application: Application,
@@ -1014,6 +1104,7 @@ data class PlayerUiState(
     val onlineSubtitles: List<SubtitleSearchResult> = emptyList(),
     val externalSubtitleEnabled: Boolean = false,
     val activeExternalSubtitleName: String? = null,
+    val externalSubtitleOffsetMs: Long = 0L,
     val externalSubtitleMessage: String? = null,
     val externalSubtitleError: String? = null,
     val audioTracks: List<AudioTrackOption> = emptyList(),
@@ -1053,4 +1144,36 @@ private fun LocalSubtitleFile.mimeType(): String {
         else -> MimeTypes.APPLICATION_SUBRIP
     }
 }
+
+private fun LocalSubtitleFile.subtitleOffsetKey(): String =
+    uri.toString() + "|" + name
+
+private fun SubtitleSearchResult.searchIdentity(): String =
+    "${provider.id}|$cid|$ext|$signature"
+
+private fun subtitleSearchKey(
+    provider: SubtitleSearchProvider,
+    number: String,
+    videoDurationMs: Long
+): String {
+    val durationKey = if (provider == SubtitleSearchProvider.Cloud115) 0L else videoDurationMs / 1_000L
+    return provider.id + "|" + number.uppercase() + "|" + durationKey
+}
+
+private fun subtitleSearchEmptyMessage(
+    provider: SubtitleSearchProvider,
+    results: List<SubtitleSearchResult>
+): String? {
+    if (results.isNotEmpty()) return null
+    return if (provider == SubtitleSearchProvider.Cloud115) {
+        "网盘中没有找到包含番号的字幕文件"
+    } else {
+        "没有找到时长匹配的字幕"
+    }
+}
+
+private data class CachedSubtitleSearch(
+    val results: List<SubtitleSearchResult>,
+    val message: String?
+)
 

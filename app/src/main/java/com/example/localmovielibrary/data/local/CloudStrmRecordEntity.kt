@@ -23,6 +23,7 @@ data class CloudStrmRecordEntity(
     val strmUri: String,
     val libraryRootUri: String?,
     val movieId: Long?,
+    val videoSizeBytes: Long?,
     val createdAt: Long,
     val updatedAt: Long
 )

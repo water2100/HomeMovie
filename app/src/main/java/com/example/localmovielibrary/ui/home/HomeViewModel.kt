@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 @OptIn(FlowPreview::class)
 class HomeViewModel(
@@ -61,7 +62,11 @@ class HomeViewModel(
     private val movieBuckets = combine(movieBaseBuckets, sortState) { base, sort ->
         HomeMovieBuckets(
             sourceMovies = base.sourceMovies,
-            movies = base.sourceMovies.sortedWith(movieComparator(sort)),
+            movies = if (sort.option == HomeSortOption.Random) {
+                base.sourceMovies.shuffled(Random(sort.randomSeed))
+            } else {
+                base.sourceMovies.sortedWith(movieComparator(sort))
+            },
             recentlyAdded = base.recentlyAdded,
             favoriteMovies = base.favoriteMovies,
             sortState = sort,
@@ -135,28 +140,10 @@ class HomeViewModel(
     }
 
     private fun handleDatabaseMovies(latestMovies: List<MovieEntity>) {
-        val currentMovies = displayedMovies.value
-        if (currentMovies.isEmpty()) {
-            displayedMovies.value = latestMovies
-            pendingMovies.value = emptyList()
-            pendingNewCount.value = 0
-            return
-        }
-
-        val currentIds = currentMovies.map { it.id }.toSet()
-        val latestIds = latestMovies.map { it.id }.toSet()
-        val newIds = latestIds - currentIds
-        if (newIds.isEmpty()) {
-            displayedMovies.value = latestMovies
-            pendingMovies.value = emptyList()
-            pendingNewCount.value = 0
-            return
-        }
-
-        val latestById = latestMovies.associateBy { it.id }
-        displayedMovies.value = currentMovies.mapNotNull { latestById[it.id] }
-        pendingMovies.value = latestMovies
-        pendingNewCount.value = newIds.size
+        // 首页的影片区（含“最近添加”）始终反映影视库的最新状态。
+        displayedMovies.value = latestMovies
+        pendingMovies.value = emptyList()
+        pendingNewCount.value = 0
     }
 
     fun toggleFavorite(movie: MovieEntity) {
@@ -172,19 +159,30 @@ class HomeViewModel(
     }
 
     fun setSortOption(option: HomeSortOption) {
-        val next = sortState.value.copy(option = option)
+        val next = sortState.value.copy(
+            option = option,
+            randomSeed = if (option == HomeSortOption.Random) Random.nextLong() else sortState.value.randomSeed
+        )
         sortState.value = next
         settingsRepository.saveHomeSortOptionName(next.option.name)
     }
 
     fun toggleSortDirection() {
-        val next = sortState.value.copy(direction = sortState.value.direction.toggle())
+        val current = sortState.value
+        val next = current.copy(
+            direction = current.direction.toggle(),
+            randomSeed = if (current.option == HomeSortOption.Random) Random.nextLong() else current.randomSeed
+        )
         sortState.value = next
         settingsRepository.saveHomeSortDirectionName(next.direction.name)
     }
 
     fun setSortDirection(direction: HomeSortDirection) {
-        val next = sortState.value.copy(direction = direction)
+        val current = sortState.value
+        val next = current.copy(
+            direction = direction,
+            randomSeed = if (current.option == HomeSortOption.Random) Random.nextLong() else current.randomSeed
+        )
         sortState.value = next
         settingsRepository.saveHomeSortDirectionName(next.direction.name)
     }
@@ -248,25 +246,15 @@ private fun movieComparator(sort: HomeSortState): Comparator<MovieEntity> =
 
 private fun compareBySortOption(left: MovieEntity, right: MovieEntity, option: HomeSortOption): Int =
     when (option) {
-        HomeSortOption.ImdbRating,
-        HomeSortOption.CriticRating -> compareNullable(left.rating, right.rating)
-        HomeSortOption.Resolution,
-        HomeSortOption.MediaContainer,
-        HomeSortOption.FrameRate,
-        HomeSortOption.FileSize,
-        HomeSortOption.Bitrate,
-        HomeSortOption.VideoCodec -> 0
+        HomeSortOption.ImdbRating -> compareNullable(left.rating, right.rating)
         HomeSortOption.DateAdded -> compareValues(left.scannedAtMillis, right.scannedAtMillis)
         HomeSortOption.ReleaseDate -> compareNullable(left.premiered ?: left.year?.toString(), right.premiered ?: right.year?.toString())
-        HomeSortOption.ParentalRating -> compareStrings(left.mpaa.orEmpty(), right.mpaa.orEmpty())
         HomeSortOption.Director -> compareStrings(left.directors.firstOrNull().orEmpty(), right.directors.firstOrNull().orEmpty())
         HomeSortOption.Year -> compareNullable(left.year, right.year)
-        HomeSortOption.PlayDate -> compareValues(left.updatedAt.takeIf { left.isWatched } ?: 0L, right.updatedAt.takeIf { right.isWatched } ?: 0L)
         HomeSortOption.PlayDuration -> compareNullable(left.runtimeMinutes, right.runtimeMinutes)
-        HomeSortOption.PlayCount -> compareValues(if (left.isWatched) 1 else 0, if (right.isWatched) 1 else 0)
         HomeSortOption.FileName -> compareStrings(left.videoName, right.videoName)
         HomeSortOption.Title -> compareStrings(left.sortTitle.ifBlank { left.title }, right.sortTitle.ifBlank { right.title })
-        HomeSortOption.Random -> compareValues(left.id.stableRandomKey(), right.id.stableRandomKey())
+        HomeSortOption.Random -> 0
     }
 
 private fun compareStrings(left: String, right: String): Int =
@@ -279,8 +267,6 @@ private fun <T : Comparable<T>> compareNullable(left: T?, right: T?): Int =
         right == null -> -1
         else -> left.compareTo(right)
     }
-
-private fun Long.stableRandomKey(): Long = (this * 1103515245L + 12345L) and 0x7fffffff
 
 private fun List<PlaybackProgressListItem>.recentlyPlayedMovies(index: PlaybackMovieIndex): List<MovieEntity> {
     if (isEmpty() || index.isEmpty) return emptyList()
@@ -340,7 +326,8 @@ data class HomeUiState(
 
 data class HomeSortState(
     val option: HomeSortOption = HomeSortOption.ReleaseDate,
-    val direction: HomeSortDirection = HomeSortDirection.Descending
+    val direction: HomeSortDirection = HomeSortDirection.Descending,
+    val randomSeed: Long = Random.nextLong()
 )
 
 data class LibraryStats(
@@ -381,23 +368,13 @@ sealed interface ScanState {
 
 enum class HomeSortOption {
     ImdbRating,
-    Resolution,
     DateAdded,
     ReleaseDate,
-    MediaContainer,
-    ParentalRating,
     Director,
-    FrameRate,
     Year,
-    CriticRating,
-    PlayDate,
     PlayDuration,
-    PlayCount,
     FileName,
-    FileSize,
     Title,
-    Bitrate,
-    VideoCodec,
     Random
 }
 

@@ -22,34 +22,42 @@ class Cloud115ApiClient(
     override suspend fun listFiles(cid: Long): List<Cloud115FileItem> = withContext(Dispatchers.IO) {
         val cookies = cookieProvider.loadCookies()
             ?: error("115 Cookie 未配置，请先到设置页填写 Cookie")
-        val request = Request.Builder()
-            .url("$FILES_URL?aid=1&cid=$cid&o=user_ptime&asc=0&offset=0&show_dir=1&limit=1000&format=json")
-            .get()
-            .header("Cookie", cookies)
-            .header("User-Agent", USER_AGENT)
-            .header("Accept", "application/json, text/plain, */*")
-            .build()
+        val result = mutableListOf<Cloud115FileItem>()
+        var offset = 0
+        var totalCount: Int? = null
 
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("115 目录读取失败：HTTP ${response.code}")
-            }
-            val raw = response.body?.string().orEmpty()
-            val json = JSONObject(raw)
-            val data = json.optJSONArray("data") ?: error("115 目录响应为空")
-            buildList {
+        while (true) {
+            val request = Request.Builder()
+                .url("$FILES_URL?aid=1&cid=$cid&o=user_ptime&asc=0&offset=$offset&show_dir=1&limit=$FILES_PAGE_SIZE&format=json")
+                .get()
+                .header("Cookie", cookies)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json, text/plain, */*")
+                .build()
+
+            val rawPageSize = httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("115 目录读取失败：HTTP ${response.code}")
+                }
+                val raw = response.body?.string().orEmpty()
+                val json = JSONObject(raw)
+                val data = json.optJSONArray("data") ?: error("115 目录响应为空")
+                totalCount = json.optString("count")
+                    .toIntOrNull()
+                    ?: json.optInt("count", -1).takeIf { it >= 0 }
                 for (index in 0 until data.length()) {
                     val item = data.optJSONObject(index) ?: continue
                     val name = item.optString("n").takeIf { it.isNotBlank() } ?: continue
                     val fid = item.optString("fid").takeIf { it.isNotBlank() }?.toLongOrNull()
                     val cidValue = item.optString("cid").takeIf { it.isNotBlank() }?.toLongOrNull()
-                    add(
+                    result +=
                         Cloud115FileItem(
                             name = name,
                             cid = cidValue,
                             fid = fid,
                             pickcode = item.optString("pc").takeIf { it.isNotBlank() },
                             size = item.optString("s").toLongOrNull(),
+                            addedAt = item.optTimestamp("tp"),
                             modifiedAt = item.optTimestamp(
                                 "t",
                                 "user_ptime",
@@ -57,16 +65,21 @@ class Cloud115ApiClient(
                                 "pt",
                                 "te",
                                 "tu",
-                                "tp",
                                 "mtime",
                                 "utime"
                             ),
                             isDirectory = fid == null
                         )
-                    )
                 }
+                data.length()
             }
+
+            offset += FILES_PAGE_SIZE
+            if (rawPageSize < FILES_PAGE_SIZE) break
+            if (totalCount != null && offset >= totalCount) break
         }
+
+        result
     }
 
     override suspend fun searchFiles(
@@ -118,7 +131,8 @@ class Cloud115ApiClient(
                             fid = fid,
                             pickcode = item.optString("pc").takeIf { it.isNotBlank() },
                             size = item.optString("s").toLongOrNull(),
-                            modifiedAt = item.optTimestamp("t", "te", "tp", "pt", "mtime", "utime"),
+                            addedAt = item.optTimestamp("tp"),
+                            modifiedAt = item.optTimestamp("t", "te", "pt", "mtime", "utime"),
                             isDirectory = fid == null
                         )
                     )
@@ -156,6 +170,44 @@ class Cloud115ApiClient(
             if (encryptedData.isBlank()) error("115 响应缺少直链数据")
             val data = JSONObject(P115Cipher.decrypt(encryptedData))
             extractDirectUrl(data) ?: error("115 响应中没有可播放直链")
+        }
+    }
+
+    override suspend fun deleteFileByPickcode(pickcode: String, nameHint: String?): Boolean = withContext(Dispatchers.IO) {
+        val cookies = cookieProvider.loadCookies()
+            ?: error("115 Cookie 未配置，请先到设置页登录或填写 Cookie")
+        val normalizedPickcode = pickcode.trim().takeIf { it.isNotBlank() } ?: error("缺少 pickcode，无法删除网盘文件")
+        val searchKeyword = nameHint
+            ?.substringBeforeLast('.', nameHint)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: normalizedPickcode
+        val fid = searchFiles(searchKeyword, limit = 100, type = 99)
+            .firstOrNull { item -> item.pickcode == normalizedPickcode && item.fid != null }
+            ?.fid
+            ?: error("未在 115 网盘中找到 pickcode=$normalizedPickcode 对应文件，已停止网盘删除")
+        val body = FormBody.Builder()
+            .add("fid[0]", fid.toString())
+            .add("ignore_warn", "1")
+            .build()
+        val request = Request.Builder()
+            .url(DELETE_URL)
+            .post(body)
+            .header("Cookie", cookies)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json, text/plain, */*")
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("115 网盘删除失败：HTTP ${response.code}")
+            }
+            val raw = response.body?.string().orEmpty()
+            val json = JSONObject(raw)
+            if (!json.optBoolean("state", false)) {
+                error(json.optString("error").ifBlank { json.optString("message", "115 网盘删除失败") })
+            }
+            true
         }
     }
 
@@ -198,8 +250,10 @@ class Cloud115ApiClient(
     }
 
     private companion object {
+        const val FILES_PAGE_SIZE = 1000
         const val FILES_URL = "https://webapi.115.com/files"
         const val SEARCH_URL = "https://webapi.115.com/files/search"
         const val DOWNLOAD_URL = "https://proapi.115.com/app/chrome/downurl"
+        const val DELETE_URL = "https://webapi.115.com/rb/delete"
     }
 }

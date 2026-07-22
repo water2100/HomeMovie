@@ -40,7 +40,16 @@ class CloudBrowserViewModel(
     private val folderBatchTaskRunner: CloudFolderBatchTaskRunner
 ) : ViewModel() {
     private val backStack = mutableListOf(CloudPathItem(ROOT_CID, ROOT_NAME))
-    private val _uiState = MutableStateFlow(CloudBrowserUiState(path = backStack.toList(), isLoading = true))
+    private val _uiState = MutableStateFlow(
+        CloudBrowserUiState(
+            path = backStack.toList(),
+            isLoading = true,
+            sortOption = settingsRepository.getCloudSortOptionName()
+                ?.let { stored -> CloudSortOption.entries.firstOrNull { it.name == stored } }
+                ?: CloudSortOption.ModifiedTime,
+            sortAscending = settingsRepository.isCloudSortAscending()
+        )
+    )
     val uiState: StateFlow<CloudBrowserUiState> = _uiState
     private var loadJob: Job? = null
     private val scrollPositions = mutableMapOf<Long, CloudScrollPosition>()
@@ -143,6 +152,7 @@ class CloudBrowserViewModel(
         val nextAscending = !current.sortAscending
         val currentFolderCid = current.path.lastOrNull()?.cid ?: 0L
         scrollPositions[currentFolderCid] = CloudScrollPosition()
+        settingsRepository.saveCloudSortAscending(nextAscending)
         _uiState.update {
             it.copy(sortAscending = nextAscending)
         }
@@ -168,6 +178,7 @@ class CloudBrowserViewModel(
         if (current.sortOption == option) return
         val currentFolderCid = current.path.lastOrNull()?.cid ?: 0L
         scrollPositions[currentFolderCid] = CloudScrollPosition()
+        settingsRepository.saveCloudSortOptionName(option.name)
         _uiState.update { it.copy(sortOption = option) }
         viewModelScope.launch {
             val sortedItems = withContext(Dispatchers.Default) {
@@ -632,7 +643,7 @@ class CloudBrowserViewModel(
             }
             recordRepository.updateStrmLocation(
                 pickcode = pickcode,
-                strmUri = refreshedMovie.videoUri,
+                strmUri = scrapeResult.strmUri,
                 libraryRootUri = refreshedMovie.libraryRootUri,
                 movieId = refreshedMovie.id
             )
@@ -725,7 +736,7 @@ class CloudBrowserViewModel(
             movieRepository.markScrapeTaskCompleted(refreshedMovie.id)
             recordRepository.updateStrmLocation(
                 pickcode = pickcode,
-                strmUri = refreshedMovie.videoUri,
+                strmUri = scrapeResult.strmUri,
                 libraryRootUri = refreshedMovie.libraryRootUri,
                 movieId = refreshedMovie.id
             )
@@ -870,6 +881,7 @@ class CloudBrowserViewModel(
 }
 
 enum class CloudSortOption {
+    AddedTime,
     ModifiedTime,
     Size
 }
@@ -879,6 +891,11 @@ private fun List<Cloud115FileItem>.sortedByCloudOption(
     ascending: Boolean
 ): List<Cloud115FileItem> {
     val comparator = when (option) {
+        CloudSortOption.AddedTime -> if (ascending) {
+            compareBy<Cloud115FileItem> { it.addedAt ?: Long.MAX_VALUE }
+        } else {
+            compareByDescending { it.addedAt ?: Long.MIN_VALUE }
+        }
         CloudSortOption.ModifiedTime -> if (ascending) {
             compareBy<Cloud115FileItem> { it.modifiedAt ?: Long.MAX_VALUE }
         } else {

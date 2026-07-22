@@ -3,6 +3,7 @@
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
@@ -84,12 +86,16 @@ import com.example.localmovielibrary.data.local.CloudFolderBatchTaskEntity
 import com.example.localmovielibrary.data.local.CloudFolderBatchTaskStatus
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
+import com.example.localmovielibrary.scraper.CustomJsonScrapeConfig
+import com.example.localmovielibrary.scraper.CustomJsonPathCandidate
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.scraper.ScrapedMovieInfo
 import com.example.localmovielibrary.ui.shared.MovieImageCacheStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private val SettingsBackground = Color(0xFF070A0E)
 
@@ -97,9 +103,11 @@ private enum class SettingsPage {
     Directory,
     Cloud,
     Scrape,
+    CustomJsonScrape,
     NumberRecognition,
     ScrapeTasks,
     Player,
+    StartupAnimation,
     Update
 }
 
@@ -116,6 +124,24 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val libraryDirectoryPicker = rememberTreePicker { uri -> viewModel.scanLibrary(uri) }
+    val startupImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            val copiedImageUri = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        val imageFile = File(
+                            context.filesDir,
+                            "startup-animation-${System.currentTimeMillis()}.image"
+                        )
+                        imageFile.outputStream().use { output -> input.copyTo(output) }
+                        imageFile.toURI().toString()
+                    }
+                }.getOrNull()
+            }
+            copiedImageUri?.let(viewModel::updateStartupAnimationImageUri)
+        }
+    }
     val overviewScrollState = rememberScrollState()
     val pageScrollState = rememberScrollState()
     val updateScrollState = rememberScrollState()
@@ -256,6 +282,7 @@ fun SettingsScreen(
                         onStartCloud115QrLogin = viewModel::startCloud115QrLogin,
                         onCancelCloud115QrLogin = viewModel::cancelCloud115QrLogin,
                         onCloudAddButtonMessageEnabledChange = viewModel::updateCloudAddButtonMessageEnabled,
+                        onCloudDeleteEnabledChange = viewModel::updateCloudDeleteEnabled,
                         onExcludedVideoNameDraftChange = viewModel::updateNewExcludedVideoName,
                         onAddExcludedVideoName = viewModel::addExcludedVideoName,
                         onRemoveExcludedVideoName = viewModel::removeExcludedVideoName,
@@ -266,12 +293,15 @@ fun SettingsScreen(
                         uiState = uiState,
                         imageCacheSizeText = imageCacheSizeText,
                         onOpenNumberRules = { currentPage = SettingsPage.NumberRecognition },
+                        onOpenCustomJsonScrape = { currentPage = SettingsPage.CustomJsonScrape },
                         onAddPrioritySource = viewModel::addPriorityScrapeSource,
                         onRemovePrioritySource = viewModel::removePriorityScrapeSource,
                         onMovePrioritySourceUp = viewModel::movePriorityScrapeSourceUp,
                         onMovePrioritySourceDown = viewModel::movePriorityScrapeSourceDown,
                         onRetryCountChange = viewModel::updateImageDownloadRetryCount,
                         onConcurrencyLimitChange = viewModel::updateScrapeConcurrencyLimit,
+                        onScrapeProxyAddressChange = viewModel::updateScrapeProxyAddress,
+                        onScrapeProxyEnabledChange = viewModel::updateScrapeProxyEnabled,
                         onDmm2SkippedPrefixDraftChange = viewModel::updateNewDmm2SkippedPrefix,
                         onAddDmm2SkippedPrefix = viewModel::addDmm2SkippedPrefix,
                         onRemoveDmm2SkippedPrefix = viewModel::removeDmm2SkippedPrefix,
@@ -290,6 +320,16 @@ fun SettingsScreen(
                         onRefreshRules = viewModel::refreshMgstageRules
                     )
 
+                    SettingsPage.CustomJsonScrape -> CustomJsonScrapePage(
+                        uiState = uiState,
+                        onConfigChange = viewModel::updateCustomJsonScrapeConfig,
+                        onSelectConfig = viewModel::selectCustomJsonScrapeConfig,
+                        onAddConfig = viewModel::addCustomJsonScrapeConfig,
+                        onDuplicateConfig = viewModel::duplicateCustomJsonScrapeConfig,
+                        onDeleteConfig = viewModel::deleteCustomJsonScrapeConfig,
+                        onTestConfig = viewModel::testCustomJsonScrapeConfig
+                    )
+
                     SettingsPage.ScrapeTasks -> ScrapeTasksPage(
                         uiState = uiState,
                         onStartManualScrapeTasks = viewModel::startManualScrapeTasks,
@@ -305,9 +345,24 @@ fun SettingsScreen(
 
                     SettingsPage.Player -> PlayerSettingsPage(
                         uiState = uiState,
+                        onSeekBackSecondsChange = viewModel::updatePlayerSeekBackSeconds,
+                        onSeekForwardSecondsChange = viewModel::updatePlayerSeekForwardSeconds,
                         onExternalSubtitleFontSizeChange = viewModel::updateExternalSubtitleFontSizeSp,
                         onExternalSubtitleBottomPaddingChange = viewModel::updateExternalSubtitleBottomPaddingPercent,
                         onExternalSubtitleBackgroundAlphaChange = viewModel::updateExternalSubtitleBackgroundAlphaPercent
+                    )
+
+                    SettingsPage.StartupAnimation -> StartupAnimationSettingsPage(
+                        uiState = uiState,
+                        onEnabledChange = viewModel::updateStartupAnimationEnabled,
+                        onPickImage = {
+                            startupImagePicker.launch(
+                                PickVisualMediaRequest(
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly
+                                )
+                            )
+                        },
+                        onClearImage = viewModel::clearStartupAnimationImage
                     )
 
                     SettingsPage.Update -> AppUpdateSettingsPage(
@@ -364,6 +419,383 @@ fun SettingsScreen(
                 }
             )
         }
+        uiState.customJsonTestResult?.let { result ->
+            CustomJsonMappingDialog(
+                result = result,
+                config = uiState.customJsonScrapeConfig,
+                pathCandidates = uiState.customJsonPathCandidates,
+                onConfigChange = viewModel::updateCustomJsonScrapeConfig,
+                onDismiss = viewModel::dismissCustomJsonTestResult
+            )
+        }
+    }
+}
+
+@Composable
+private fun CustomJsonMappingDialog(
+    result: ScrapedMovieInfo,
+    config: CustomJsonScrapeConfig,
+    pathCandidates: List<CustomJsonPathCandidate>,
+    onConfigChange: (CustomJsonScrapeConfig) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val targets = remember(config) { customJsonMappingTargets(config) }
+    var selectedIndex by rememberSaveable { mutableStateOf(0) }
+    var pathSegments by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var targetMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    val safeIndex = selectedIndex.coerceIn(0, targets.lastIndex.coerceAtLeast(0))
+    val selectedTarget = targets.getOrNull(safeIndex)
+    val selectedSampleValue = selectedTarget?.value?.let { pathCandidates.sampleValue(it) }
+    val currentPath = pathSegments.toJsonPath()
+    val nodes = remember(pathCandidates, pathSegments) { pathCandidates.childNodes(pathSegments) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF111820),
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
+        title = { Text("配置字段映射") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 620.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "测试成功：" + result.title.ifBlank { result.number },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "先选字段，再从 JSON 树逐级进入分支；点叶子节点后会自动绑定并跳到下一个字段。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                CustomJsonMappingPreview(config)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = selectedTarget?.let { "当前字段：${it.label}" } ?: "当前字段",
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = selectedTarget?.value?.ifBlank { "未选择" }.orEmpty(),
+                                color = if (selectedTarget?.value.isNullOrBlank()) MaterialTheme.colorScheme.error else Color.White.copy(alpha = 0.72f),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (!selectedSampleValue.isNullOrBlank()) {
+                                Text(
+                                    text = "样本值：$selectedSampleValue",
+                                    color = Color.White.copy(alpha = 0.62f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Box {
+                            OutlinedButton(
+                                onClick = { targetMenuExpanded = true },
+                                shape = RoundedCornerShape(18.dp),
+                            ) {
+                                Text("切换字段")
+                            }
+                            DropdownMenu(
+                                expanded = targetMenuExpanded,
+                                onDismissRequest = { targetMenuExpanded = false },
+                                modifier = Modifier.heightIn(max = 360.dp),
+                                containerColor = Color(0xFF17202B),
+                            ) {
+                                targets.forEachIndexed { index, target ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(target.label, color = Color.White, fontWeight = FontWeight.Bold)
+                                                Text(
+                                                    target.value.ifBlank { "未选择" },
+                                                    color = Color.White.copy(alpha = 0.62f),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            selectedIndex = index
+                                            pathSegments = emptyList()
+                                            targetMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = selectedTarget?.let { "给「${it.label}」选择路径" } ?: "选择路径",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = currentPath,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    TextButton(
+                        onClick = { pathSegments = pathSegments.dropLast(1) },
+                        enabled = pathSegments.isNotEmpty(),
+                    ) {
+                        Text("上一级")
+                    }
+                }
+                if (pathCandidates.isEmpty()) {
+                    Text("没有生成可选路径，请检查结果路径是否正确。", color = MaterialTheme.colorScheme.error)
+                } else if (nodes.isEmpty()) {
+                    Text("这个分支下面没有可选字段。", color = MaterialTheme.colorScheme.error)
+                } else {
+                    nodes.forEach { node ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                                .clickable {
+                                    if (node.hasChildren) {
+                                        pathSegments = node.segments
+                                    } else {
+                                        selectedTarget?.let { target ->
+                                            onConfigChange(target.apply(config, node.path))
+                                            pathSegments = emptyList()
+                                            if (safeIndex < targets.lastIndex) selectedIndex = safeIndex + 1
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = node.label.jsonSegmentDisplayLabel(),
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = if (node.hasChildren) "进入" else "选择",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                            Text(node.path, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (node.valuePreview.isNotBlank()) {
+                                Text(
+                                    node.valuePreview,
+                                    color = Color.White.copy(alpha = 0.62f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
+}
+
+@Composable
+private fun CustomJsonMappingPreview(config: CustomJsonScrapeConfig) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text("当前结果路径：${config.resultPath}", style = MaterialTheme.typography.bodySmall)
+        Text("提示：如果想选评分 $.reviewSummary.average，请把结果路径设到包含 reviewSummary 的节点后重新测试。", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.62f))
+    }
+}
+
+private data class CustomJsonMappingTarget(
+    val label: String,
+    val value: String,
+    val apply: (CustomJsonScrapeConfig, String) -> CustomJsonScrapeConfig
+)
+
+private data class CustomJsonPathNode(
+    val label: String,
+    val path: String,
+    val segments: List<String>,
+    val valuePreview: String,
+    val hasChildren: Boolean,
+)
+
+private fun customJsonMappingTargets(config: CustomJsonScrapeConfig): List<CustomJsonMappingTarget> = listOf(
+    CustomJsonMappingTarget("番号", config.numberPath) { current, path -> current.copy(numberPath = path) },
+    CustomJsonMappingTarget("标题", config.titlePath) { current, path -> current.copy(titlePath = path) },
+    CustomJsonMappingTarget("原始标题", config.originalTitlePath) { current, path -> current.copy(originalTitlePath = path) },
+    CustomJsonMappingTarget("简介", config.plotPath) { current, path -> current.copy(plotPath = path) },
+    CustomJsonMappingTarget("发行日期", config.premieredPath) { current, path -> current.copy(premieredPath = path) },
+    CustomJsonMappingTarget("时长", config.runtimePath) { current, path -> current.copy(runtimePath = path) },
+    CustomJsonMappingTarget("厂商", config.studioPath) { current, path -> current.copy(studioPath = path) },
+    CustomJsonMappingTarget("系列", config.seriesPath) { current, path -> current.copy(seriesPath = path) },
+    CustomJsonMappingTarget("演员", config.actorsPath) { current, path -> current.copy(actorsPath = path) },
+    CustomJsonMappingTarget("类型", config.genresPath) { current, path -> current.copy(genresPath = path) },
+    CustomJsonMappingTarget("标签", config.tagsPath) { current, path -> current.copy(tagsPath = path) },
+    CustomJsonMappingTarget("评分", config.ratingPath) { current, path -> current.copy(ratingPath = path) },
+    CustomJsonMappingTarget("Poster", config.posterPath) { current, path -> current.copy(posterPath = path) },
+    CustomJsonMappingTarget("Thumb", config.thumbPath) { current, path -> current.copy(thumbPath = path) },
+    CustomJsonMappingTarget("Fanart", config.fanartPath) { current, path -> current.copy(fanartPath = path) },
+)
+
+private fun List<CustomJsonPathCandidate>.childNodes(prefixSegments: List<String>): List<CustomJsonPathNode> {
+    return asSequence()
+        .map { candidate -> candidate to candidate.path.jsonPathSegments() }
+        .filter { (_, segments) -> segments.size > prefixSegments.size && segments.take(prefixSegments.size) == prefixSegments }
+        .groupBy { (_, segments) -> segments[prefixSegments.size] }
+        .map { (segment, entries) ->
+            val nodeSegments = prefixSegments + segment
+            val exact = entries.firstOrNull { (_, segments) -> segments == nodeSegments }?.first
+            val firstPreview = exact?.valuePreview
+                ?: entries.firstOrNull { it.first.valuePreview.isNotBlank() }?.first?.valuePreview
+                ?: ""
+            CustomJsonPathNode(
+                label = segment,
+                path = nodeSegments.toJsonPath(),
+                segments = nodeSegments,
+                valuePreview = firstPreview,
+                hasChildren = entries.any { (_, segments) -> segments.size > nodeSegments.size },
+            )
+        }
+        .sortedWith(compareBy<CustomJsonPathNode> { !it.hasChildren }.thenBy { it.label.lowercase() })
+        .toList()
+}
+
+private fun List<CustomJsonPathCandidate>.sampleValue(path: String): String =
+    firstOrNull { it.path == path }?.valuePreview.orEmpty()
+
+private fun String.jsonSegmentDisplayLabel(): String = when (this) {
+    "[*]" -> "数组全部 [*]"
+    else -> this
+}
+
+private fun String.jsonPathSegments(): List<String> =
+    removePrefix("$.")
+        .removePrefix("$")
+        .trimStart('.')
+        .split('.')
+        .filter { it.isNotBlank() }
+
+private fun List<String>.toJsonPath(): String =
+    if (isEmpty()) "$" else "$." + joinToString(".")
+
+@Composable
+private fun CustomJsonTestResultDialog(
+    result: ScrapedMovieInfo,
+    requestedNumber: String,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义 JSON 测试结果") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "请检查下面字段是否和接口返回一致。除番号可使用输入值兜底外，缺失字段会标记为缺失。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                CustomJsonTestResultRow("番号", result.number, if (result.number == requestedNumber) "使用输入番号" else null)
+                CustomJsonTestResultRow("标题", result.title)
+                CustomJsonTestResultRow("原始标题", result.originalTitle)
+                CustomJsonTestResultRow("简介", result.plot)
+                CustomJsonTestResultRow("发行日期", result.premiered)
+                CustomJsonTestResultRow("时长", result.runtime)
+                CustomJsonTestResultRow("厂商", result.studio)
+                CustomJsonTestResultRow("系列", result.series)
+                CustomJsonTestResultRow("演员", result.actors.joinToString(", "))
+                CustomJsonTestResultRow("类型", result.genres.joinToString(", "))
+                CustomJsonTestResultRow("标签", result.tags.joinToString(", "))
+                CustomJsonTestResultRow("评分", result.rating)
+                CustomJsonTestResultRow("Poster", result.posterUrl)
+                CustomJsonTestResultRow("Thumb", result.thumbUrl)
+                CustomJsonTestResultRow("Fanart", result.fanartUrl)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("知道了")
+            }
+        }
+    )
+}
+
+@Composable
+private fun CustomJsonTestResultRow(
+    label: String,
+    value: String,
+    note: String? = null
+) {
+    val missing = value.isBlank()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = note ?: if (missing) "缺失" else "已匹配",
+                color = if (missing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Text(
+            text = value.ifBlank { "未取得数据" },
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -371,9 +803,11 @@ private fun SettingsPage.titleText(): String = when (this) {
     SettingsPage.Directory -> "目录设置"
     SettingsPage.Cloud -> "网盘设置"
     SettingsPage.Scrape -> "刮削设置"
+    SettingsPage.CustomJsonScrape -> "自定义 JSON 刮削"
     SettingsPage.NumberRecognition -> "番号识别规则"
     SettingsPage.ScrapeTasks -> "刮削任务"
     SettingsPage.Player -> "播放器设置"
+    SettingsPage.StartupAnimation -> "开场动画"
     SettingsPage.Update -> "应用更新"
 }
 
@@ -438,6 +872,11 @@ private fun SettingsOverviewPage(
     }
     SettingsGroupCard(title = "应用") {
         SettingsEntryRow(
+            title = "开场动画",
+            subtitle = if (uiState.startupAnimationEnabled) "已开启 · ${if (uiState.startupAnimationImageUri.isBlank()) "默认画面" else "自定义图片"}" else "默认关闭",
+            onClick = { onOpenPage(SettingsPage.StartupAnimation) }
+        )
+        SettingsEntryRow(
             title = "应用更新",
             subtitle = "当前版本 ${uiState.appVersionName.ifBlank { "未知" }} · ${if (uiState.updateManifestUrl.isBlank()) "未配置更新地址" else "已配置更新地址"}",
             onClick = { onOpenPage(SettingsPage.Update) }
@@ -455,12 +894,77 @@ private fun SettingsOverviewPage(
 }
 
 @Composable
+private fun StartupAnimationSettingsPage(
+    uiState: SettingsUiState,
+    onEnabledChange: (Boolean) -> Unit,
+    onPickImage: () -> Unit,
+    onClearImage: () -> Unit
+) {
+    SettingsSectionTitle("开场动画")
+    SettingsGroupCard(title = "启动过场") {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("启用开场动画", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("进入应用时显示图片和加载动画，默认关闭。", color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = uiState.startupAnimationEnabled, onCheckedChange = onEnabledChange)
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("动画图片", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (uiState.startupAnimationImageUri.isBlank()) {
+                Text("未选择时将显示内置深色渐变画面。", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
+            } else {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current).data(Uri.parse(uiState.startupAnimationImageUri)).crossfade(true).build(),
+                    contentDescription = "开场动画预览",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 220.dp)
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(onClick = onPickImage) { Text("选择图片") }
+                if (uiState.startupAnimationImageUri.isNotBlank()) {
+                    TextButton(onClick = onClearImage) { Text("恢复默认") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlayerSettingsPage(
     uiState: SettingsUiState,
+    onSeekBackSecondsChange: (Int) -> Unit,
+    onSeekForwardSecondsChange: (Int) -> Unit,
     onExternalSubtitleFontSizeChange: (Int) -> Unit,
     onExternalSubtitleBottomPaddingChange: (Int) -> Unit,
     onExternalSubtitleBackgroundAlphaChange: (Int) -> Unit
 ) {
+    SettingsSectionTitle("播放控制")
+    SettingsGroupCard(title = "快进与后退") {
+        SubtitleStyleSliderRow(
+            title = "后退时间",
+            value = uiState.playerSeekBackSeconds,
+            range = AppSettingsRepository.MIN_PLAYER_SEEK_SECONDS..AppSettingsRepository.MAX_PLAYER_SEEK_SECONDS,
+            valueText = "${uiState.playerSeekBackSeconds} 秒",
+            onValueChange = onSeekBackSecondsChange
+        )
+        SubtitleStyleSliderRow(
+            title = "快进时间",
+            value = uiState.playerSeekForwardSeconds,
+            range = AppSettingsRepository.MIN_PLAYER_SEEK_SECONDS..AppSettingsRepository.MAX_PLAYER_SEEK_SECONDS,
+            valueText = "${uiState.playerSeekForwardSeconds} 秒",
+            onValueChange = onSeekForwardSecondsChange
+        )
+    }
     SettingsSectionTitle("外挂字幕样式")
     SettingsGroupCard(title = "字幕显示") {
         SubtitleStyleSliderRow(
@@ -836,6 +1340,7 @@ private fun CloudSettingsPage(
     onStartCloud115QrLogin: () -> Unit,
     onCancelCloud115QrLogin: () -> Unit,
     onCloudAddButtonMessageEnabledChange: (Boolean) -> Unit,
+    onCloudDeleteEnabledChange: (Boolean) -> Unit,
     onExcludedVideoNameDraftChange: (String) -> Unit,
     onAddExcludedVideoName: () -> Unit,
     onRemoveExcludedVideoName: (String) -> Unit,
@@ -870,7 +1375,9 @@ private fun CloudSettingsPage(
     SettingsSectionTitle("网盘添加")
     CloudAddBehaviorPanel(
         enabled = uiState.cloudAddButtonMessageEnabled,
-        onEnabledChange = onCloudAddButtonMessageEnabledChange
+        onEnabledChange = onCloudAddButtonMessageEnabledChange,
+        cloudDeleteEnabled = uiState.cloudDeleteEnabled,
+        onCloudDeleteEnabledChange = onCloudDeleteEnabledChange
     )
     SettingsSectionTitle("排除视频")
     ExcludedCloudVideosPanel(
@@ -931,35 +1438,61 @@ private fun DomesticPageSwitchRow(
 @Composable
 private fun CloudAddBehaviorPanel(
     enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit
+    onEnabledChange: (Boolean) -> Unit,
+    cloudDeleteEnabled: Boolean,
+    onCloudDeleteEnabledChange: (Boolean) -> Unit
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = "开启按钮提示",
-                color = Color.White,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "关闭后，网盘点击添加不会弹出正在添加、已添加这类提示。",
-                color = Color.White.copy(alpha = 0.58f),
-                style = MaterialTheme.typography.bodySmall
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "开启按钮提示",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "关闭后，网盘点击添加不会弹出正在添加、已添加这类提示。",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange
             )
         }
-        Switch(
-            checked = enabled,
-            onCheckedChange = onEnabledChange
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "开启网盘删除",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "开启后，影片详情删除弹窗会显示“删除(网盘)”，同时删除 115 网盘真实视频。默认关闭。",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Switch(
+                checked = cloudDeleteEnabled,
+                onCheckedChange = onCloudDeleteEnabledChange
+            )
+        }
     }
 }
 
@@ -1081,12 +1614,15 @@ private fun ScrapeSettingsPage(
     uiState: SettingsUiState,
     imageCacheSizeText: String,
     onOpenNumberRules: () -> Unit,
+    onOpenCustomJsonScrape: () -> Unit,
     onAddPrioritySource: (ScrapeSource) -> Unit,
     onRemovePrioritySource: (ScrapeSource) -> Unit,
     onMovePrioritySourceUp: (ScrapeSource) -> Unit,
     onMovePrioritySourceDown: (ScrapeSource) -> Unit,
     onRetryCountChange: (String) -> Unit,
     onConcurrencyLimitChange: (String) -> Unit,
+    onScrapeProxyAddressChange: (String) -> Unit,
+    onScrapeProxyEnabledChange: (Boolean) -> Unit,
     onDmm2SkippedPrefixDraftChange: (String) -> Unit,
     onAddDmm2SkippedPrefix: () -> Unit,
     onRemoveDmm2SkippedPrefix: (String) -> Unit,
@@ -1107,6 +1643,11 @@ private fun ScrapeSettingsPage(
         onRemove = onRemovePrioritySource,
         onMoveUp = onMovePrioritySourceUp,
         onMoveDown = onMovePrioritySourceDown
+    )
+    SettingsSectionTitle("自定义 JSON 刮削")
+    CustomJsonScrapeEntryCard(
+        config = uiState.customJsonScrapeConfig,
+        onClick = onOpenCustomJsonScrape
     )
     SettingsSectionTitle("MGStage 刮削")
     MgstagePrefixPanel(
@@ -1167,6 +1708,34 @@ private fun ScrapeSettingsPage(
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         colors = settingsTextFieldColors()
     )
+    SettingsSectionTitle("刮削代理")
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("使用外部代理", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("仅用于刮削、图片下载和规则刷新", color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = uiState.useScrapeProxyEnabled, onCheckedChange = onScrapeProxyEnabledChange)
+        }
+        OutlinedTextField(
+            value = uiState.scrapeProxyAddress,
+            onValueChange = onScrapeProxyAddressChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = uiState.useScrapeProxyEnabled,
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+            label = { Text("代理地址") },
+            supportingText = { Text("例如 192.168.1.10:7890、http://192.168.1.10:7890 或 socks5://192.168.1.10:1080。保存后生效。") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            colors = settingsTextFieldColors()
+        )
+    }
     SettingsSectionTitle("图片下载")
     OutlinedTextField(
         value = uiState.imageDownloadRetryCountText,
@@ -1314,6 +1883,290 @@ private fun ScrapeTasksPage(
         onStop = onStopCloudFolderBatchTasks,
         onCancel = onCancelCloudFolderBatchTasks,
         onRefresh = onRefreshCloudFolderBatchTasks
+    )
+}
+
+@Composable
+private fun CustomJsonScrapeEntryCard(
+    config: CustomJsonScrapeConfig,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = config.name.ifBlank { "自定义 JSON 来源" },
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = if (config.enabled) "已启用" else "未启用",
+                color = Color.White.copy(alpha = if (config.enabled) 0.9f else 0.46f),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Text(
+            text = config.urlTemplate.ifBlank { "未配置请求地址" },
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun CustomJsonScrapePage(
+    uiState: SettingsUiState,
+    onConfigChange: (CustomJsonScrapeConfig) -> Unit,
+    onSelectConfig: (Int) -> Unit,
+    onAddConfig: () -> Unit,
+    onDuplicateConfig: () -> Unit,
+    onDeleteConfig: () -> Unit,
+    onTestConfig: () -> Unit
+) {
+    SettingsSectionTitle("自定义 JSON 刮削")
+    CustomJsonScrapePanel(
+        config = uiState.customJsonScrapeConfig,
+        configs = uiState.customJsonScrapeConfigs,
+        selectedConfigIndex = uiState.selectedCustomJsonScrapeConfigIndex,
+        isTesting = uiState.isTestingCustomJsonScrape,
+        pathCandidates = uiState.customJsonPathCandidates,
+        onChange = onConfigChange,
+        onSelectConfig = onSelectConfig,
+        onAddConfig = onAddConfig,
+        onDuplicateConfig = onDuplicateConfig,
+        onDeleteConfig = onDeleteConfig,
+        onTest = onTestConfig
+    )
+}
+
+@Composable
+private fun CustomJsonScrapePanel(
+    config: CustomJsonScrapeConfig,
+    configs: List<CustomJsonScrapeConfig>,
+    selectedConfigIndex: Int,
+    isTesting: Boolean,
+    pathCandidates: List<CustomJsonPathCandidate>,
+    onChange: (CustomJsonScrapeConfig) -> Unit,
+    onSelectConfig: (Int) -> Unit,
+    onAddConfig: () -> Unit,
+    onDuplicateConfig: () -> Unit,
+    onDeleteConfig: () -> Unit,
+    onTest: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "自定义 JSON 来源",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "先填 URL 和结果路径，点测试后可从样本 JSON 中选择字段。候选只来自当前结果路径。",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Switch(
+                checked = config.enabled,
+                onCheckedChange = { onChange(config.copy(enabled = it)) }
+            )
+        }
+        CustomJsonConfigSelector(
+            configs = configs,
+            selectedConfigIndex = selectedConfigIndex,
+            onSelectConfig = onSelectConfig,
+            onAddConfig = onAddConfig,
+            onDuplicateConfig = onDuplicateConfig,
+            onDeleteConfig = onDeleteConfig,
+        )
+        CustomJsonTextField("来源名称", config.name) { onChange(config.copy(name = it)) }
+        CustomJsonTextField("请求地址", config.urlTemplate, "例如：https://example.com/api/movie?q={number}") {
+            onChange(config.copy(urlTemplate = it))
+        }
+        CustomJsonTextField("示例番号", config.sampleNumber) { onChange(config.copy(sampleNumber = it)) }
+        CustomJsonTextField("结果路径", config.resultPath, "例如：$.data 或 $.results[0]") {
+            onChange(config.copy(resultPath = it))
+        }
+        CustomJsonMappingSummary(config = config, pathCandidates = pathCandidates)
+        if (pathCandidates.isNotEmpty()) {
+            Text(
+                text = "已生成 ${pathCandidates.size} 个候选路径。需要调整字段时请重新点击测试并配置。",
+                color = Color.White.copy(alpha = 0.62f),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Button(
+            onClick = onTest,
+            enabled = !isTesting,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskPrimaryButtonColors()
+        ) {
+            if (isTesting) {
+                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp), strokeWidth = 2.dp, color = Color.White)
+            }
+            Text(if (isTesting) "正在测试..." else "测试并生成字段候选")
+        }
+    }
+}
+
+@Composable
+private fun CustomJsonConfigSelector(
+    configs: List<CustomJsonScrapeConfig>,
+    selectedConfigIndex: Int,
+    onSelectConfig: (Int) -> Unit,
+    onAddConfig: () -> Unit,
+    onDuplicateConfig: () -> Unit,
+    onDeleteConfig: () -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val selectedConfig = configs.getOrNull(selectedConfigIndex)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.055f), RoundedCornerShape(14.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("配置方案", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Text(selectedConfig?.name?.ifBlank { "未命名配置" } ?: "未命名配置", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.heightIn(max = 360.dp),
+                containerColor = Color(0xFF17202B),
+            ) {
+                configs.forEachIndexed { index, item ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(item.name.ifBlank { "未命名配置" }, color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(
+                                    item.urlTemplate.ifBlank { "未配置请求地址" },
+                                    color = Color.White.copy(alpha = 0.62f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            onSelectConfig(index)
+                        }
+                    )
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onAddConfig, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp)) {
+                Text("新增")
+            }
+            OutlinedButton(onClick = onDuplicateConfig, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp)) {
+                Text("复制")
+            }
+            OutlinedButton(onClick = onDeleteConfig, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp)) {
+                Text("删除")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomJsonMappingSummary(
+    config: CustomJsonScrapeConfig,
+    pathCandidates: List<CustomJsonPathCandidate>,
+) {
+    val targets = customJsonMappingTargets(config)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.055f), RoundedCornerShape(14.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text("字段映射", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+        targets.chunked(2).forEach { rowTargets ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                rowTargets.forEach { target ->
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(Color.White.copy(alpha = 0.055f), RoundedCornerShape(10.dp))
+                            .padding(8.dp),
+                    ) {
+                        Text(target.label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            target.value.ifBlank { "未选择" },
+                            color = if (target.value.isBlank()) MaterialTheme.colorScheme.error else Color.White.copy(alpha = 0.72f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        val sampleValue = pathCandidates.sampleValue(target.value)
+                        Text(
+                            sampleValue.ifBlank { if (target.value.isBlank()) "未映射" else "样本未匹配" },
+                            color = if (sampleValue.isBlank()) Color.White.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.62f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (rowTargets.size == 1) {
+                    Box(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomJsonTextField(
+    label: String,
+    value: String,
+    supportingText: String? = null,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    onChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = modifier,
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+        label = { Text(label) },
+        supportingText = supportingText?.let { text -> { Text(text) } },
+        colors = settingsTextFieldColors()
     )
 }
 
@@ -2605,4 +3458,5 @@ private val ScrapeSource.label: String
         ScrapeSource.Mgstage -> "MGStage"
         ScrapeSource.Javbus -> "JavBus"
         ScrapeSource.TheJavDB -> "TheJavDB"
+        ScrapeSource.CustomJson -> "自定义 JSON"
     }

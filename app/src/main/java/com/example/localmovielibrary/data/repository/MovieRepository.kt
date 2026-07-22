@@ -23,6 +23,7 @@ import com.example.localmovielibrary.util.metadataKey
 import com.example.localmovielibrary.util.movieKeyFromText
 import com.example.localmovielibrary.util.movieVersionKeyFromText
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
@@ -89,10 +90,19 @@ class MovieRepository(
             val page = movieDao.getMoviePlaybackKeyItemsPage(MOVIE_LIST_PAGE_SIZE, offset)
             if (page.isEmpty()) break
             result += page
+            // 一部影片可能从详情页选择了其它分集/版本播放；这些 STRM 地址
+            // 与 movies.videoUri 不同，也必须能回查到同一部影片。
+            val movieIds = page.map { it.id }
+            result += cloudStrmRecordDao.getByMovieIds(movieIds)
+                .mapNotNull { record ->
+                    record.movieId
+                        ?.takeIf { record.strmUri.isNotBlank() }
+                        ?.let { movieId -> MoviePlaybackKeyItem(id = movieId, videoUri = record.strmUri) }
+                }
             if (page.size < MOVIE_LIST_PAGE_SIZE) break
             offset += MOVIE_LIST_PAGE_SIZE
         }
-        result
+        result.distinct()
     }
 
     fun observeMovie(id: Long): Flow<MovieEntity?> = movieDao.observeMovie(id)
@@ -374,6 +384,30 @@ class MovieRepository(
         movieDao.setWatched(movieId, isWatched, System.currentTimeMillis())
     }
 
+    suspend fun addCustomTag(movieId: Long, tag: String): AddCustomTagResult = withContext(Dispatchers.IO) {
+        val normalized = tag
+            .replace('\u001F', ' ')
+            .trim()
+            .replace(Regex("\\s+"), " ")
+        if (normalized.isBlank()) return@withContext AddCustomTagResult.Blank
+        val currentTags = movieDao.getTags(movieId) ?: return@withContext AddCustomTagResult.MovieNotFound
+        if (currentTags.any { it.equals(normalized, ignoreCase = true) }) {
+            return@withContext AddCustomTagResult.AlreadyExists
+        }
+        movieDao.setTags(movieId, currentTags + normalized, System.currentTimeMillis())
+        AddCustomTagResult.Added(normalized)
+    }
+
+    suspend fun removeCustomTag(movieId: Long, tag: String): RemoveCustomTagResult = withContext(Dispatchers.IO) {
+        val normalized = tag.trim()
+        if (normalized.isBlank()) return@withContext RemoveCustomTagResult.Blank
+        val currentTags = movieDao.getTags(movieId) ?: return@withContext RemoveCustomTagResult.MovieNotFound
+        val removedTag = currentTags.firstOrNull { it.equals(normalized, ignoreCase = true) }
+            ?: return@withContext RemoveCustomTagResult.NotFound
+        movieDao.setTags(movieId, currentTags.filterNot { it.equals(normalized, ignoreCase = true) }, System.currentTimeMillis())
+        RemoveCustomTagResult.Removed(removedTag)
+    }
+
     suspend fun deleteMovie(movieId: Long) = withContext(Dispatchers.IO) {
         movieDao.deleteById(movieId)
     }
@@ -458,7 +492,7 @@ class MovieRepository(
         DeleteMovieResult(movieId = movieId, pickcodes = pickcodes)
     }
 
-    suspend fun renameMovieStrmFile(movieId: Long, newFileName: String): RenameMovieFileResult = withContext(Dispatchers.IO) {
+    suspend fun renameMovieStrmFile(movieId: Long, newFileName: String): RenameMovieFileResult = withContext(Dispatchers.IO + NonCancellable) {
         val old = movieDao.getMovieLite(movieId) ?: error("影片记录不存在")
         if (!old.videoName.endsWith(".strm", ignoreCase = true)) {
             error("当前影片不是 STRM 文件，暂不支持重命名")
@@ -467,9 +501,16 @@ class MovieRepository(
         val rootUri = Uri.parse(old.libraryRootUri)
         val root = DocumentFile.fromTreeUri(context, rootUri) ?: error("影片库目录不可用")
         if (!root.canWrite()) error("影片库目录没有写入权限")
+        val indexedRecords = cloudStrmRecordDao.getByMovieId(old.id)
+        val indexedPickcodes = indexedRecords.map { it.pickcode }.filter { it.isNotBlank() }.toSet()
         val target = findFileWithParentFast(root, old.libraryRootUri, old.videoUri)
             ?: findFileWithParent(root, old.videoUri)
+            ?: indexedRecords.firstNotNullOfOrNull { record ->
+                findFileWithParentFast(root, record.libraryRootUri ?: old.libraryRootUri, record.strmUri)
+                    ?: findFileWithParent(root, record.strmUri)
+            }
             ?: findStrmWithParentByMovieNumber(root, old)
+            ?: findStrmWithParentByPickcodes(root, indexedPickcodes)
             ?: error("当前 STRM 文件不存在")
 
         val oldName = target.file.name.orEmpty()
@@ -484,14 +525,10 @@ class MovieRepository(
             ?.bufferedReader(Charsets.UTF_8)
             ?.use { it.readText() }
             ?: error("无法读取当前 STRM 文件")
-        val pickcodes = (cloudStrmRecordDao.getByMovieId(old.id).map { it.pickcode } + listOfNotNull(PickcodeExtractor.extract(strmContent)))
+        val pickcodes = (indexedPickcodes + listOfNotNull(PickcodeExtractor.extract(strmContent)))
             .filter { it.isNotBlank() }
             .toSet()
         val renamedFile = copyStrmTextFile(target.parent, normalizedFileName, strmContent)
-        if (!target.file.delete()) {
-            runCatching { renamedFile.delete() }
-            error("重命名失败：无法删除旧 STRM，请检查影片库目录写入权限")
-        }
         val refreshed = scanner.scanFile(rootUri, renamedFile.uri)
             ?: error("重命名成功，但重新扫描 STRM 失败")
         val movie = refreshed.copy(
@@ -506,6 +543,9 @@ class MovieRepository(
         movieDao.upsert(movie)
         pickcodes.forEach { pickcode ->
             updateCloudStrmRecordLocation(pickcode, movie, movie.libraryRootUri)
+        }
+        if (target.file.uri != renamedFile.uri) {
+            runCatching { target.file.delete() }
         }
         RenameMovieFileResult(movie = movie, oldFileName = oldName, newFileName = movie.videoName)
     }
@@ -554,19 +594,28 @@ class MovieRepository(
         movie
     }
 
-    suspend fun scanSingleMovie(rootUri: Uri, videoUri: Uri, mergeByMovieNumber: Boolean = true): MovieEntity? = withContext(Dispatchers.IO) {
+    suspend fun scanSingleMovie(
+        rootUri: Uri,
+        videoUri: Uri,
+        mergeByMovieNumber: Boolean = true,
+        excludedMergeMovieId: Long? = null
+    ): MovieEntity? = withContext(Dispatchers.IO) {
         val scanned = scanner.scanFile(rootUri, videoUri) ?: return@withContext null
         val pickcode = scanned.extractPickcodeFromStrm()
-        val old = pickcode?.let { pick ->
-            cloudStrmRecordDao.get(pick)?.movieId?.let { movieDao.getMovieLite(it) }
-        }
-            ?: movieDao.getMovieByVideoUriLite(scanned.videoUri)
-            ?: scanned.movieNumberKey()?.takeIf { mergeByMovieNumber }?.let { key ->
+        val oldByVideoUri = movieDao.getMovieByVideoUriLite(scanned.videoUri)
+        val oldByNumber = scanned.movieMergeKey()?.takeIf { mergeByMovieNumber }?.let { key ->
                 movieDao.getMovieNumberCandidatesByLibraryRootLite(rootUri.toString(), key.movieNumberCandidateLikePattern())
-                    .firstOrNull { it.movieNumberKey() == key }
+                    .firstOrNull { it.movieMergeKey() == key && it.id != excludedMergeMovieId }
             }
+        val oldByPickcode = pickcode?.let { pick ->
+                cloudStrmRecordDao.get(pick)?.movieId?.let { movieDao.getMovieLite(it) }
+            }
+        val old = oldByVideoUri ?: oldByNumber ?: oldByPickcode
+        val mergedAsAdditionalSource = oldByVideoUri == null &&
+            oldByNumber != null &&
+            oldByNumber.videoUri != scanned.videoUri
         val movie = old?.let {
-            scanned.copy(
+            val merged = scanned.copy(
                 id = it.id,
                 isFavorite = it.isFavorite,
                 isWatched = it.isWatched,
@@ -575,11 +624,25 @@ class MovieRepository(
                 scrapeFailureReason = scanned.resolvedScrapeFailureReason(it),
                 scrapeTaskStatus = scanned.resolvedScrapeTaskStatus(it)
             )
+            if (mergedAsAdditionalSource) {
+                merged.copy(
+                    libraryRootUri = it.libraryRootUri,
+                    videoUri = it.videoUri,
+                    videoName = it.videoName
+                )
+            } else {
+                merged
+            }
         } ?: scanned
         movieDao.upsert(movie)
         val saved = movieDao.getMovieByVideoUriLite(movie.videoUri) ?: movie
         if (pickcode != null) {
-            updateCloudStrmRecordLocation(pickcode, saved, rootUri.toString())
+            val sourceRecordMovie = saved.copy(
+                libraryRootUri = rootUri.toString(),
+                videoUri = scanned.videoUri,
+                videoName = scanned.videoName
+            )
+            updateCloudStrmRecordLocation(pickcode, sourceRecordMovie, rootUri.toString())
         }
         saved
     }
@@ -684,17 +747,15 @@ class MovieRepository(
         val refreshed = scanSingleMovie(
             rootUri = Uri.parse(original.libraryRootUri),
             videoUri = Uri.parse(scrapedStrmUri),
-            mergeByMovieNumber = mergeByMovieNumber
+            mergeByMovieNumber = mergeByMovieNumber,
+            excludedMergeMovieId = original.id.takeIf { mergeByMovieNumber }
         )
         if (refreshed != null) {
-            if (
-                original.id != refreshed.id &&
-                original.videoUri != refreshed.videoUri
-            ) {
+            if (original.id != refreshed.id) {
                 movieDao.deleteById(original.id)
             }
             pickcodes.forEach { pickcode ->
-                updateCloudStrmRecordLocation(pickcode, refreshed, refreshed.libraryRootUri)
+                attachCloudStrmRecordToMovie(pickcode, refreshed)
             }
         }
         refreshed
@@ -703,7 +764,7 @@ class MovieRepository(
     suspend fun findMovieByNumber(rootUri: String, number: String): MovieEntity? = withContext(Dispatchers.IO) {
         val normalized = number.movieNumberKeyFromText() ?: number.uppercase(Locale.ROOT)
         movieDao.getMovieNumberCandidatesByLibraryRootLite(rootUri, normalized.movieNumberCandidateLikePattern())
-            .firstOrNull { it.movieNumberKey() == normalized }
+            .firstOrNull { it.movieMergeKey() == normalized }
     }
 
     suspend fun findMovieByNumberAndVariant(rootUri: String, number: String, sourceText: String): MovieEntity? = withContext(Dispatchers.IO) {
@@ -857,6 +918,25 @@ class MovieRepository(
         return walk(root)
     }
 
+    private fun findStrmWithParentByPickcodes(root: DocumentFile, pickcodes: Set<String>): FileWithParent? {
+        if (pickcodes.isEmpty()) return null
+        fun walk(directory: DocumentFile): FileWithParent? {
+            directory.listFiles().forEach { child ->
+                if (child.isDirectory) {
+                    walk(child)?.let { return it }
+                } else if (
+                    child.isFile &&
+                    child.name.orEmpty().endsWith(".strm", ignoreCase = true) &&
+                    readPickcode(child) in pickcodes
+                ) {
+                    return FileWithParent(directory, child)
+                }
+            }
+            return null
+        }
+        return walk(root)
+    }
+
     private fun readPickcode(file: DocumentFile): String? {
         val content = runCatching {
             context.contentResolver.openInputStream(file.uri)
@@ -919,6 +999,7 @@ class MovieRepository(
                         strmUri = saved.videoUri,
                         libraryRootUri = libraryRootUri,
                         movieId = saved.id,
+                        videoSizeBytes = null,
                         createdAt = saved.scannedAtMillis.takeIf { it > 0 } ?: System.currentTimeMillis(),
                         updatedAt = System.currentTimeMillis()
                     )
@@ -951,6 +1032,7 @@ class MovieRepository(
                 strmUri = movie.videoUri,
                 libraryRootUri = libraryRootUri,
                 movieId = movie.id,
+                videoSizeBytes = null,
                 createdAt = movie.scannedAtMillis.takeIf { it > 0 } ?: now,
                 updatedAt = now
             )).copy(
@@ -962,6 +1044,17 @@ class MovieRepository(
                 libraryRootUri = libraryRootUri,
                 movieId = movie.id,
                 updatedAt = now
+            )
+        )
+    }
+
+    private suspend fun attachCloudStrmRecordToMovie(pickcode: String, movie: MovieEntity) {
+        val existing = cloudStrmRecordDao.get(pickcode) ?: return
+        cloudStrmRecordDao.upsert(
+            existing.copy(
+                libraryRootUri = existing.libraryRootUri ?: movie.libraryRootUri,
+                movieId = movie.id,
+                updatedAt = System.currentTimeMillis()
             )
         )
     }
@@ -1106,6 +1199,20 @@ data class MovieMetadataSummary(
     val count: Int
 )
 
+sealed interface AddCustomTagResult {
+    data class Added(val tag: String) : AddCustomTagResult
+    data object AlreadyExists : AddCustomTagResult
+    data object Blank : AddCustomTagResult
+    data object MovieNotFound : AddCustomTagResult
+}
+
+sealed interface RemoveCustomTagResult {
+    data class Removed(val tag: String) : RemoveCustomTagResult
+    data object NotFound : RemoveCustomTagResult
+    data object Blank : RemoveCustomTagResult
+    data object MovieNotFound : RemoveCustomTagResult
+}
+
 data class MoviePlaybackPart(
     val label: String,
     val videoUri: String,
@@ -1176,6 +1283,12 @@ private fun MovieEntity.movieNumberKey(): String? {
     val source = listOf(videoName, title, originalTitle.orEmpty(), uniqueIds.joinToString(" "))
         .joinToString(" ")
     return movieVersionKeyFromText(source)
+}
+
+private fun MovieEntity.movieMergeKey(): String? {
+    val source = listOf(videoName, title, originalTitle.orEmpty(), uniqueIds.joinToString(" "))
+        .joinToString(" ")
+    return movieKeyFromText(source)
 }
 
 private fun String.movieNumberKeyFromText(): String? {

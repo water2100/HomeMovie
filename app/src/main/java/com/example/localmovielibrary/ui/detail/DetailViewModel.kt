@@ -1,15 +1,20 @@
 ﻿package com.example.localmovielibrary.ui.detail
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.localmovielibrary.cloud115.Cloud115Client
 import com.example.localmovielibrary.data.local.MovieEntity
+import com.example.localmovielibrary.data.repository.AddCustomTagResult
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.MoviePlaybackPart
 import com.example.localmovielibrary.data.repository.MovieRepository
+import com.example.localmovielibrary.data.repository.RemoveCustomTagResult
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
+import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.scraper.ScrapeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -28,14 +33,19 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.URLDecoder
 
 class DetailViewModel(
-    movieId: Long,
+    context: Context,
+    private val movieId: Long,
     private val repository: MovieRepository,
     private val cloudStrmRecordRepository: CloudStrmRecordRepository,
     private val scrapeRepository: StrmScrapeRepository,
-    private val settingsRepository: AppSettingsRepository
+    private val settingsRepository: AppSettingsRepository,
+    private val cloud115Client: Cloud115Client
 ) : ViewModel() {
+    private val appContext = context.applicationContext
     private val scrapeScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     val movie: StateFlow<MovieEntity?> = repository.observeMovie(movieId)
@@ -49,6 +59,12 @@ class DetailViewModel(
 
     private val _playbackParts = MutableStateFlow<List<MoviePlaybackPart>>(emptyList())
     val playbackParts: StateFlow<List<MoviePlaybackPart>> = _playbackParts
+
+    private val _cloudVideoSizeBytes = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val cloudVideoSizeBytes: StateFlow<Map<String, Long>> = _cloudVideoSizeBytes
+
+    private val _cloudDeleteEnabled = MutableStateFlow(settingsRepository.isCloudDeleteEnabled())
+    val cloudDeleteEnabled: StateFlow<Boolean> = _cloudDeleteEnabled
 
     private val events = Channel<DetailEvent>(Channel.BUFFERED)
     val eventFlow: Flow<DetailEvent> = events.receiveAsFlow()
@@ -71,10 +87,52 @@ class DetailViewModel(
                         partsDeferred.await() to similarDeferred.await()
                     }
                     _playbackParts.value = parts
+                    _cloudVideoSizeBytes.value = loadCloudVideoSizeBytes(parts)
                     _similarMovies.value = similar
             }
         }
     }
+
+    private suspend fun loadCloudVideoSizeBytes(parts: List<MoviePlaybackPart>): Map<String, Long> =
+        withContext(Dispatchers.IO) {
+            val cachedRecords = cloudStrmRecordRepository.getByMovieId(movieId)
+                .associateBy { it.strmUri }
+            buildMap {
+                parts.forEach { part ->
+                    if (!part.videoUri.endsWith(".strm", ignoreCase = true)) return@forEach
+                    cachedRecords[part.videoUri]?.videoSizeBytes
+                        ?.takeIf { it > 0L }
+                        ?.let { cachedSize ->
+                            put(part.videoUri, cachedSize)
+                            return@forEach
+                        }
+                    val content = runCatching {
+                        appContext.contentResolver.openInputStream(Uri.parse(part.videoUri))
+                            ?.bufferedReader(Charsets.UTF_8)
+                            ?.use { it.readText() }
+                            .orEmpty()
+                    }.getOrDefault("")
+                    val pickcode = PickcodeExtractor.extract(content) ?: return@forEach
+                    val sourceName = runCatching {
+                        val sourceUri = Uri.parse(content)
+                        val routeIndex = sourceUri.pathSegments.indexOfFirst {
+                            it == "download_m3u" || it == "play" || it == "video_proxy"
+                        }
+                        sourceUri.pathSegments.getOrNull(routeIndex + 2)?.let(Uri::decode)
+                    }.getOrNull().orEmpty()
+                    val query = sourceName.ifBlank { part.fileName }
+                    val size = runCatching {
+                        cloud115Client.searchFiles(query, limit = 100)
+                            .firstOrNull { it.pickcode == pickcode }
+                            ?.size
+                    }.getOrNull()
+                    if (size != null && size > 0L) {
+                        put(part.videoUri, size)
+                        cloudStrmRecordRepository.saveVideoSize(pickcode, size)
+                    }
+                }
+            }
+        }
 
     fun toggleFavorite() {
         val current = movie.value ?: return
@@ -94,6 +152,30 @@ class DetailViewModel(
         }
     }
 
+    fun addCustomTag(tag: String) {
+        val current = movie.value ?: return
+        viewModelScope.launch {
+            when (val result = repository.addCustomTag(current.id, tag)) {
+                is AddCustomTagResult.Added -> events.send(DetailEvent.Message("已添加标签：${result.tag}"))
+                AddCustomTagResult.AlreadyExists -> events.send(DetailEvent.Message("这个标签已经存在"))
+                AddCustomTagResult.Blank -> events.send(DetailEvent.Message("请输入标签"))
+                AddCustomTagResult.MovieNotFound -> events.send(DetailEvent.Message("影片记录不存在"))
+            }
+        }
+    }
+
+    fun removeCustomTag(tag: String) {
+        val current = movie.value ?: return
+        viewModelScope.launch {
+            when (val result = repository.removeCustomTag(current.id, tag)) {
+                is RemoveCustomTagResult.Removed -> events.send(DetailEvent.Message("已删除标签：${result.tag}"))
+                RemoveCustomTagResult.NotFound -> events.send(DetailEvent.Message("这个标签不存在或来自类型"))
+                RemoveCustomTagResult.Blank -> events.send(DetailEvent.Message("标签为空"))
+                RemoveCustomTagResult.MovieNotFound -> events.send(DetailEvent.Message("影片记录不存在"))
+            }
+        }
+    }
+
     fun refreshMovie() {
         val current = movie.value ?: return
         viewModelScope.launch {
@@ -110,11 +192,14 @@ class DetailViewModel(
         }
     }
 
-    fun deleteMovie() {
+    fun deleteMovie(deleteCloud: Boolean = false) {
         val current = movie.value ?: return
         viewModelScope.launch {
-            events.send(DetailEvent.Message("正在删除影片..."))
+            events.send(DetailEvent.Message(if (deleteCloud) "正在删除网盘文件和本地记录..." else "正在删除影片..."))
             runCatching {
+                if (deleteCloud) {
+                    deleteCloudFiles(current)
+                }
                 val result = repository.deleteMovieWithFiles(current.id)
                 cloudStrmRecordRepository.deleteForMovie(current.id, result.pickcodes)
             }.onSuccess {
@@ -123,6 +208,23 @@ class DetailViewModel(
                 if (error is CancellationException) throw error
                 events.send(DetailEvent.Message(error.message ?: "删除失败"))
             }
+        }
+    }
+
+    private suspend fun deleteCloudFiles(current: MovieEntity) {
+        val targets = linkedMapOf<String, String?>()
+        val currentStrm = current.videoUri.readTextFromUri(appContext)
+        PickcodeExtractor.extract(currentStrm)?.let { pickcode ->
+            targets[pickcode] = currentStrm.extractCloudOriginalFileName() ?: current.videoName
+        }
+        cloudStrmRecordRepository.getByMovieId(current.id).forEach { record ->
+            val content = record.strmUri.readTextFromUri(appContext)
+            val nameHint = content.extractCloudOriginalFileName() ?: record.fileName
+            targets[record.pickcode] = nameHint
+        }
+        if (targets.isEmpty()) error("没有找到可删除的 115 pickcode")
+        targets.forEach { (pickcode, nameHint) ->
+            cloud115Client.deleteFileByPickcode(pickcode, nameHint)
         }
     }
 
@@ -180,6 +282,10 @@ class DetailViewModel(
         scrapeCurrent(ScrapeSource.TheJavDB)
     }
 
+    fun scrapeWithCustomJson() {
+        scrapeCurrent(ScrapeSource.CustomJson)
+    }
+
     fun rescrapeWithDefault() {
         rescrapeCurrent(scrapeRepository.getDefaultScrapeSource())
     }
@@ -204,18 +310,28 @@ class DetailViewModel(
         rescrapeCurrent(ScrapeSource.TheJavDB)
     }
 
+    fun rescrapeWithCustomJson() {
+        rescrapeCurrent(ScrapeSource.CustomJson)
+    }
+
     fun clearScrapeFiles() {
         val current = movie.value ?: return
         scrapeScope.launch {
             _isScraping.value = true
             events.trySend(DetailEvent.Message("正在清除刮削内容并还原..."))
             runCatching {
-                val number = scrapeRepository.clearScrapeFiles(current)
-                scrapeRepository.appendLog("开始重新扫描影片库，刷新还原后的 STRM")
-                val count = repository.scanLibrary(Uri.parse(current.libraryRootUri))
-                scrapeRepository.appendLog("影片库重新扫描完成：$count 部影片")
-                repository.findMovieByNumber(current.libraryRootUri, number)?.id
+                val result = scrapeRepository.clearScrapeFiles(current)
+                scrapeRepository.appendLog("开始刷新单个影片，刷新还原后的 STRM")
+                repository.scanSingleMovie(
+                    rootUri = Uri.parse(current.libraryRootUri),
+                    videoUri = Uri.parse(result.strmUri),
+                    mergeByMovieNumber = true,
+                    excludedMergeMovieId = current.id
+                )?.id ?: repository.findMovieByNumber(current.libraryRootUri, result.number)?.id
             }.onSuccess { newMovieId ->
+                if (newMovieId != null && newMovieId != current.id) {
+                    repository.deleteMovie(current.id)
+                }
                 _isScraping.value = false
                 events.trySend(DetailEvent.Message("已清除刮削内容并还原"))
                 newMovieId?.let { events.trySend(DetailEvent.OpenMovie(it)) } ?: events.trySend(DetailEvent.Deleted)
@@ -252,15 +368,18 @@ class DetailViewModel(
     }
 
     private suspend fun refreshScrapedMovie(current: MovieEntity, number: String, knownStrmUri: String? = null): Long? {
-        val rootUri = Uri.parse(current.libraryRootUri)
         val finalUri = knownStrmUri ?: scrapeRepository.findStrmUriByNumber(
             current.libraryRootUri,
             number,
             partLabel = null,
             nameHint = current.videoName
         )
-        val refreshed = finalUri?.let {
-            repository.scanSingleMovie(rootUri, Uri.parse(it), mergeByMovieNumber = true)
+        val refreshed = finalUri?.let { strmUri ->
+            repository.refreshMovieAfterScrape(
+                original = current,
+                scrapedStrmUri = strmUri,
+                mergeByMovieNumber = true
+            )
         }
         if (refreshed != null) {
             scrapeRepository.appendLog("单个影片刷新完成：${refreshed.videoName}")
@@ -294,18 +413,41 @@ class DetailViewModel(
 
     companion object {
         fun factory(
+            context: Context,
             movieId: Long,
             repository: MovieRepository,
             cloudStrmRecordRepository: CloudStrmRecordRepository,
             scrapeRepository: StrmScrapeRepository,
-            settingsRepository: AppSettingsRepository
+            settingsRepository: AppSettingsRepository,
+            cloud115Client: Cloud115Client
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    DetailViewModel(movieId, repository, cloudStrmRecordRepository, scrapeRepository, settingsRepository) as T
+                    DetailViewModel(context, movieId, repository, cloudStrmRecordRepository, scrapeRepository, settingsRepository, cloud115Client) as T
             }
     }
+}
+
+private fun String.readTextFromUri(context: Context): String =
+    runCatching {
+        context.contentResolver.openInputStream(Uri.parse(this))
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            .orEmpty()
+    }.getOrDefault("")
+
+private fun String.extractCloudOriginalFileName(): String? {
+    val uri = runCatching { Uri.parse(this) }.getOrNull() ?: return null
+    val segments = uri.pathSegments
+    val routeIndex = segments.indexOfFirst { it == "download_m3u" || it == "play" || it == "video_proxy" }
+    val encodedName = routeIndex
+        .takeIf { it >= 0 && it + 2 < segments.size }
+        ?.let { segments[it + 2] }
+        ?: return null
+    return runCatching { URLDecoder.decode(encodedName, Charsets.UTF_8.name()) }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
 }
 
 private data class DetailDerivedDataKey(
@@ -338,6 +480,7 @@ private val ScrapeSource.displayName: String
         ScrapeSource.Mgstage -> "MGStage"
         ScrapeSource.Javbus -> "JavBus"
         ScrapeSource.TheJavDB -> "TheJavDB"
+        ScrapeSource.CustomJson -> "自定义 JSON"
     }
 
 sealed interface DetailEvent {

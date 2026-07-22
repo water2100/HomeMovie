@@ -6,6 +6,7 @@ data class Cloud115FileItem(
     val fid: Long?,
     val pickcode: String?,
     val size: Long?,
+    val addedAt: Long?,
     val modifiedAt: Long?,
     val isDirectory: Boolean
 )

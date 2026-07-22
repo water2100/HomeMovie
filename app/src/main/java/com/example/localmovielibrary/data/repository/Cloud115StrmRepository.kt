@@ -65,7 +65,8 @@ class Cloud115StrmRepository(
                     pickcode = pickcode,
                     fileName = variantFile.name,
                     strmUri = variantFile.uri,
-                    libraryRootUri = settingsRepository.getLibraryRootUri()
+                    libraryRootUri = settingsRepository.getLibraryRootUri(),
+                    videoSizeBytes = item.size
                 )
                 return@withContext GeneratedStrmFile(
                     fileName = variantFile.name,
@@ -95,7 +96,8 @@ class Cloud115StrmRepository(
                     pickcode = pickcode,
                     fileName = standardFile.name,
                     strmUri = standardFile.uri,
-                    libraryRootUri = settingsRepository.getLibraryRootUri()
+                    libraryRootUri = settingsRepository.getLibraryRootUri(),
+                    videoSizeBytes = item.size
                 )
                 return@withContext GeneratedStrmFile(
                     fileName = standardFile.name,
@@ -118,7 +120,8 @@ class Cloud115StrmRepository(
             pickcode = pickcode,
             fileName = file.name,
             strmUri = file.uri,
-            libraryRootUri = settingsRepository.getLibraryRootUri()
+            libraryRootUri = settingsRepository.getLibraryRootUri(),
+            videoSizeBytes = item.size
         )
         GeneratedStrmFile(
             fileName = file.name,

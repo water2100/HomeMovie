@@ -83,6 +83,7 @@ class XunleiSubtitleRepository(
             if (bytes.isEmpty()) error("迅雷字幕下载结果为空")
             bytes
         }
+        validateDownloadedSubtitle(bytes, result)
         fileStore.saveSubtitleBytes(
             videoUri = videoUri,
             fileName = fileName,
@@ -133,6 +134,25 @@ class XunleiSubtitleRepository(
         val subtitleDuration = durationMs ?: return true
         if (videoDurationMs <= 0L) return true
         return abs(subtitleDuration - videoDurationMs) <= MAX_DURATION_DIFF_MS
+    }
+
+    private fun validateDownloadedSubtitle(bytes: ByteArray, result: SubtitleSearchResult) {
+        val preview = bytes.toString(Charsets.UTF_8)
+            .trimStart('\uFEFF')
+            .trimStart()
+            .take(512)
+        val lowerPreview = preview.lowercase(Locale.ROOT)
+        if (
+            lowerPreview.startsWith("<error") ||
+            (lowerPreview.startsWith("<?xml") && lowerPreview.contains("<error")) ||
+            lowerPreview.startsWith("<html") ||
+            lowerPreview.startsWith("<!doctype html")
+        ) {
+            error("迅雷字幕下载失败：远端字幕文件不存在或返回错误内容")
+        }
+        if (result.ext in SUPPORTED_EXTENSIONS && lowerPreview.startsWith("<")) {
+            error("迅雷字幕下载失败：下载结果不是有效字幕文件")
+        }
     }
 
     companion object {

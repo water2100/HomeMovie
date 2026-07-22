@@ -449,6 +449,12 @@ interface MovieDao {
     @Query("UPDATE movies SET isWatched = :isWatched, updatedAt = :updatedAt WHERE id = :id")
     suspend fun setWatched(id: Long, isWatched: Boolean, updatedAt: Long)
 
+    @Query("SELECT tags FROM movies WHERE id = :id")
+    suspend fun getTags(id: Long): List<String>?
+
+    @Query("UPDATE movies SET tags = :tags, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setTags(id: Long, tags: List<String>, updatedAt: Long)
+
     @Query("UPDATE movies SET scrapeFailureReason = :reason, updatedAt = :updatedAt WHERE id = :id")
     suspend fun setScrapeFailureReason(id: Long, reason: String?, updatedAt: Long)
 

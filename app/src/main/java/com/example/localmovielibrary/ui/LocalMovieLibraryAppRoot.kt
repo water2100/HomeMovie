@@ -66,6 +66,7 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
+    val context = LocalContext.current
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -80,6 +81,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
     var scrapeTaskPromptDismissed by remember { mutableStateOf(false) }
     var showStartupScrapeTaskPrompt by remember { mutableStateOf(false) }
     var startupUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var showStartupAnimation by remember {
+        mutableStateOf(appContainer.settingsRepository.isStartupAnimationEnabled())
+    }
     val showBottomBar = currentRoute == Route.Home ||
         currentRoute == Route.Movies ||
         currentRoute == Route.MovieLibrary ||
@@ -294,11 +298,13 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     val viewModel: DetailViewModel = viewModel(
                         key = "detail-$movieId",
                         factory = DetailViewModel.factory(
+                            context = context,
                             movieId = movieId,
                             repository = appContainer.movieRepository,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
                             scrapeRepository = appContainer.strmScrapeRepository,
-                            settingsRepository = appContainer.settingsRepository
+                            settingsRepository = appContainer.settingsRepository,
+                            cloud115Client = appContainer.cloud115Client
                         )
                     )
                     DetailScreen(
@@ -375,6 +381,13 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                 }
             }
         }
+    }
+
+    if (showStartupAnimation) {
+        StartupAnimationOverlay(
+            imageUri = appContainer.settingsRepository.getStartupAnimationImageUri(),
+            onFinished = { showStartupAnimation = false }
+        )
     }
 
     if (showStartupScrapeTaskPrompt && unfinishedScrapeTaskCount > 0 && !scrapeTaskPromptDismissed) {

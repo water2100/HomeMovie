@@ -40,7 +40,8 @@ class AppContainer(context: Context) {
         MIGRATION_9_10,
         MIGRATION_10_11,
         MIGRATION_11_12,
-        MIGRATION_12_13
+        MIGRATION_12_13,
+        MIGRATION_13_14
     ).build()
 
     val scanner = LibraryScanner(appContext)
@@ -277,6 +278,12 @@ class AppContainer(context: Context) {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_folder_batch_tasks_status` ON `cloud_folder_batch_tasks` (`status`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_folder_batch_tasks_folderCid` ON `cloud_folder_batch_tasks` (`folderCid`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_folder_batch_tasks_updatedAt` ON `cloud_folder_batch_tasks` (`updatedAt`)")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cloud_strm_records ADD COLUMN videoSizeBytes INTEGER")
             }
         }
     }

@@ -97,6 +97,6 @@ class ScrapeLogStore(context: Context) {
 
     private companion object {
         const val KEY_DATES = "dates"
-        const val MAX_LINES = 600
+        const val MAX_LINES = 2_000
     }
 }

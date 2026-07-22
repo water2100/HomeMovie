@@ -7,7 +7,8 @@ enum class ScrapeSource {
     Official,
     Mgstage,
     Javbus,
-    TheJavDB;
+    TheJavDB,
+    CustomJson;
 
     companion object {
         fun fromStoredName(value: String?): ScrapeSource? {
@@ -41,6 +42,7 @@ data class ScrapedMovieInfo(
     val source: String = "",
     val thumbUrl: String = "",
     val posterUrl: String = "",
+    val fanartUrl: String = "",
     val thumbImageUrls: List<String> = emptyList(),
     val posterImageUrls: List<String> = emptyList()
 )

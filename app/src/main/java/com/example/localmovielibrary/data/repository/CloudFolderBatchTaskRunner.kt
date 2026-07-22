@@ -95,6 +95,7 @@ class CloudFolderBatchTaskRunner(
             fid = null,
             pickcode = null,
             size = null,
+            addedAt = null,
             modifiedAt = null,
             isDirectory = true
         )
@@ -337,7 +338,7 @@ class CloudFolderBatchTaskRunner(
             movieRepository.markScrapeTaskCompleted(refreshedMovie.id)
             recordRepository.updateStrmLocation(
                 pickcode = pickcode,
-                strmUri = refreshedMovie.videoUri,
+                strmUri = scrapeResult.strmUri,
                 libraryRootUri = refreshedMovie.libraryRootUri,
                 movieId = refreshedMovie.id
             )

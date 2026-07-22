@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -534,6 +535,7 @@ fun PlayerScreen(
             onlineSubtitles = uiState.onlineSubtitles,
             externalSubtitleEnabled = uiState.externalSubtitleEnabled,
             activeSubtitleName = uiState.activeExternalSubtitleName,
+            subtitleOffsetMs = uiState.externalSubtitleOffsetMs,
             isSearching = uiState.externalSubtitleSearching,
             isDownloading = uiState.externalSubtitleDownloading,
             message = uiState.externalSubtitleMessage,
@@ -544,6 +546,8 @@ fun PlayerScreen(
             onSearchOnline = { viewModel.searchExternalSubtitles(durationMs) },
             onLocalSelected = viewModel::loadLocalSubtitle,
             onLocalDelete = viewModel::deleteLocalSubtitle,
+            onSubtitleOffsetAdjust = viewModel::adjustExternalSubtitleOffset,
+            onSubtitleOffsetReset = viewModel::resetExternalSubtitleOffset,
             onOnlineSelected = viewModel::downloadAndLoadSubtitle
         )
 
@@ -884,6 +888,7 @@ private fun ExternalSubtitlePanel(
     onlineSubtitles: List<SubtitleSearchResult>,
     externalSubtitleEnabled: Boolean,
     activeSubtitleName: String?,
+    subtitleOffsetMs: Long,
     isSearching: Boolean,
     isDownloading: Boolean,
     message: String?,
@@ -894,6 +899,8 @@ private fun ExternalSubtitlePanel(
     onSearchOnline: () -> Unit,
     onLocalSelected: (LocalSubtitleFile) -> Unit,
     onLocalDelete: (LocalSubtitleFile) -> Unit,
+    onSubtitleOffsetAdjust: (Long) -> Unit,
+    onSubtitleOffsetReset: () -> Unit,
     onOnlineSelected: (SubtitleSearchResult) -> Unit
 ) {
     BoxWithConstraints(
@@ -1007,6 +1014,15 @@ private fun ExternalSubtitlePanel(
                             onCheckedChange = onExternalSubtitleEnabledChange,
                             enabled = !isDownloading,
                             modifier = Modifier.scale(0.80f)
+                        )
+                    }
+
+                    if (activeSubtitleName != null) {
+                        SubtitleOffsetControls(
+                            offsetMs = subtitleOffsetMs,
+                            enabled = externalSubtitleEnabled && !isDownloading,
+                            onAdjust = onSubtitleOffsetAdjust,
+                            onReset = onSubtitleOffsetReset
                         )
                     }
 
@@ -1261,6 +1277,95 @@ private fun AudioTrackOptionRow(
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+@Composable
+private fun SubtitleOffsetControls(
+    offsetMs: Long,
+    enabled: Boolean,
+    onAdjust: (Long) -> Unit,
+    onReset: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(9.dp))
+            .background(Color.White.copy(alpha = 0.07f))
+            .padding(horizontal = 7.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "字幕时间轴",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = formatSubtitleOffset(offsetMs),
+                    color = Color.White.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            TextButton(
+                onClick = onReset,
+                enabled = enabled && offsetMs != 0L,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) {
+                Text("重置", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            SubtitleOffsetButton("-5", enabled) { onAdjust(-5_000L) }
+            SubtitleOffsetButton("-1", enabled) { onAdjust(-1_000L) }
+            SubtitleOffsetButton("-0.5", enabled) { onAdjust(-500L) }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            SubtitleOffsetButton("+0.5", enabled) { onAdjust(500L) }
+            SubtitleOffsetButton("+1", enabled) { onAdjust(1_000L) }
+            SubtitleOffsetButton("+5", enabled) { onAdjust(5_000L) }
+        }
+    }
+}
+
+@Composable
+private fun RowScope.SubtitleOffsetButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.weight(1f),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
+    ) {
+        Text(label + "s", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+    }
+}
+
+private fun formatSubtitleOffset(offsetMs: Long): String {
+    if (offsetMs == 0L) return "0s"
+    val sign = if (offsetMs > 0) "+" else "-"
+    val absMs = abs(offsetMs)
+    val seconds = absMs / 1_000
+    val millis = absMs % 1_000
+    return if (millis == 0L) {
+        sign + seconds + "s"
+    } else {
+        sign + seconds + "." + (millis / 100) + "s"
     }
 }
 

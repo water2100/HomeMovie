@@ -50,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -76,12 +77,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.data.repository.MoviePlaybackPart
 import com.example.localmovielibrary.scraper.ActorAvatarStore
 import com.example.localmovielibrary.ui.shared.UriImage
 import com.example.localmovielibrary.ui.shared.artworkCacheRevision
+import com.example.localmovielibrary.util.detectMovieVariant
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -107,6 +110,8 @@ fun DetailScreen(
     val isScraping by viewModel.isScraping.collectAsStateWithLifecycle()
     val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
     val playbackParts by viewModel.playbackParts.collectAsStateWithLifecycle()
+    val cloudVideoSizeBytes by viewModel.cloudVideoSizeBytes.collectAsStateWithLifecycle()
+    val cloudDeleteEnabled by viewModel.cloudDeleteEnabled.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var cachedMovie by remember { mutableStateOf<MovieEntity?>(null) }
     var showPathDialog by rememberSaveable { mutableStateOf(false) }
@@ -114,6 +119,8 @@ fun DetailScreen(
     var showRenameDialog by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirm by rememberSaveable { mutableStateOf(false) }
     var showClearScrapeConfirm by rememberSaveable { mutableStateOf(false) }
+    var showAddTagDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingDeleteTag by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(movie) {
         movie?.let { cachedMovie = it }
@@ -156,6 +163,7 @@ fun DetailScreen(
                     movie = it,
                     onBack = onBack,
                     playbackParts = playbackParts,
+                    cloudVideoSizeBytes = cloudVideoSizeBytes,
                     onPlay = { part -> onPlay(part.videoUri, it.title, part.fileName) },
                     onToggleFavorite = viewModel::toggleFavorite,
                     onToggleWatched = viewModel::toggleWatched,
@@ -175,14 +183,18 @@ fun DetailScreen(
                     onScrapeOfficial = viewModel::scrapeWithOfficial,
                     onScrapeJavbus = viewModel::scrapeWithJavbus,
                     onScrapeJavdb = viewModel::scrapeWithJavdb,
+                    onScrapeCustomJson = viewModel::scrapeWithCustomJson,
                     onRescrapeDefault = viewModel::rescrapeWithDefault,
                     onRescrapeDmm = viewModel::rescrapeWithDmm,
                     onRescrapeDmm2 = viewModel::rescrapeWithDmm2,
                     onRescrapeOfficial = viewModel::rescrapeWithOfficial,
                     onRescrapeJavbus = viewModel::rescrapeWithJavbus,
                     onRescrapeJavdb = viewModel::rescrapeWithJavdb,
+                    onRescrapeCustomJson = viewModel::rescrapeWithCustomJson,
                     onClearScrapeRequest = { showClearScrapeConfirm = true },
                     onDeleteRequest = { showDeleteConfirm = true },
+                    onAddTagRequest = { showAddTagDialog = true },
+                    onDeleteTagRequest = { pendingDeleteTag = it },
                     onActorClick = { onFilterClick("actor", it) },
                     onTagClick = { onFilterClick("tag", it) },
                     onGenreClick = { onFilterClick("genre", it) },
@@ -223,10 +235,15 @@ fun DetailScreen(
         if (showDeleteConfirm) {
             ConfirmDeleteDialog(
                 movieTitle = it.title,
+                cloudDeleteEnabled = cloudDeleteEnabled,
                 onDismiss = { showDeleteConfirm = false },
                 onConfirm = {
                     showDeleteConfirm = false
-                    viewModel.deleteMovie()
+                    viewModel.deleteMovie(deleteCloud = false)
+                },
+                onConfirmCloud = {
+                    showDeleteConfirm = false
+                    viewModel.deleteMovie(deleteCloud = true)
                 }
             )
         }
@@ -240,6 +257,26 @@ fun DetailScreen(
                 }
             )
         }
+        if (showAddTagDialog) {
+            AddCustomTagDialog(
+                movieTitle = it.title,
+                onDismiss = { showAddTagDialog = false },
+                onConfirm = { tag ->
+                    showAddTagDialog = false
+                    viewModel.addCustomTag(tag)
+                }
+            )
+        }
+        pendingDeleteTag?.let { tag ->
+            ConfirmDeleteTagDialog(
+                tag = tag,
+                onDismiss = { pendingDeleteTag = null },
+                onConfirm = {
+                    pendingDeleteTag = null
+                    viewModel.removeCustomTag(tag)
+                }
+            )
+        }
     }
 }
 
@@ -248,6 +285,7 @@ fun MovieDetailScreen(
     movie: MovieEntity,
     onBack: () -> Unit,
     playbackParts: List<MoviePlaybackPart>,
+    cloudVideoSizeBytes: Map<String, Long>,
     onPlay: (MoviePlaybackPart) -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleWatched: () -> Unit,
@@ -261,14 +299,18 @@ fun MovieDetailScreen(
     onScrapeOfficial: () -> Unit,
     onScrapeJavbus: () -> Unit,
     onScrapeJavdb: () -> Unit,
+    onScrapeCustomJson: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
     onRescrapeJavdb: () -> Unit,
+    onRescrapeCustomJson: () -> Unit,
     onClearScrapeRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
+    onAddTagRequest: () -> Unit,
+    onDeleteTagRequest: (String) -> Unit,
     onActorClick: (String) -> Unit,
     onTagClick: (String) -> Unit,
     onGenreClick: (String) -> Unit,
@@ -330,19 +372,28 @@ fun MovieDetailScreen(
                     onScrapeOfficial = onScrapeOfficial,
                     onScrapeJavbus = onScrapeJavbus,
                     onScrapeJavdb = onScrapeJavdb,
+                    onScrapeCustomJson = onScrapeCustomJson,
                     onRescrapeDefault = onRescrapeDefault,
                     onRescrapeDmm = onRescrapeDmm,
                     onRescrapeDmm2 = onRescrapeDmm2,
                     onRescrapeOfficial = onRescrapeOfficial,
                     onRescrapeJavbus = onRescrapeJavbus,
                     onRescrapeJavdb = onRescrapeJavdb,
+                    onRescrapeCustomJson = onRescrapeCustomJson,
                     onClearScrapeRequest = onClearScrapeRequest
                 )
                 ReleaseAndOverview(movie = movie, onTagClick = onTagClick)
                 CastSection(actors = movie.actors, onActorClick = onActorClick)
                 CollectionSection(movie)
                 SimilarSection(movies = similarMovies, onMovieClick = onSimilarClick)
-                OtherInfoSection(movie = movie, onTagClick = onTagClick)
+                OtherInfoSection(
+                    movie = movie,
+                    playbackParts = playbackParts,
+                    cloudVideoSizeBytes = cloudVideoSizeBytes,
+                    onTagClick = onTagClick,
+                    onAddTagRequest = onAddTagRequest,
+                    onDeleteTagRequest = onDeleteTagRequest
+                )
             }
         }
 
@@ -577,12 +628,14 @@ private fun MobileActionBar(
     onScrapeOfficial: () -> Unit,
     onScrapeJavbus: () -> Unit,
     onScrapeJavdb: () -> Unit,
+    onScrapeCustomJson: () -> Unit,
     onRescrapeDefault: () -> Unit,
     onRescrapeDmm: () -> Unit,
     onRescrapeDmm2: () -> Unit,
     onRescrapeOfficial: () -> Unit,
     onRescrapeJavbus: () -> Unit,
     onRescrapeJavdb: () -> Unit,
+    onRescrapeCustomJson: () -> Unit,
     onClearScrapeRequest: () -> Unit
 ) {
     var moreExpanded by remember { mutableStateOf(false) }
@@ -662,6 +715,13 @@ private fun MobileActionBar(
                             onScrapeJavdb()
                         }
                     )
+                    DropdownMenuItem(
+                        text = { Text("从自定义 JSON 刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onScrapeCustomJson()
+                        }
+                    )
                 }
                 if (canRescrape) {
                     DropdownMenuItem(
@@ -697,6 +757,13 @@ private fun MobileActionBar(
                         onClick = {
                             moreExpanded = false
                             onRescrapeJavdb()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("用自定义 JSON 重新刮削") },
+                        onClick = {
+                            moreExpanded = false
+                            onRescrapeCustomJson()
                         }
                     )
                 }
@@ -930,17 +997,45 @@ private fun SmallPosterCard(
 @Composable
 private fun OtherInfoSection(
     movie: MovieEntity,
-    onTagClick: (String) -> Unit
+    playbackParts: List<MoviePlaybackPart>,
+    cloudVideoSizeBytes: Map<String, Long>,
+    onTagClick: (String) -> Unit,
+    onAddTagRequest: () -> Unit,
+    onDeleteTagRequest: (String) -> Unit
 ) {
-    val tagValues = (movie.tags + movie.genres).distinctByNormalizedText()
+    val context = LocalContext.current
+    val tagValues = movie.tags.distinctByNormalizedText()
+    val genreValues = movie.genres
+        .filter { genre -> tagValues.none { tag -> tag.equals(genre.trim(), ignoreCase = true) } }
+        .distinctByNormalizedText()
+    val versionInfos = remember(playbackParts, cloudVideoSizeBytes, movie.videoUri, movie.videoName) {
+        val parts = playbackParts.ifEmpty {
+            listOf(MoviePlaybackPart(label = "默认", videoUri = movie.videoUri, fileName = movie.videoName))
+        }
+        parts.map { part ->
+            VersionInfo(
+                label = versionLabel(part),
+                fileName = part.fileName,
+                originalName = readStrmOriginalFileName(context, part.videoUri) ?: part.fileName,
+                sizeText = readableFileSize(context, part.videoUri, cloudVideoSizeBytes[part.videoUri])
+            )
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         DetailSectionTitle("其他信息")
-        if (tagValues.isNotEmpty()) {
-            Text("标签", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            ChipFlow(values = tagValues, onClick = onTagClick)
-        }
+        Text("标签", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        EditableTagFlow(
+            tags = tagValues,
+            genres = genreValues,
+            onClick = onTagClick,
+            onAddTagRequest = onAddTagRequest,
+            onDeleteTagRequest = onDeleteTagRequest
+        )
         InfoLine("导演", movie.directors.joinToString(", "))
-        InfoLine("媒体信息", listOfNotNull(movie.videoName, movie.runtimeMinutes?.let { "${it}分钟" }).joinToString(" / "))
+        MediaInfoBlock(
+            movie = movie,
+            versions = versionInfos
+        )
         InfoLine("系列", movie.series.orEmpty())
         InfoLine("工作室", movie.studios.joinToString(", "))
         InfoLine("路径信息", readableFolderPath(movie.videoUri))
@@ -964,6 +1059,89 @@ private fun InfoLine(label: String, value: String) {
             style = MaterialTheme.typography.bodySmall,
             lineHeight = 17.sp
         )
+    }
+}
+
+@Composable
+private fun MediaInfoBlock(movie: MovieEntity, versions: List<VersionInfo>) {
+    val runtimeText = movie.runtimeMinutes?.let { "${it}分钟" }
+    if (versions.size <= 1) {
+        val version = versions.firstOrNull()
+        InfoLine("媒体信息", listOfNotNull(version?.fileName ?: movie.videoName, runtimeText).joinToString(" / "))
+        InfoLine("文件大小", version?.sizeText.orEmpty())
+        InfoLine("刮削前完整名", version?.originalName ?: movie.videoName)
+        return
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("媒体信息", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White.copy(alpha = 0.065f))
+                .horizontalScroll(rememberScrollState())
+        ) {
+            VersionInfoRow(
+                values = listOf("版本", "文件名", "刮削前完整名", "大小"),
+                isHeader = true
+            )
+            versions.forEach { version ->
+                VersionInfoRow(
+                    values = listOf(
+                        version.label,
+                        version.fileName,
+                        version.originalName,
+                        version.sizeText.ifBlank { "-" }
+                    )
+                )
+            }
+        }
+        runtimeText?.let {
+            Text("片长：$it", color = DetailMuted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun VersionInfoRow(values: List<String>, isHeader: Boolean = false) {
+    Row(
+        modifier = Modifier
+            .background(if (isHeader) Color.White.copy(alpha = 0.075f) else Color.Transparent)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val widths = listOf(70.dp, 168.dp, 196.dp, 78.dp)
+        values.forEachIndexed { index, value ->
+            Text(
+                text = value,
+                color = if (isHeader) Color.White else DetailMuted,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.width(widths.getOrElse(index) { 120.dp })
+            )
+        }
+    }
+}
+
+private data class VersionInfo(
+    val label: String,
+    val fileName: String,
+    val originalName: String,
+    val sizeText: String
+)
+
+private fun versionLabel(part: MoviePlaybackPart): String {
+    val variant = detectMovieVariant(part.fileName)
+    val variantName = variant.displayName.takeIf { it.isNotBlank() }
+    return when {
+        variantName != null && part.label.isNotBlank() && part.label != "默认" -> "${part.label} / $variantName"
+        variantName != null -> variantName
+        part.label.isNotBlank() -> part.label
+        else -> "默认"
     }
 }
 
@@ -996,6 +1174,48 @@ private fun readableFolderPath(uriString: String): String {
     }
 }
 
+private fun readableFileSize(
+    context: android.content.Context,
+    uriString: String,
+    cloudVideoSizeBytes: Long? = null
+): String {
+    if (uriString.endsWith(".strm", ignoreCase = true) && cloudVideoSizeBytes == null) {
+        return "云端大小未知"
+    }
+    val size = cloudVideoSizeBytes ?: runCatching {
+        DocumentFile.fromSingleUri(context, Uri.parse(uriString))?.length()?.takeIf { it > 0 }
+    }.getOrNull() ?: return ""
+    val units = listOf("B", "KB", "MB", "GB", "TB")
+    var value = size.toDouble()
+    var unitIndex = 0
+    while (value >= 1024.0 && unitIndex < units.lastIndex) {
+        value /= 1024.0
+        unitIndex += 1
+    }
+    return if (unitIndex == 0) {
+        "$size ${units[unitIndex]}"
+    } else {
+        "%.2f %s".format(Locale.getDefault(), value, units[unitIndex])
+    }
+}
+
+private fun readStrmOriginalFileName(context: android.content.Context, uriString: String): String? {
+    if (!uriString.endsWith(".strm", ignoreCase = true)) return null
+    val content = runCatching {
+        context.contentResolver.openInputStream(Uri.parse(uriString))
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+    }.getOrNull().orEmpty()
+    val uri = runCatching { Uri.parse(content) }.getOrNull() ?: return null
+    val segments = uri.pathSegments
+    val routeIndex = segments.indexOfFirst { it == "download_m3u" || it == "play" || it == "video_proxy" }
+    return routeIndex
+        .takeIf { it >= 0 && it + 2 < segments.size }
+        ?.let { segments[it + 2] }
+        ?.let(Uri::decode)
+        ?.takeIf { it.isNotBlank() }
+}
+
 private fun formatAddedTime(scannedAtMillis: Long): String {
     if (scannedAtMillis <= 0) return ""
     return SimpleDateFormat("yyyy/M/d HH:mm", Locale.getDefault()).format(Date(scannedAtMillis))
@@ -1017,6 +1237,68 @@ private fun ChipFlow(values: List<String>, onClick: (String) -> Unit) {
                     .padding(horizontal = 10.dp, vertical = 5.dp)
             )
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EditableTagFlow(
+    tags: List<String>,
+    genres: List<String>,
+    onClick: (String) -> Unit,
+    onAddTagRequest: () -> Unit,
+    onDeleteTagRequest: (String) -> Unit
+) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        tags.filter { it.isNotBlank() }.forEach { value ->
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White.copy(alpha = 0.10f)),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = value,
+                    color = Color.White.copy(alpha = 0.84f),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .clickable { onClick(value) }
+                        .padding(start = 10.dp, top = 5.dp, bottom = 5.dp)
+                )
+                Text(
+                    text = "×",
+                    color = Color.White.copy(alpha = 0.88f),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clickable { onDeleteTagRequest(value) }
+                        .padding(start = 7.dp, end = 10.dp, top = 5.dp, bottom = 5.dp)
+                )
+            }
+        }
+        genres.filter { it.isNotBlank() }.forEach { value ->
+            Text(
+                text = value,
+                color = Color.White.copy(alpha = 0.70f),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White.copy(alpha = 0.07f))
+                    .clickable { onClick(value) }
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            )
+        }
+        Text(
+            text = "＋ 自定义添加",
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(EmbyGreen.copy(alpha = 0.24f))
+                .clickable(onClick = onAddTagRequest)
+                .padding(horizontal = 10.dp, vertical = 5.dp)
+        )
     }
 }
 
@@ -1104,19 +1386,116 @@ private fun RenameMovieFileDialog(
 }
 
 @Composable
-private fun ConfirmDeleteDialog(
+private fun AddCustomTagDialog(
     movieTitle: String,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit
+    onConfirm: (String) -> Unit
+) {
+    var draft by rememberSaveable(movieTitle) { mutableStateOf("") }
+    val cleaned = draft.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DetailPanel,
+        titleContentColor = Color.White,
+        textContentColor = Color.White.copy(alpha = 0.82f),
+        title = { Text("添加自定义标签") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "为《$movieTitle》添加一个标签。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.72f)
+                )
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    singleLine = true,
+                    label = { Text("标签") },
+                    placeholder = { Text("例如 已整理 / 待重看") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = Color.White,
+                        focusedLabelColor = Color.White,
+                        unfocusedLabelColor = Color.White.copy(alpha = 0.68f),
+                        focusedPlaceholderColor = Color.White.copy(alpha = 0.42f),
+                        unfocusedPlaceholderColor = Color.White.copy(alpha = 0.42f),
+                        focusedBorderColor = EmbyGreen,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.30f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = cleaned.isNotBlank(),
+                onClick = { onConfirm(cleaned) }
+            ) {
+                Text("添加")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ConfirmDeleteDialog(
+    movieTitle: String,
+    cloudDeleteEnabled: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+    onConfirmCloud: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("删除本地记录？") },
         text = {
             Text(
-                "会删除 \"$movieTitle\" 的本地 STRM 影片目录、NFO 和图片，并同步清除网盘已添加状态。不会删除 115 网盘里的真实视频文件。"
+                if (cloudDeleteEnabled) {
+                    "会删除 \"$movieTitle\" 的本地 STRM 影片目录、NFO 和图片，并同步清除网盘已添加状态。选择“删除(网盘)”会同时删除 115 网盘里的真实视频文件。"
+                } else {
+                    "会删除 \"$movieTitle\" 的本地 STRM 影片目录、NFO 和图片，并同步清除网盘已添加状态。不会删除 115 网盘里的真实视频文件。"
+                }
             )
         },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("删除")
+            }
+        },
+        dismissButton = {
+            Row {
+                if (cloudDeleteEnabled) {
+                    TextButton(onClick = onConfirmCloud) {
+                        Text("删除(网盘)")
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("取消")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun ConfirmDeleteTagDialog(
+    tag: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DetailPanel,
+        titleContentColor = Color.White,
+        textContentColor = Color.White.copy(alpha = 0.82f),
+        title = { Text("删除标签？") },
+        text = { Text("确认删除标签“$tag”吗？") },
         confirmButton = {
             TextButton(onClick = onConfirm) {
                 Text("删除")

@@ -21,7 +21,7 @@ class PlaybackProgressRepository(
         val safePosition = positionMs.coerceAtLeast(0L)
         val safeDuration = durationMs.coerceAtLeast(0L)
         if (isNearEnd(safePosition, safeDuration)) {
-            playbackProgressDao.delete(mediaKey)
+            clear(mediaKey)
             return
         }
         playbackProgressDao.upsert(
@@ -35,7 +35,15 @@ class PlaybackProgressRepository(
     }
 
     suspend fun clear(mediaKey: String) {
-        playbackProgressDao.delete(mediaKey)
+        // 播放完成后不应从“最近播放”中消失；将断点归零即可。
+        playbackProgressDao.upsert(
+            PlaybackProgressEntity(
+                mediaKey = mediaKey,
+                positionMs = 0L,
+                durationMs = 0L,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
     private fun isNearEnd(positionMs: Long, durationMs: Long): Boolean {

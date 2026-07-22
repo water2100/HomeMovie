@@ -119,8 +119,8 @@ object NumberRecognitionRules {
         }
     }
 
-    fun normalizeDigits(digits: String, hasExplicitSeparator: Boolean, strippedIgnoredSuffix: Boolean): String {
-        if (hasExplicitSeparator || !strippedIgnoredSuffix || digits.length <= 3 || !digits.startsWith("0")) {
+    fun normalizeDigits(prefix: String, digits: String, hasExplicitSeparator: Boolean, strippedIgnoredSuffix: Boolean): String {
+        if (canonicalizePrefix(prefix).contains("VR") || digits.length <= 3 || !digits.startsWith("0")) {
             return digits
         }
         return digits.trimStart('0').ifBlank { "0" }.padStart(3, '0')

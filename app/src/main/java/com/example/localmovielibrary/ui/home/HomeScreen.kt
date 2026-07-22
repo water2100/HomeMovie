@@ -1394,22 +1394,12 @@ private fun List<String>.summaryValues(): List<MovieMetadataSummary> =
 
 private fun sortLabel(option: HomeSortOption): String = when (option) {
     HomeSortOption.ImdbRating -> "IMDb \u8BC4\u5206"
-    HomeSortOption.Resolution -> "\u5206\u8FA8\u7387"
     HomeSortOption.DateAdded -> "\u52A0\u5165\u65E5\u671F"
     HomeSortOption.ReleaseDate -> "\u53D1\u884C\u65E5\u671F"
-    HomeSortOption.MediaContainer -> "\u5A92\u4F53\u5BB9\u5668"
-    HomeSortOption.ParentalRating -> "\u5BB6\u957F\u8BC4\u5206"
     HomeSortOption.Director -> "\u5BFC\u6F14"
-    HomeSortOption.FrameRate -> "\u5E27\u7387"
     HomeSortOption.Title -> "\u6807\u9898"
     HomeSortOption.Year -> "\u5E74\u4EFD"
-    HomeSortOption.CriticRating -> "\u5F71\u8BC4\u4EBA\u8BC4\u5206"
-    HomeSortOption.PlayDate -> "\u64AD\u653E\u65E5\u671F"
     HomeSortOption.PlayDuration -> "\u64AD\u653E\u65F6\u957F"
-    HomeSortOption.PlayCount -> "\u64AD\u653E\u6B21\u6570"
     HomeSortOption.FileName -> "\u6587\u4EF6\u540D"
-    HomeSortOption.FileSize -> "\u6587\u4EF6\u5C3A\u5BF8"
-    HomeSortOption.Bitrate -> "\u6BD4\u7279\u7387"
-    HomeSortOption.VideoCodec -> "\u89C6\u9891\u7F16\u89E3\u7801\u5668"
     HomeSortOption.Random -> "\u968F\u673A"
 }

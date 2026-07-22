@@ -6,10 +6,14 @@ import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.scraper.CustomJsonScrapeConfig
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.util.NumberRecognitionRules
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.net.InetSocketAddress
+import java.net.Proxy
 
 class AppSettingsRepository(context: Context) {
     private val appContext = context.applicationContext
@@ -90,6 +94,24 @@ class AppSettingsRepository(context: Context) {
 
     fun saveUpdateAutoDeleteInstalledApkEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_UPDATE_AUTO_DELETE_INSTALLED_APK_ENABLED, enabled).apply()
+    }
+
+    fun isStartupAnimationEnabled(): Boolean =
+        prefs.getBoolean(KEY_STARTUP_ANIMATION_ENABLED, false)
+
+    fun saveStartupAnimationEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_STARTUP_ANIMATION_ENABLED, enabled).apply()
+    }
+
+    fun getStartupAnimationImageUri(): String =
+        prefs.getString(KEY_STARTUP_ANIMATION_IMAGE_URI, null).orEmpty()
+
+    fun saveStartupAnimationImageUri(uri: String) {
+        prefs.edit().putString(KEY_STARTUP_ANIMATION_IMAGE_URI, uri).apply()
+    }
+
+    fun clearStartupAnimationImageUri() {
+        prefs.edit().remove(KEY_STARTUP_ANIMATION_IMAGE_URI).apply()
     }
 
     fun getPendingUpdateInstallVersionCode(): Int =
@@ -213,6 +235,36 @@ class AppSettingsRepository(context: Context) {
 
     fun saveScrapeConcurrencyLimit(count: Int) {
         prefs.edit().putInt(KEY_SCRAPE_CONCURRENCY_LIMIT, count.coerceIn(1, MAX_SCRAPE_CONCURRENCY_LIMIT)).apply()
+    }
+
+    fun getScrapeProxyAddress(): String = prefs.getString(KEY_SCRAPE_PROXY_ADDRESS, null).orEmpty().trim()
+
+    fun saveScrapeProxyAddress(value: String) {
+        prefs.edit().putString(KEY_SCRAPE_PROXY_ADDRESS, value.trim()).apply()
+    }
+
+    fun isScrapeProxyEnabled(): Boolean = prefs.getBoolean(KEY_SCRAPE_PROXY_ENABLED, false)
+
+    fun saveScrapeProxyEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SCRAPE_PROXY_ENABLED, enabled).apply()
+    }
+
+    /** Returns null for an empty or malformed address, which lets requests connect directly. */
+    fun getScrapeProxy(): Proxy? {
+        if (!isScrapeProxyEnabled()) return null
+        val raw = getScrapeProxyAddress()
+        if (raw.isBlank()) return null
+        val uri = runCatching {
+            java.net.URI(if ("://" in raw) raw else "http://$raw")
+        }.getOrNull() ?: return null
+        val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+        val port = uri.port.takeIf { it in 1..65535 } ?: return null
+        val type = if (uri.scheme.equals("socks5", ignoreCase = true) || uri.scheme.equals("socks", ignoreCase = true)) {
+            Proxy.Type.SOCKS
+        } else {
+            Proxy.Type.HTTP
+        }
+        return Proxy(type, InetSocketAddress.createUnresolved(host, port))
     }
 
     fun getDmm2SkippedNumberPrefixes(): Set<String> =
@@ -391,6 +443,18 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putString(KEY_HOME_SORT_DIRECTION, value).apply()
     }
 
+    fun getCloudSortOptionName(): String? = prefs.getString(KEY_CLOUD_SORT_OPTION, null)
+
+    fun saveCloudSortOptionName(value: String) {
+        prefs.edit().putString(KEY_CLOUD_SORT_OPTION, value).apply()
+    }
+
+    fun isCloudSortAscending(): Boolean = prefs.getBoolean(KEY_CLOUD_SORT_ASCENDING, false)
+
+    fun saveCloudSortAscending(ascending: Boolean) {
+        prefs.edit().putBoolean(KEY_CLOUD_SORT_ASCENDING, ascending).apply()
+    }
+
     fun getHomeImageModeName(): String? = prefs.getString(KEY_HOME_IMAGE_MODE, null)
 
     fun saveHomeImageModeName(value: String) {
@@ -474,6 +538,13 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putBoolean(KEY_CLOUD_ADD_BUTTON_MESSAGE_ENABLED, enabled).apply()
     }
 
+    fun isCloudDeleteEnabled(): Boolean =
+        prefs.getBoolean(KEY_CLOUD_DELETE_ENABLED, false)
+
+    fun saveCloudDeleteEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_CLOUD_DELETE_ENABLED, enabled).apply()
+    }
+
     fun getCloudExcludedVideoNames(): Set<String> =
         (prefs.getStringSet(KEY_CLOUD_EXCLUDED_VIDEO_NAMES, null) ?: DEFAULT_CLOUD_EXCLUDED_VIDEO_NAMES)
             .map { it.trim() }
@@ -511,6 +582,26 @@ class AppSettingsRepository(context: Context) {
 
     fun getCloudScrapeSkipBelowSizeBytes(): Long =
         getCloudScrapeSkipBelowSizeMb().toLong() * 1024L * 1024L
+
+    fun getPlayerSeekBackSeconds(): Int =
+        prefs.getInt(KEY_PLAYER_SEEK_BACK_SECONDS, DEFAULT_PLAYER_SEEK_SECONDS)
+            .coerceIn(MIN_PLAYER_SEEK_SECONDS, MAX_PLAYER_SEEK_SECONDS)
+
+    fun savePlayerSeekBackSeconds(value: Int) {
+        prefs.edit()
+            .putInt(KEY_PLAYER_SEEK_BACK_SECONDS, value.coerceIn(MIN_PLAYER_SEEK_SECONDS, MAX_PLAYER_SEEK_SECONDS))
+            .apply()
+    }
+
+    fun getPlayerSeekForwardSeconds(): Int =
+        prefs.getInt(KEY_PLAYER_SEEK_FORWARD_SECONDS, DEFAULT_PLAYER_SEEK_SECONDS)
+            .coerceIn(MIN_PLAYER_SEEK_SECONDS, MAX_PLAYER_SEEK_SECONDS)
+
+    fun savePlayerSeekForwardSeconds(value: Int) {
+        prefs.edit()
+            .putInt(KEY_PLAYER_SEEK_FORWARD_SECONDS, value.coerceIn(MIN_PLAYER_SEEK_SECONDS, MAX_PLAYER_SEEK_SECONDS))
+            .apply()
+    }
 
     fun getExternalSubtitleFontSizeSp(): Int =
         prefs.getInt(KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP, DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP)
@@ -561,8 +652,157 @@ class AppSettingsRepository(context: Context) {
             .apply()
     }
 
+    fun getCustomJsonScrapeConfigs(): List<CustomJsonScrapeConfig> {
+        val stored = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_CONFIGS, null).orEmpty()
+        val parsed = runCatching {
+            val array = JSONArray(stored)
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.toCustomJsonScrapeConfig()
+            }
+        }.getOrDefault(emptyList())
+        return parsed.ifEmpty { listOf(getLegacyCustomJsonScrapeConfig()) }
+    }
+
+    fun getSelectedCustomJsonScrapeConfigIndex(): Int =
+        prefs.getInt(KEY_CUSTOM_JSON_SCRAPE_SELECTED_INDEX, 0)
+            .coerceIn(0, (getCustomJsonScrapeConfigs().size - 1).coerceAtLeast(0))
+
+    fun getCustomJsonScrapeConfig(): CustomJsonScrapeConfig {
+        val configs = getCustomJsonScrapeConfigs()
+        return configs.getOrElse(getSelectedCustomJsonScrapeConfigIndex()) { configs.firstOrNull() ?: CustomJsonScrapeConfig() }
+    }
+
+    private fun getLegacyCustomJsonScrapeConfig(): CustomJsonScrapeConfig =
+        CustomJsonScrapeConfig(
+            enabled = prefs.getBoolean(KEY_CUSTOM_JSON_SCRAPE_ENABLED, false),
+            name = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_NAME, null).orEmpty().ifBlank { "自定义 JSON" },
+            urlTemplate = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_URL_TEMPLATE, null).orEmpty(),
+            sampleNumber = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_SAMPLE_NUMBER, null).orEmpty().ifBlank { "SSIS-115" },
+            resultPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_RESULT_PATH, null).orEmpty().ifBlank { "$" },
+            numberPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_NUMBER_PATH, null).orEmpty().ifBlank { "$.number" },
+            titlePath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_TITLE_PATH, null).orEmpty().ifBlank { "$.title" },
+            originalTitlePath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_ORIGINAL_TITLE_PATH, null).orEmpty(),
+            plotPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_PLOT_PATH, null).orEmpty().ifBlank { "$.plot" },
+            premieredPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_PREMIERED_PATH, null).orEmpty().ifBlank { "$.premiered" },
+            runtimePath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_RUNTIME_PATH, null).orEmpty().ifBlank { "$.runtime" },
+            studioPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_STUDIO_PATH, null).orEmpty().ifBlank { "$.studio" },
+            seriesPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_SERIES_PATH, null).orEmpty().ifBlank { "$.series" },
+            actorsPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_ACTORS_PATH, null).orEmpty().ifBlank { "$.actors" },
+            genresPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_GENRES_PATH, null).orEmpty().ifBlank { "$.genres" },
+            tagsPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_TAGS_PATH, null).orEmpty().ifBlank { "$.tags" },
+            ratingPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_RATING_PATH, null).orEmpty().ifBlank { "$.rating" },
+            posterPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_POSTER_PATH, null).orEmpty().ifBlank { "$.poster" },
+            thumbPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_THUMB_PATH, null).orEmpty().ifBlank { "$.thumb" },
+            fanartPath = prefs.getString(KEY_CUSTOM_JSON_SCRAPE_FANART_PATH, null).orEmpty().ifBlank { "$.fanart" }
+        )
+
+    fun saveCustomJsonScrapeConfig(config: CustomJsonScrapeConfig) {
+        val configs = getCustomJsonScrapeConfigs().toMutableList()
+        val selected = getSelectedCustomJsonScrapeConfigIndex().coerceIn(0, (configs.size - 1).coerceAtLeast(0))
+        if (configs.isEmpty()) configs += config else configs[selected] = config
+        saveCustomJsonScrapeConfigs(configs, selected)
+    }
+
+    fun saveCustomJsonScrapeConfigs(configs: List<CustomJsonScrapeConfig>, selectedIndex: Int) {
+        val normalized = configs.ifEmpty { listOf(CustomJsonScrapeConfig(name = "自定义 JSON")) }
+        val selected = selectedIndex.coerceIn(0, normalized.lastIndex)
+        val selectedConfig = normalized[selected]
+        prefs.edit()
+            .putString(KEY_CUSTOM_JSON_SCRAPE_CONFIGS, JSONArray(normalized.map { it.toJsonObject() }).toString())
+            .putInt(KEY_CUSTOM_JSON_SCRAPE_SELECTED_INDEX, selected)
+            .putLegacyCustomJsonScrapeConfig(selectedConfig)
+            .apply()
+    }
+
+    private fun android.content.SharedPreferences.Editor.putLegacyCustomJsonScrapeConfig(config: CustomJsonScrapeConfig): android.content.SharedPreferences.Editor =
+        putBoolean(KEY_CUSTOM_JSON_SCRAPE_ENABLED, config.enabled)
+            .putString(KEY_CUSTOM_JSON_SCRAPE_NAME, config.name.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_URL_TEMPLATE, config.urlTemplate.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_SAMPLE_NUMBER, config.sampleNumber.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_RESULT_PATH, config.resultPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_NUMBER_PATH, config.numberPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_TITLE_PATH, config.titlePath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_ORIGINAL_TITLE_PATH, config.originalTitlePath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_PLOT_PATH, config.plotPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_PREMIERED_PATH, config.premieredPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_RUNTIME_PATH, config.runtimePath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_STUDIO_PATH, config.studioPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_SERIES_PATH, config.seriesPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_ACTORS_PATH, config.actorsPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_GENRES_PATH, config.genresPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_TAGS_PATH, config.tagsPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_RATING_PATH, config.ratingPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_POSTER_PATH, config.posterPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_THUMB_PATH, config.thumbPath.trim())
+            .putString(KEY_CUSTOM_JSON_SCRAPE_FANART_PATH, config.fanartPath.trim())
+
+    private fun CustomJsonScrapeConfig.toJsonObject(): JSONObject = JSONObject().apply {
+        put("enabled", enabled)
+        put("name", name)
+        put("urlTemplate", urlTemplate)
+        put("sampleNumber", sampleNumber)
+        put("resultPath", resultPath)
+        put("numberPath", numberPath)
+        put("titlePath", titlePath)
+        put("originalTitlePath", originalTitlePath)
+        put("plotPath", plotPath)
+        put("premieredPath", premieredPath)
+        put("runtimePath", runtimePath)
+        put("studioPath", studioPath)
+        put("seriesPath", seriesPath)
+        put("actorsPath", actorsPath)
+        put("genresPath", genresPath)
+        put("tagsPath", tagsPath)
+        put("ratingPath", ratingPath)
+        put("posterPath", posterPath)
+        put("thumbPath", thumbPath)
+        put("fanartPath", fanartPath)
+    }
+
+    private fun JSONObject.toCustomJsonScrapeConfig(): CustomJsonScrapeConfig = CustomJsonScrapeConfig(
+        enabled = optBoolean("enabled", false),
+        name = optString("name").ifBlank { "自定义 JSON" },
+        urlTemplate = optString("urlTemplate"),
+        sampleNumber = optString("sampleNumber").ifBlank { "SSIS-115" },
+        resultPath = optString("resultPath").ifBlank { "$" },
+        numberPath = optString("numberPath").ifBlank { "$.number" },
+        titlePath = optString("titlePath").ifBlank { "$.title" },
+        originalTitlePath = optString("originalTitlePath"),
+        plotPath = optString("plotPath").ifBlank { "$.plot" },
+        premieredPath = optString("premieredPath").ifBlank { "$.premiered" },
+        runtimePath = optString("runtimePath").ifBlank { "$.runtime" },
+        studioPath = optString("studioPath").ifBlank { "$.studio" },
+        seriesPath = optString("seriesPath").ifBlank { "$.series" },
+        actorsPath = optString("actorsPath").ifBlank { "$.actors" },
+        genresPath = optString("genresPath").ifBlank { "$.genres" },
+        tagsPath = optString("tagsPath").ifBlank { "$.tags" },
+        ratingPath = optString("ratingPath").ifBlank { "$.rating" },
+        posterPath = optString("posterPath").ifBlank { "$.poster" },
+        thumbPath = optString("thumbPath").ifBlank { "$.thumb" },
+        fanartPath = optString("fanartPath").ifBlank { "$.fanart" },
+    )
+
+    fun getExternalSubtitleOffsetMs(mediaKey: String, subtitleKey: String): Long =
+        prefs.getLong(externalSubtitleOffsetKey(mediaKey, subtitleKey), 0L)
+            .coerceIn(MIN_EXTERNAL_SUBTITLE_OFFSET_MS, MAX_EXTERNAL_SUBTITLE_OFFSET_MS)
+
+    fun saveExternalSubtitleOffsetMs(mediaKey: String, subtitleKey: String, offsetMs: Long) {
+        val key = externalSubtitleOffsetKey(mediaKey, subtitleKey)
+        val normalized = offsetMs.coerceIn(MIN_EXTERNAL_SUBTITLE_OFFSET_MS, MAX_EXTERNAL_SUBTITLE_OFFSET_MS)
+        prefs.edit().apply {
+            if (normalized == 0L) {
+                remove(key)
+            } else {
+                putLong(key, normalized)
+            }
+        }.apply()
+    }
+
     private fun externalSubtitleKey(prefix: String, mediaKey: String): String =
         prefix + mediaKey.sha256()
+
+    private fun externalSubtitleOffsetKey(mediaKey: String, subtitleKey: String): String =
+        KEY_EXTERNAL_SUBTITLE_OFFSET_PREFIX + "$mediaKey|$subtitleKey".sha256()
 
     private fun normalizeUpdateProxyBaseUrl(value: String): String {
         val trimmed = value.trim()
@@ -653,12 +893,16 @@ class AppSettingsRepository(context: Context) {
         const val KEY_UPDATE_PROXY_ENABLED = "update_proxy_enabled"
         const val KEY_UPDATE_AUTO_CHECK_ON_STARTUP_ENABLED = "update_auto_check_on_startup_enabled"
         const val KEY_UPDATE_AUTO_DELETE_INSTALLED_APK_ENABLED = "update_auto_delete_installed_apk_enabled"
+        const val KEY_STARTUP_ANIMATION_ENABLED = "startup_animation_enabled"
+        const val KEY_STARTUP_ANIMATION_IMAGE_URI = "startup_animation_image_uri"
         const val KEY_PENDING_UPDATE_INSTALL_VERSION_CODE = "pending_update_install_version_code"
         const val KEY_PENDING_UPDATE_INSTALL_APK_PATH = "pending_update_install_apk_path"
         const val KEY_DEFAULT_SCRAPE_SOURCE = "default_scrape_source"
         const val KEY_PRIORITY_SCRAPE_SOURCES = "priority_scrape_sources"
         const val KEY_IMAGE_DOWNLOAD_RETRY_COUNT = "image_download_retry_count"
         const val KEY_SCRAPE_CONCURRENCY_LIMIT = "scrape_concurrency_limit"
+        const val KEY_SCRAPE_PROXY_ADDRESS = "scrape_proxy_address"
+        const val KEY_SCRAPE_PROXY_ENABLED = "scrape_proxy_enabled"
         const val KEY_DMM2_SKIPPED_NUMBER_PREFIXES = "dmm2_skipped_number_prefixes"
         const val KEY_REMOTE_SCRAPE_CONFIG_URL = "remote_scrape_config_url"
         const val DEFAULT_REMOTE_SCRAPE_CONFIG_URL =
@@ -672,11 +916,16 @@ class AppSettingsRepository(context: Context) {
         const val KEY_REMOTE_SCRAPE_CONFIG_LAST_FETCH_MILLIS = "remote_scrape_config_last_fetch_millis"
         const val KEY_HOME_SORT_OPTION = "home_sort_option"
         const val KEY_HOME_SORT_DIRECTION = "home_sort_direction"
+        const val KEY_CLOUD_SORT_OPTION = "cloud_sort_option"
+        const val KEY_CLOUD_SORT_ASCENDING = "cloud_sort_ascending"
+        const val KEY_PLAYER_SEEK_BACK_SECONDS = "player_seek_back_seconds"
+        const val KEY_PLAYER_SEEK_FORWARD_SECONDS = "player_seek_forward_seconds"
         const val KEY_HOME_IMAGE_MODE = "home_image_mode"
         const val KEY_DOMESTIC_ROOT_CID = "domestic_root_cid"
         const val KEY_DOMESTIC_PAGE_ENABLED = "domestic_page_enabled"
         const val KEY_LIBRARY_NOMEDIA_ENABLED = "library_nomedia_enabled"
         const val KEY_CLOUD_ADD_BUTTON_MESSAGE_ENABLED = "cloud_add_button_message_enabled"
+        const val KEY_CLOUD_DELETE_ENABLED = "cloud_delete_enabled"
         const val KEY_CLOUD_EXCLUDED_VIDEO_NAMES = "cloud_excluded_video_names"
         const val KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = "cloud_scrape_skip_below_size_mb"
         const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
@@ -684,6 +933,29 @@ class AppSettingsRepository(context: Context) {
         const val KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = "external_subtitle_background_alpha_percent"
         const val KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX = "external_subtitle_enabled_"
         const val KEY_EXTERNAL_SUBTITLE_NAME_PREFIX = "external_subtitle_name_"
+        const val KEY_EXTERNAL_SUBTITLE_OFFSET_PREFIX = "external_subtitle_offset_"
+        const val KEY_CUSTOM_JSON_SCRAPE_CONFIGS = "custom_json_scrape_configs"
+        const val KEY_CUSTOM_JSON_SCRAPE_SELECTED_INDEX = "custom_json_scrape_selected_index"
+        const val KEY_CUSTOM_JSON_SCRAPE_ENABLED = "custom_json_scrape_enabled"
+        const val KEY_CUSTOM_JSON_SCRAPE_NAME = "custom_json_scrape_name"
+        const val KEY_CUSTOM_JSON_SCRAPE_URL_TEMPLATE = "custom_json_scrape_url_template"
+        const val KEY_CUSTOM_JSON_SCRAPE_SAMPLE_NUMBER = "custom_json_scrape_sample_number"
+        const val KEY_CUSTOM_JSON_SCRAPE_RESULT_PATH = "custom_json_scrape_result_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_NUMBER_PATH = "custom_json_scrape_number_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_TITLE_PATH = "custom_json_scrape_title_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_ORIGINAL_TITLE_PATH = "custom_json_scrape_original_title_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_PLOT_PATH = "custom_json_scrape_plot_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_PREMIERED_PATH = "custom_json_scrape_premiered_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_RUNTIME_PATH = "custom_json_scrape_runtime_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_STUDIO_PATH = "custom_json_scrape_studio_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_SERIES_PATH = "custom_json_scrape_series_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_ACTORS_PATH = "custom_json_scrape_actors_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_GENRES_PATH = "custom_json_scrape_genres_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_TAGS_PATH = "custom_json_scrape_tags_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_RATING_PATH = "custom_json_scrape_rating_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_POSTER_PATH = "custom_json_scrape_poster_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_THUMB_PATH = "custom_json_scrape_thumb_path"
+        const val KEY_CUSTOM_JSON_SCRAPE_FANART_PATH = "custom_json_scrape_fanart_path"
         const val DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT = 5
         const val DEFAULT_SCRAPE_CONCURRENCY_LIMIT = 2
         const val MAX_SCRAPE_CONCURRENCY_LIMIT = 4
@@ -694,7 +966,8 @@ class AppSettingsRepository(context: Context) {
             ScrapeSource.Official,
             ScrapeSource.Mgstage,
             ScrapeSource.Javbus,
-            ScrapeSource.TheJavDB
+            ScrapeSource.TheJavDB,
+            ScrapeSource.CustomJson
         )
         val DEFAULT_PRIORITY_SCRAPE_SOURCES = listOf(ScrapeSource.Dmm2, ScrapeSource.TheJavDB, ScrapeSource.Javbus)
         private val OLD_DEFAULT_PRIORITY_SCRAPE_SOURCES_AFTER_MIGRATION =
@@ -741,6 +1014,9 @@ class AppSettingsRepository(context: Context) {
         val DEFAULT_NUMBER_RECOGNITION_IGNORED_SUFFIXES = NumberRecognitionRules.DEFAULT_IGNORED_SUFFIXES
         val DEFAULT_NUMBER_RECOGNITION_PART_MARKERS = NumberRecognitionRules.DEFAULT_PART_MARKERS
         const val DEFAULT_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 22
+        const val DEFAULT_PLAYER_SEEK_SECONDS = 10
+        const val MIN_PLAYER_SEEK_SECONDS = 1
+        const val MAX_PLAYER_SEEK_SECONDS = 120
         const val MIN_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 14
         const val MAX_EXTERNAL_SUBTITLE_FONT_SIZE_SP = 40
         const val DEFAULT_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = 8
@@ -749,6 +1025,8 @@ class AppSettingsRepository(context: Context) {
         const val DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
         const val MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
         const val MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 80
+        const val MIN_EXTERNAL_SUBTITLE_OFFSET_MS = -600_000L
+        const val MAX_EXTERNAL_SUBTITLE_OFFSET_MS = 600_000L
         private const val NOMEDIA_FILE_NAME = ".nomedia"
         private const val NOMEDIA_TEMP_FILE_NAME = "nomedia.tmp"
         val DEFAULT_CLOUD_EXCLUDED_VIDEO_NAMES = setOf(

@@ -41,7 +41,9 @@ fun extractMovieNumberInfo(text: String): MovieNumberInfo? {
         ?.match
         ?: return null
     val hasExplicitSeparator = match.hasExplicitSeparator()
+    val prefix = NumberRecognitionRules.canonicalizePrefix(match.groupValues[1])
     val digits = NumberRecognitionRules.normalizeDigits(
+        prefix = prefix,
         digits = match.groupValues[2],
         hasExplicitSeparator = hasExplicitSeparator,
         strippedIgnoredSuffix = stripResult.stripped
@@ -50,7 +52,6 @@ fun extractMovieNumberInfo(text: String): MovieNumberInfo? {
         ?.takeIf { it.isNotBlank() }
         ?.uppercase(Locale.ROOT)
         .orEmpty()
-    val prefix = NumberRecognitionRules.canonicalizePrefix(match.groupValues[1])
     val attachedSuffixAsSegment = NumberRecognitionRules.isAttachedLetterSegment(prefix, attachedSuffix)
     val number = "$prefix-$digits${if (attachedSuffixAsSegment) "" else attachedSuffix}"
     val attachedLetterPart = attachedSuffix.takeIf { attachedSuffixAsSegment }

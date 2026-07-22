@@ -48,6 +48,7 @@ object MovieNumberExtractor {
         }
         val separator = match.groupValues.getOrNull(2).orEmpty()
         val number = NumberRecognitionRules.normalizeDigits(
+            prefix = prefix,
             digits = match.groupValues[3],
             hasExplicitSeparator = separator.isNotEmpty(),
             strippedIgnoredSuffix = stripResult.stripped

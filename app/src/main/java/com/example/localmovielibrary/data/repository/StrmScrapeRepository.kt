@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.scraper.ActorAvatarStore
+import com.example.localmovielibrary.scraper.CustomJsonScraper
 import com.example.localmovielibrary.scraper.Dmm2Scraper
 import com.example.localmovielibrary.scraper.DmmScraper
 import com.example.localmovielibrary.scraper.JavdbScraper
@@ -18,12 +19,14 @@ import com.example.localmovielibrary.scraper.OfficialScraper
 import com.example.localmovielibrary.scraper.ScrapeLogStore
 import com.example.localmovielibrary.scraper.ScrapeRunResult
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.scraper.ScrapeProxySelector
 import com.example.localmovielibrary.scraper.ScrapedMovieInfo
 import com.example.localmovielibrary.scraper.normalizeMgstageSearchNumber
 import com.example.localmovielibrary.util.MovieVariant
 import com.example.localmovielibrary.util.detectMovieVariant
 import com.example.localmovielibrary.util.displayNumberWithVariant
 import com.example.localmovielibrary.util.extractMovieNumberInfo
+import com.example.localmovielibrary.util.movieKeyFromText
 import com.example.localmovielibrary.util.playbackSourceSuffix
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -42,13 +45,20 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import kotlin.system.measureTimeMillis
 
+data class ClearScrapeResult(
+    val number: String,
+    val strmUri: String
+)
+
 class StrmScrapeRepository(
     private val context: Context,
     private val settingsRepository: AppSettingsRepository,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val logStore: ScrapeLogStore = ScrapeLogStore(context),
-    private val httpClient: OkHttpClient = OkHttpClient(),
-    private val networkProbe: NetworkProbe = NetworkProbe(ioDispatcher = ioDispatcher),
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .proxySelector(ScrapeProxySelector(settingsRepository))
+        .build(),
+    private val networkProbe: NetworkProbe = NetworkProbe(client = httpClient, ioDispatcher = ioDispatcher),
     private val remoteScrapeConfigRepository: RemoteScrapeConfigRepository = RemoteScrapeConfigRepository(
         settingsRepository = settingsRepository,
         client = httpClient,
@@ -60,8 +70,9 @@ class StrmScrapeRepository(
     private val mgstageScraper: MgstageScraper = MgstageScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javbusScraper: JavbusScraper = JavbusScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javdbScraper: JavdbScraper = JavdbScraper(client = httpClient, ioDispatcher = ioDispatcher),
+    private val customJsonScraper: CustomJsonScraper = CustomJsonScraper(settingsRepository = settingsRepository, client = httpClient, ioDispatcher = ioDispatcher),
     private val scraperRegistry: MovieScraperRegistry = MovieScraperRegistry(
-        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, javdbScraper)
+        listOf(dmmScraper, dmm2Scraper, officialScraper, mgstageScraper, javbusScraper, javdbScraper, customJsonScraper)
     ),
     private val imageDownloadService: ImageDownloadService = ImageDownloadService(
         httpClient = httpClient,
@@ -199,6 +210,12 @@ class StrmScrapeRepository(
     }
 
     fun getDefaultScrapeSource(): ScrapeSource = settingsRepository.getDefaultScrapeSource()
+
+    suspend fun testCustomJsonScrape(number: String): ScrapedMovieInfo =
+        customJsonScraper.scrape(number)
+
+    suspend fun previewCustomJsonPathCandidates(number: String) =
+        customJsonScraper.previewPathCandidates(number)
 
     suspend fun refreshMgstageNumberPrefixes(): Set<String> =
         remoteScrapeConfigRepository.getMgstageNumberPrefixes(forceRefresh = true)
@@ -440,7 +457,7 @@ class StrmScrapeRepository(
         }
     }
 
-    suspend fun clearScrapeFiles(movie: MovieEntity): String = withContext(ioDispatcher) {
+    suspend fun clearScrapeFiles(movie: MovieEntity): ClearScrapeResult = withContext(ioDispatcher) {
         val target = findTargetForMovie(movie)
         val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
             ?: error("影片库目录不可用")
@@ -448,27 +465,29 @@ class StrmScrapeRepository(
             ?: error("无法安全提取影片番号")
 
         logStore.append("Start clearing scrape files: $number")
-        val restoredFileName = "$number.strm"
+        val restoredFileName = restoredStrmFileName(target.file, number)
         val directoryName = target.directory.name.orEmpty()
-        val isOrganizedFolder = directoryName.contains(number, ignoreCase = true) &&
+        val isOrganizedFolder = directoryName.hasSameMovieNumber(number) &&
             (directoryName.startsWith("\u3010") || directoryName.startsWith("[")) &&
             target.parentDirectory != null
 
-        if (isOrganizedFolder) {
+        val restoredStrmUri = if (isOrganizedFolder) {
             val parent = target.parentDirectory ?: error("无法定位父目录")
             val rootFileName = root.uniqueChildFileName(restoredFileName)
-            copyStrmFile(target.file, root, rootFileName)
+            val restoredFile = copyStrmFile(target.file, root, rootFileName)
             logStore.append("STRM restored to library root: $rootFileName")
             deleteRecursively(target.directory)
             logStore.append("Deleted generated movie directory: ${target.directory.name}")
             deleteEmptyDirectory(parent, root)
+            restoredFile.uri.toString()
         } else {
             deleteMetadataFiles(target.directory, target.baseName)
             logStore.append("Deleted metadata files for baseName=${target.baseName}")
+            target.file.uri.toString()
         }
 
         logStore.append("Clear scrape files finished: $number")
-        number
+        ClearScrapeResult(number = number, strmUri = restoredStrmUri)
     }
 
     fun startUpdateMissingActorAvatars(movies: List<MovieEntity>) {
@@ -644,6 +663,7 @@ class StrmScrapeRepository(
             }
 
             val thumbUrls = info.thumbDownloadUrls()
+            val fanartUrls = info.fanartDownloadUrls()
             if (thumbUrls.isNotEmpty()) {
                 val thumbName = "$baseName-thumb.jpg"
                 logStore.append("Download thumb: ${thumbUrls.first()}${thumbUrls.candidateCountSuffix()}")
@@ -651,7 +671,7 @@ class StrmScrapeRepository(
 
                 val fanartName = "$baseName-fanart.jpg"
                 logStore.append("Copy thumb as fanart: $fanartName")
-                tryDownloadImageToFile(movieDirectory, fanartName, thumbUrls, imageReferer, "Fanart")
+                tryDownloadImageToFile(movieDirectory, fanartName, fanartUrls, imageReferer, "Fanart")
             } else {
                 logStore.append("Thumb URL is blank; skipped")
             }
@@ -692,6 +712,7 @@ class StrmScrapeRepository(
         val imageReferer = info.imageReferer()
         val posterUrls = info.posterDownloadUrls()
         val thumbUrls = info.thumbDownloadUrls()
+        val fanartUrls = info.fanartDownloadUrls()
         if (((!hasStandardPoster && posterUrls.isNotEmpty()) || (shouldRefreshPoster && posterUrls.isNotEmpty()))) {
             logStore.append(
                 if (hasStandardPoster) {
@@ -706,9 +727,9 @@ class StrmScrapeRepository(
             logStore.append("Thumb missing; downloading: ${thumbUrls.first()}${thumbUrls.candidateCountSuffix()}")
             tryDownloadImageToFile(directory, thumbName, thumbUrls, imageReferer, "Thumb")
         }
-        if (!hasFanart && thumbUrls.isNotEmpty()) {
+        if (!hasFanart && fanartUrls.isNotEmpty()) {
             logStore.append("Fanart missing; using thumb: $fanartName")
-            tryDownloadImageToFile(directory, fanartName, thumbUrls, imageReferer, "Fanart")
+            tryDownloadImageToFile(directory, fanartName, fanartUrls, imageReferer, "Fanart")
         }
         deleteLegacyNfoXml(target)
     }
@@ -784,6 +805,33 @@ class StrmScrapeRepository(
         val content = context.contentResolver.openInputStream(source.uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
             ?: error("无法读取源 STRM 文件：${source.name}")
         return writeTextFile(directory, fileName, content)
+    }
+
+    private fun restoredStrmFileName(source: DocumentFile, fallbackNumber: String): String {
+        val content = context.contentResolver.openInputStream(source.uri)
+            ?.bufferedReader(Charsets.UTF_8)
+            ?.use { it.readText() }
+            .orEmpty()
+        val originalName = content.extractOriginalVideoNameFromStrm()
+            ?: source.name
+                ?.takeIf { !it.startsWith("\u3010") && !it.startsWith("[") }
+        val baseName = originalName
+            ?.substringBeforeLast('.', originalName)
+            ?.sanitizeFileName()
+            ?.takeIf { it.isNotBlank() }
+            ?: fallbackNumber.sanitizeFileName()
+        return "$baseName.strm"
+    }
+
+    private fun String.extractOriginalVideoNameFromStrm(): String? {
+        val uri = runCatching { Uri.parse(this.trim()) }.getOrNull() ?: return null
+        val segments = uri.pathSegments
+        val routeIndex = segments.indexOfFirst { it == "download_m3u" || it == "play" || it == "video_proxy" }
+        return routeIndex
+            .takeIf { it >= 0 && it + 2 < segments.size }
+            ?.let { segments[it + 2] }
+            ?.let(Uri::decode)
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun deleteOldStrmIfMoved(target: StrmTarget, newStrm: DocumentFile) {
@@ -998,6 +1046,11 @@ class StrmScrapeRepository(
         return replace(Regex("""[\\/:*?"<>|]"""), "_").trim()
     }
 
+    private fun String.hasSameMovieNumber(number: String): Boolean {
+        val expected = movieKeyFromText(number) ?: number.uppercase()
+        return movieKeyFromText(this) == expected || contains(number, ignoreCase = true)
+    }
+
     private fun String.distinctPickcodeSuffix(): String? {
         val token = substringBeforeLast('.', this)
             .substringAfterLast('_', "")
@@ -1023,6 +1076,9 @@ class StrmScrapeRepository(
 
     private fun ScrapedMovieInfo.thumbDownloadUrls(): List<String> =
         (thumbImageUrls + thumbUrl).normalizedUrlList()
+
+    private fun ScrapedMovieInfo.fanartDownloadUrls(): List<String> =
+        (listOf(fanartUrl) + thumbImageUrls + thumbUrl).normalizedUrlList()
 
     private fun ScrapedMovieInfo.shouldRefreshDistinctPoster(): Boolean {
         if (!source.equals("dmm", ignoreCase = true) && !source.equals("dmm2", ignoreCase = true)) return false
@@ -1060,6 +1116,7 @@ class StrmScrapeRepository(
             ScrapeSource.Mgstage -> "MGStage"
             ScrapeSource.Javbus -> "JavBus"
             ScrapeSource.TheJavDB -> "TheJavDB"
+            ScrapeSource.CustomJson -> "自定义 JSON"
         }
 
     private fun ScrapeSource.serialScrapeMutex(): Mutex? = null

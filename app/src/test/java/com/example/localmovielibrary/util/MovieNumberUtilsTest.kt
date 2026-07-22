@@ -98,6 +98,18 @@ class MovieNumberUtilsTest {
     }
 
     @Test
+    fun normalizesExtraLeadingZeroesAcrossCloudVariants() {
+        val standard = extractMovieSourceIdentity("urkk00077hhb.mp4")
+        val fourK = extractMovieSourceIdentity("urkk00077_4ks.mp4")
+
+        assertEquals("URKK-077", standard?.number)
+        assertEquals(MovieVariant.Standard, standard?.variant)
+        assertEquals("URKK-077", fourK?.number)
+        assertEquals(MovieVariant.FourK, fourK?.variant)
+        assertEquals("URKK-077-4K", fourK?.versionKey)
+    }
+
+    @Test
     fun keepsRealTrailingLetterSuffixAsPartOfNumber() {
         val identity = extractMovieSourceIdentity("DANDY-852A.strm")
 

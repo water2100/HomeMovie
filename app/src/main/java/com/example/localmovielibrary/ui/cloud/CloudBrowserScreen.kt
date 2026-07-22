@@ -211,6 +211,7 @@ fun CloudBrowserScreen(
                 uiState.items.isEmpty() -> CloudMessage(text = "这个目录是空的")
                 else -> CloudFileList(
                     items = uiState.items,
+                    timeSortOption = uiState.sortOption,
                     listState = listState,
                     addingPickcodes = uiState.addingPickcodes,
                     addedPickcodes = uiState.addedPickcodes,
@@ -283,13 +284,13 @@ private fun CloudTopBar(
                 Text(
                     text = sortOption.label,
                     color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
                         .background(Color.White.copy(alpha = 0.10f))
                         .clickable { sortMenuExpanded = true }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .padding(horizontal = 8.dp, vertical = 5.dp)
                 )
                 DropdownMenu(
                     expanded = sortMenuExpanded,
@@ -329,6 +330,7 @@ private fun CloudTopBar(
 @Composable
 private fun CloudFileList(
     items: List<Cloud115FileItem>,
+    timeSortOption: CloudSortOption,
     listState: LazyListState,
     addingPickcodes: Set<String>,
     addedPickcodes: Set<String>,
@@ -361,6 +363,7 @@ private fun CloudFileList(
         ) { item ->
             CloudFileRow(
                 item = item,
+                timeSortOption = timeSortOption,
                 isAdding = item.pickcode != null && item.pickcode in addingPickcodes,
                 isAdded = item.pickcode != null && item.pickcode in addedPickcodes,
                 isExcludedVideo = item.isVideoFile() && item.name.trim() in excludedVideoNames,
@@ -381,6 +384,7 @@ private fun CloudFileList(
 @Composable
 private fun CloudFileRow(
     item: Cloud115FileItem,
+    timeSortOption: CloudSortOption,
     isAdding: Boolean,
     isAdded: Boolean,
     isExcludedVideo: Boolean,
@@ -395,8 +399,8 @@ private fun CloudFileRow(
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val subtitle = remember(item.size, item.modifiedAt, item.isDirectory) {
-        item.cloudSubtitle()
+    val subtitle = remember(item.size, item.addedAt, item.modifiedAt, item.isDirectory, timeSortOption) {
+        item.cloudSubtitle(timeSortOption)
     }
     var folderMenuExpanded by remember { mutableStateOf(false) }
     val folderCid = item.cid?.toString().orEmpty()
@@ -492,8 +496,9 @@ private fun CloudFileRow(
 
 private val CloudSortOption.label: String
     get() = when (this) {
-        CloudSortOption.ModifiedTime -> "时间"
-        CloudSortOption.Size -> "大小"
+        CloudSortOption.AddedTime -> "添加时间"
+        CloudSortOption.ModifiedTime -> "修改时间"
+        CloudSortOption.Size -> "文件大小"
     }
 
 @Composable
@@ -566,12 +571,14 @@ private fun formatCloudTime(timestampMillis: Long): String {
     return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(safeMillis))
 }
 
-private fun Cloud115FileItem.cloudSubtitle(): String {
-    val time = modifiedAt?.let { formatCloudTime(it) } ?: "\u65F6\u95F4\u672A\u77E5"
+private fun Cloud115FileItem.cloudSubtitle(sortOption: CloudSortOption): String {
+    val timeLabel = if (sortOption == CloudSortOption.AddedTime) "添加时间" else "修改时间"
+    val timestamp = if (sortOption == CloudSortOption.AddedTime) addedAt else modifiedAt
+    val time = timestamp?.let { formatCloudTime(it) } ?: "时间未知"
     return if (isDirectory) {
-        time
+        "$timeLabel：$time"
     } else {
-        "${formatSize(size)} · $time"
+        "${formatSize(size)} · $timeLabel：$time"
     }
 }
 
