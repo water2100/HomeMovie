@@ -4,6 +4,11 @@
 
 当前版本：`1.2.0`
 
+
+## Development with Codex
+
+HomeMovie was developed with assistance from OpenAI Codex, which helped with architecture design, implementation, debugging, and iterative improvements.
+
 ## 使用说明
 
 ### 1. 目录设置
