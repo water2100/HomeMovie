@@ -1,4 +1,4 @@
-﻿package com.example.localmovielibrary.ui.settings
+package com.example.localmovielibrary.ui.settings
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -12,16 +12,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -39,6 +45,7 @@ import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -76,6 +83,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -84,10 +92,17 @@ import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.cloud115.SavedCloud115Account
 import com.example.localmovielibrary.data.local.CloudFolderBatchTaskEntity
 import com.example.localmovielibrary.data.local.CloudFolderBatchTaskStatus
+import com.example.localmovielibrary.data.local.MovieEntity
+import com.example.localmovielibrary.data.local.ScrapeTaskStatus
+import com.example.localmovielibrary.data.local.CloudVideoTaskEntity
+import com.example.localmovielibrary.data.local.CloudVideoTaskStatus
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
+import com.example.localmovielibrary.data.repository.DailyUsageStats
+import com.example.localmovielibrary.data.repository.UsageStatsRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.scraper.CustomJsonScrapeConfig
 import com.example.localmovielibrary.scraper.CustomJsonPathCandidate
+import com.example.localmovielibrary.scraper.NumberPrefixRewriteRule
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.scraper.ScrapedMovieInfo
 import com.example.localmovielibrary.ui.shared.MovieImageCacheStore
@@ -97,7 +112,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private val SettingsBackground = Color(0xFF070A0E)
+private val SettingsBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
 
 private enum class SettingsPage {
     Directory,
@@ -107,8 +123,11 @@ private enum class SettingsPage {
     NumberRecognition,
     ScrapeTasks,
     Player,
+    PlayerSubtitle,
+    PlayerProgressBar,
     StartupAnimation,
-    Update
+    Update,
+    UsageStats
 }
 
 @Composable
@@ -157,6 +176,7 @@ fun SettingsScreen(
     var showImageCacheDialog by remember { mutableStateOf(false) }
     var imageCacheSizeText by remember { mutableStateOf("计算中...") }
     var shouldScrollUpdateToBottom by remember { mutableStateOf(openUpdatePage) }
+    var usageStats by remember { mutableStateOf(emptyList<DailyUsageStats>()) }
     val contentScrollState = when (currentPage) {
         null -> overviewScrollState
         SettingsPage.Update -> updateScrollState
@@ -167,7 +187,7 @@ fun SettingsScreen(
         if ((openScrapeTasksPage || openUpdatePage) && onBack != null) {
             onBack()
         } else {
-            currentPage = null
+            currentPage = if (currentPage == SettingsPage.PlayerSubtitle || currentPage == SettingsPage.PlayerProgressBar) SettingsPage.Player else null
         }
     }
 
@@ -208,8 +228,11 @@ fun SettingsScreen(
     }
 
     LaunchedEffect(currentPage) {
-        if (currentPage == SettingsPage.Cloud) {
-            viewModel.refreshSavedCloud115Accounts()
+        when (currentPage) {
+            SettingsPage.Cloud -> viewModel.refreshSavedCloud115Accounts()
+            SettingsPage.ScrapeTasks -> viewModel.refreshScrapeTaskSummary()
+            SettingsPage.UsageStats -> usageStats = UsageStatsRepository(context).recent()
+            else -> Unit
         }
     }
 
@@ -234,7 +257,7 @@ fun SettingsScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(SettingsBackground)
+            .background(MaterialTheme.colorScheme.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             SettingsTopBar(
@@ -243,7 +266,7 @@ fun SettingsScreen(
                     if ((openScrapeTasksPage || openUpdatePage) && onBack != null) {
                         onBack
                     } else {
-                        { currentPage = null }
+                        { currentPage = if (currentPage == SettingsPage.PlayerSubtitle || currentPage == SettingsPage.PlayerProgressBar) SettingsPage.Player else null }
                     }
                 }
             )
@@ -261,7 +284,8 @@ fun SettingsScreen(
                         imageCacheSizeText = imageCacheSizeText,
                         onOpenPage = { currentPage = it },
                         onOpenLogs = onOpenScrapeLogs,
-                        onSave = viewModel::save
+                        onSave = viewModel::save,
+                        onLightThemeChange = viewModel::updateLightThemeEnabled
                     )
 
                     SettingsPage.Directory -> DirectorySettingsPage(
@@ -298,13 +322,20 @@ fun SettingsScreen(
                         onRemovePrioritySource = viewModel::removePriorityScrapeSource,
                         onMovePrioritySourceUp = viewModel::movePriorityScrapeSourceUp,
                         onMovePrioritySourceDown = viewModel::movePriorityScrapeSourceDown,
-                        onRetryCountChange = viewModel::updateImageDownloadRetryCount,
+                        onImageRetryCountChange = viewModel::updateImageDownloadRetryCount,
+                        onScrapeRetryCountChange = viewModel::updateScrapeRetryCount,
                         onConcurrencyLimitChange = viewModel::updateScrapeConcurrencyLimit,
                         onScrapeProxyAddressChange = viewModel::updateScrapeProxyAddress,
                         onScrapeProxyEnabledChange = viewModel::updateScrapeProxyEnabled,
                         onDmm2SkippedPrefixDraftChange = viewModel::updateNewDmm2SkippedPrefix,
                         onAddDmm2SkippedPrefix = viewModel::addDmm2SkippedPrefix,
                         onRemoveDmm2SkippedPrefix = viewModel::removeDmm2SkippedPrefix,
+                        onNumberPrefixRulePrefixDraftChange = viewModel::updateNewNumberPrefixRulePrefix,
+                        onNumberPrefixRuleNumericDraftChange = viewModel::updateNewNumberPrefixRuleNumericPrefix,
+                        onNumberPrefixRuleSourcesChange = viewModel::updateNewNumberPrefixRuleSources,
+                        onAddNumberPrefixRule = viewModel::addNumberPrefixRewriteRule,
+                        onRemoveNumberPrefixRule = viewModel::removeNumberPrefixRewriteRule,
+                        onMgstageAmateurPriorityChange = viewModel::updateMgstageAmateurPriorityEnabled,
                         onRemoteScrapeConfigUrlChange = viewModel::updateRemoteScrapeConfigUrl,
                         onMgstagePrefixDraftChange = viewModel::updateNewMgstagePrefix,
                         onMgstageNumericPrefixDraftChange = viewModel::updateNewMgstageNumericPrefix,
@@ -340,16 +371,30 @@ fun SettingsScreen(
                         onStartCloudFolderBatchTasks = viewModel::startCloudFolderBatchTasks,
                         onStopCloudFolderBatchTasks = viewModel::stopCloudFolderBatchTasks,
                         onCancelCloudFolderBatchTasks = viewModel::cancelCloudFolderBatchTasks,
-                        onRefreshCloudFolderBatchTasks = viewModel::refreshCloudFolderBatchTasks
+                        onRefreshCloudFolderBatchTasks = viewModel::refreshCloudFolderBatchTasks,
+                        onClearCompletedCloudVideoTasks = viewModel::clearCompletedCloudVideoTasks
                     )
 
                     SettingsPage.Player -> PlayerSettingsPage(
                         uiState = uiState,
                         onSeekBackSecondsChange = viewModel::updatePlayerSeekBackSeconds,
                         onSeekForwardSecondsChange = viewModel::updatePlayerSeekForwardSeconds,
+                        onOpenSubtitle = { currentPage = SettingsPage.PlayerSubtitle },
+                        onOpenProgressBar = { currentPage = SettingsPage.PlayerProgressBar }
+                    )
+
+                    SettingsPage.PlayerSubtitle -> ExternalSubtitleSettingsPage(
+                        uiState = uiState,
                         onExternalSubtitleFontSizeChange = viewModel::updateExternalSubtitleFontSizeSp,
                         onExternalSubtitleBottomPaddingChange = viewModel::updateExternalSubtitleBottomPaddingPercent,
                         onExternalSubtitleBackgroundAlphaChange = viewModel::updateExternalSubtitleBackgroundAlphaPercent
+                    )
+
+                    SettingsPage.PlayerProgressBar -> PlayerProgressBarSettingsPage(
+                        uiState = uiState,
+                        onWidthChange = viewModel::updatePlayerProgressBarWidthDp,
+                        onColorChange = viewModel::updatePlayerProgressBarColor,
+                        onAlphaChange = viewModel::updatePlayerProgressBarAlphaPercent
                     )
 
                     SettingsPage.StartupAnimation -> StartupAnimationSettingsPage(
@@ -376,8 +421,10 @@ fun SettingsScreen(
                         onDownloadAndInstall = viewModel::downloadAndInstallUpdate,
                         onInstallDownloaded = viewModel::installDownloadedUpdate
                     )
+
+                    SettingsPage.UsageStats -> UsageStatsPage(UsageStatsRepository(context))
                 }
-                if (currentPage != null) {
+                if (currentPage != null && currentPage != SettingsPage.ScrapeTasks) {
                     Button(
                         onClick = viewModel::save,
                         modifier = Modifier.fillMaxWidth(),
@@ -450,9 +497,9 @@ private fun CustomJsonMappingDialog(
     val nodes = remember(pathCandidates, pathSegments) { pathCandidates.childNodes(pathSegments) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF111820),
-        titleContentColor = Color.White,
-        textContentColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text("配置字段映射") },
         text = {
             Column(
@@ -475,7 +522,7 @@ private fun CustomJsonMappingDialog(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
                         .padding(10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -489,7 +536,7 @@ private fun CustomJsonMappingDialog(
                             )
                             Text(
                                 text = selectedTarget?.value?.ifBlank { "未选择" }.orEmpty(),
-                                color = if (selectedTarget?.value.isNullOrBlank()) MaterialTheme.colorScheme.error else Color.White.copy(alpha = 0.72f),
+                                color = if (selectedTarget?.value.isNullOrBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                                 style = MaterialTheme.typography.bodySmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -497,7 +544,7 @@ private fun CustomJsonMappingDialog(
                             if (!selectedSampleValue.isNullOrBlank()) {
                                 Text(
                                     text = "样本值：$selectedSampleValue",
-                                    color = Color.White.copy(alpha = 0.62f),
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                                     style = MaterialTheme.typography.bodySmall,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -515,16 +562,16 @@ private fun CustomJsonMappingDialog(
                                 expanded = targetMenuExpanded,
                                 onDismissRequest = { targetMenuExpanded = false },
                                 modifier = Modifier.heightIn(max = 360.dp),
-                                containerColor = Color(0xFF17202B),
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
                             ) {
                                 targets.forEachIndexed { index, target ->
                                     DropdownMenuItem(
                                         text = {
                                             Column {
-                                                Text(target.label, color = Color.White, fontWeight = FontWeight.Bold)
+                                                Text(target.label, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                                                 Text(
                                                     target.value.ifBlank { "未选择" },
-                                                    color = Color.White.copy(alpha = 0.62f),
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                                                     style = MaterialTheme.typography.bodySmall,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
@@ -550,7 +597,7 @@ private fun CustomJsonMappingDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -578,7 +625,7 @@ private fun CustomJsonMappingDialog(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
                                 .clickable {
                                     if (node.hasChildren) {
                                         pathSegments = node.segments
@@ -608,11 +655,11 @@ private fun CustomJsonMappingDialog(
                                     fontWeight = FontWeight.Bold,
                                 )
                             }
-                            Text(node.path, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(node.path, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (node.valuePreview.isNotBlank()) {
                                 Text(
                                     node.valuePreview,
-                                    color = Color.White.copy(alpha = 0.62f),
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                                     style = MaterialTheme.typography.bodySmall,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
@@ -634,12 +681,12 @@ private fun CustomJsonMappingPreview(config: CustomJsonScrapeConfig) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text("当前结果路径：${config.resultPath}", style = MaterialTheme.typography.bodySmall)
-        Text("提示：如果想选评分 $.reviewSummary.average，请把结果路径设到包含 reviewSummary 的节点后重新测试。", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.62f))
+        Text("提示：如果想选评分 $.reviewSummary.average，请把结果路径设到包含 reviewSummary 的节点后重新测试。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
     }
 }
 
@@ -772,7 +819,7 @@ private fun CustomJsonTestResultRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -807,8 +854,11 @@ private fun SettingsPage.titleText(): String = when (this) {
     SettingsPage.NumberRecognition -> "番号识别规则"
     SettingsPage.ScrapeTasks -> "刮削任务"
     SettingsPage.Player -> "播放器设置"
+    SettingsPage.PlayerSubtitle -> "外挂字幕"
+    SettingsPage.PlayerProgressBar -> "进度条"
     SettingsPage.StartupAnimation -> "开场动画"
     SettingsPage.Update -> "应用更新"
+    SettingsPage.UsageStats -> "使用统计"
 }
 
 @Composable
@@ -817,7 +867,8 @@ private fun SettingsOverviewPage(
     imageCacheSizeText: String,
     onOpenPage: (SettingsPage) -> Unit,
     onOpenLogs: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onLightThemeChange: (Boolean) -> Unit
 ) {
     SettingsGroupCard(title = "目录") {
         SettingsEntryRow(
@@ -840,7 +891,7 @@ private fun SettingsOverviewPage(
         }
         SettingsEntryRow(
             title = "默认刮削与图片缓存",
-            subtitle = "${uiState.defaultScrapeSource.label} · 并发 ${uiState.scrapeConcurrencyLimitText} · 图片重试 ${uiState.imageDownloadRetryCountText} 次 · 缓存 $imageCacheSizeText",
+            subtitle = "${uiState.defaultScrapeSource.label} · 并发 ${uiState.scrapeConcurrencyLimitText} · 刮削重试 ${uiState.scrapeRetryCountText} 次 · 图片重试 ${uiState.imageDownloadRetryCountText} 次 · 缓存 $imageCacheSizeText",
             onClick = { onOpenPage(SettingsPage.Scrape) }
         )
         SettingsEntryRow(
@@ -871,6 +922,16 @@ private fun SettingsOverviewPage(
         )
     }
     SettingsGroupCard(title = "应用") {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("浅色主题", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("切换后界面背景与文字颜色会自动适配", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = uiState.lightThemeEnabled, onCheckedChange = onLightThemeChange)
+        }
         SettingsEntryRow(
             title = "开场动画",
             subtitle = if (uiState.startupAnimationEnabled) "已开启 · ${if (uiState.startupAnimationImageUri.isBlank()) "默认画面" else "自定义图片"}" else "默认关闭",
@@ -880,6 +941,11 @@ private fun SettingsOverviewPage(
             title = "应用更新",
             subtitle = "当前版本 ${uiState.appVersionName.ifBlank { "未知" }} · ${if (uiState.updateManifestUrl.isBlank()) "未配置更新地址" else "已配置更新地址"}",
             onClick = { onOpenPage(SettingsPage.Update) }
+        )
+        SettingsEntryRow(
+            title = "使用统计",
+            subtitle = "每天的使用时长与播放时长",
+            onClick = { onOpenPage(SettingsPage.UsageStats) }
         )
     }
     Button(
@@ -907,8 +973,8 @@ private fun StartupAnimationSettingsPage(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("启用开场动画", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text("进入应用时显示图片和加载动画，默认关闭。", color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
+                Text("启用开场动画", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("进入应用时显示图片和加载动画，默认关闭。", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
             }
             Switch(checked = uiState.startupAnimationEnabled, onCheckedChange = onEnabledChange)
         }
@@ -918,9 +984,9 @@ private fun StartupAnimationSettingsPage(
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("动画图片", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text("动画图片", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             if (uiState.startupAnimationImageUri.isBlank()) {
-                Text("未选择时将显示内置深色渐变画面。", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
+                Text("未选择时将显示内置深色渐变画面。", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
             } else {
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(Uri.parse(uiState.startupAnimationImageUri)).crossfade(true).build(),
@@ -944,9 +1010,8 @@ private fun PlayerSettingsPage(
     uiState: SettingsUiState,
     onSeekBackSecondsChange: (Int) -> Unit,
     onSeekForwardSecondsChange: (Int) -> Unit,
-    onExternalSubtitleFontSizeChange: (Int) -> Unit,
-    onExternalSubtitleBottomPaddingChange: (Int) -> Unit,
-    onExternalSubtitleBackgroundAlphaChange: (Int) -> Unit
+    onOpenSubtitle: () -> Unit,
+    onOpenProgressBar: () -> Unit
 ) {
     SettingsSectionTitle("播放控制")
     SettingsGroupCard(title = "快进与后退") {
@@ -965,8 +1030,85 @@ private fun PlayerSettingsPage(
             onValueChange = onSeekForwardSecondsChange
         )
     }
-    SettingsSectionTitle("外挂字幕样式")
-    SettingsGroupCard(title = "字幕显示") {
+    SettingsSectionTitle("播放器控件")
+    SettingsGroupCard(title = "样式与预览") {
+        SettingsEntryRow(
+            title = "外挂字幕",
+            subtitle = "字号 ${uiState.externalSubtitleFontSizeSp}sp · 点击进入实时预览",
+            onClick = onOpenSubtitle
+        )
+        SettingsEntryRow(
+            title = "进度条",
+            subtitle = "宽度 ${uiState.playerProgressBarWidthDp}dp · 点击进入实时预览",
+            onClick = onOpenProgressBar
+        )
+    }
+}
+
+@Composable
+private fun UsageStatsPage(repository: UsageStatsRepository) {
+    var period by rememberSaveable { mutableStateOf(UsageStatsPeriod.Week) }
+    val allStats = repository.all()
+    val stats = when (period) {
+        UsageStatsPeriod.Week -> repository.recent(7)
+        UsageStatsPeriod.Month -> repository.recent(30)
+        UsageStatsPeriod.All -> allStats.takeLast(30)
+    }
+    val maxMillis = stats.maxOfOrNull { maxOf(it.appMillis, it.playbackMillis) }?.coerceAtLeast(1L) ?: 1L
+    val totalSource = if (period == UsageStatsPeriod.All) allStats else stats
+    val totalApp = totalSource.sumOf { it.appMillis }
+    val totalPlayback = totalSource.sumOf { it.playbackMillis }
+    SettingsSectionTitle("使用统计")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        UsageStatsPeriod.entries.forEach { option ->
+            OutlinedButton(onClick = { period = option }) { Text(option.label) }
+        }
+    }
+    SettingsGroupCard(title = "使用与播放时长") {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            stats.forEach { item ->
+                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(modifier = Modifier.heightIn(min = 120.dp), verticalAlignment = Alignment.Bottom) {
+                        Box(modifier = Modifier.width(10.dp).height((120f * item.appMillis / maxMillis).dp.coerceAtLeast(3.dp)).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
+                        Spacer(Modifier.width(3.dp))
+                        Box(modifier = Modifier.width(10.dp).height((120f * item.playbackMillis / maxMillis).dp.coerceAtLeast(3.dp)).background(MaterialTheme.colorScheme.tertiary, RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
+                    }
+                    if (period != UsageStatsPeriod.Month || stats.indexOf(item) % 5 == 0) Text(item.day, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
+        Text("蓝色：使用软件 · 紫色：实际播放", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp))
+    }
+    SettingsGroupCard(title = "汇总") {
+        Text("${period.label}使用 ${formatUsageDuration(totalApp)} · 播放 ${formatUsageDuration(totalPlayback)}", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(16.dp))
+    }
+    if (period == UsageStatsPeriod.Week) SettingsGroupCard(title = "本周每日记录") {
+        stats.forEach { item -> Text("${item.day}　使用 ${formatUsageDuration(item.appMillis)}　播放 ${formatUsageDuration(item.playbackMillis)}", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)) }
+    }
+}
+
+private enum class UsageStatsPeriod(val label: String) { Week("7天"), Month("一个月"), All("总时间") }
+
+private fun formatUsageDuration(millis: Long): String {
+    val minutes = millis / 60_000L
+    return if (minutes >= 60) "${minutes / 60}小时${minutes % 60}分" else "${minutes}分"
+}
+
+@Composable
+private fun ExternalSubtitleSettingsPage(
+    uiState: SettingsUiState,
+    onExternalSubtitleFontSizeChange: (Int) -> Unit,
+    onExternalSubtitleBottomPaddingChange: (Int) -> Unit,
+    onExternalSubtitleBackgroundAlphaChange: (Int) -> Unit
+) {
+    SettingsSectionTitle("实时预览")
+    SubtitleStylePreview(uiState)
+    SettingsSectionTitle("字幕显示")
+    SettingsGroupCard(title = "外挂字幕样式") {
         SubtitleStyleSliderRow(
             title = "字号",
             value = uiState.externalSubtitleFontSizeSp,
@@ -992,6 +1134,60 @@ private fun PlayerSettingsPage(
 }
 
 @Composable
+private fun PlayerProgressBarSettingsPage(
+    uiState: SettingsUiState,
+    onWidthChange: (Int) -> Unit,
+    onColorChange: (Int) -> Unit,
+    onAlphaChange: (Int) -> Unit
+) {
+    val progressColor = Color(uiState.playerProgressBarColor).copy(alpha = uiState.playerProgressBarAlphaPercent / 100f)
+    SettingsSectionTitle("实时预览")
+    SettingsGroupCard(title = "播放进度") {
+        Column(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
+            Text("00:42", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), style = MaterialTheme.typography.bodySmall)
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f), RoundedCornerShape(99.dp))
+                    .heightIn(min = uiState.playerProgressBarWidthDp.dp)
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth(0.46f)
+                        .heightIn(min = uiState.playerProgressBarWidthDp.dp)
+                        .background(progressColor, RoundedCornerShape(99.dp))
+                )
+            }
+            Text("01:30", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.End))
+        }
+    }
+    SettingsSectionTitle("样式")
+    SettingsGroupCard(title = "进度条") {
+        SubtitleStyleSliderRow("宽度", uiState.playerProgressBarWidthDp, AppSettingsRepository.MIN_PLAYER_PROGRESS_BAR_WIDTH_DP..AppSettingsRepository.MAX_PLAYER_PROGRESS_BAR_WIDTH_DP, "${uiState.playerProgressBarWidthDp}dp", onWidthChange)
+        SubtitleStyleSliderRow("不透明度", uiState.playerProgressBarAlphaPercent, AppSettingsRepository.MIN_PLAYER_PROGRESS_BAR_ALPHA_PERCENT..AppSettingsRepository.MAX_PLAYER_PROGRESS_BAR_ALPHA_PERCENT, "${uiState.playerProgressBarAlphaPercent}%", onAlphaChange)
+        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(0xFFFFFFFF.toInt(), 0xFFFF5252.toInt(), 0xFF42A5F5.toInt(), 0xFF66BB6A.toInt(), 0xFFFFCA28.toInt()).forEach { color ->
+                Box(modifier = Modifier.size(32.dp).background(Color(color), CircleShape).clickable { onColorChange(color) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleStylePreview(uiState: SettingsUiState) {
+    val background = Color.Black.copy(alpha = uiState.externalSubtitleBackgroundAlphaPercent / 100f)
+    SettingsGroupCard(title = "播放效果") {
+        Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp)).padding(16.dp).heightIn(min = 180.dp), contentAlignment = Alignment.BottomCenter) {
+            Text(
+                text = "这是一段外挂字幕预览",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = uiState.externalSubtitleFontSizeSp.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.background(background, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 3.dp).padding(bottom = uiState.externalSubtitleBottomPaddingPercent.dp)
+            )
+        }
+    }
+}
+
+@Composable
 private fun SubtitleStyleSliderRow(
     title: String,
     value: Int,
@@ -1008,14 +1204,14 @@ private fun SubtitleStyleSliderRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = title,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
             Text(
                 text = valueText,
-                color = Color.White.copy(alpha = 0.68f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1025,9 +1221,9 @@ private fun SubtitleStyleSliderRow(
             valueRange = range.first.toFloat()..range.last.toFloat(),
             steps = (range.last - range.first - 1).coerceAtLeast(0),
             colors = SliderDefaults.colors(
-                thumbColor = Color.White,
-                activeTrackColor = Color.White,
-                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                thumbColor = MaterialTheme.colorScheme.onSurface,
+                activeTrackColor = MaterialTheme.colorScheme.onSurface,
+                inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f)
             )
         )
     }
@@ -1050,19 +1246,19 @@ private fun AppUpdateSettingsPage(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
             text = "家庭电影院 ${uiState.appVersionName.ifBlank { "未知" }}",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
         Text(
             text = "versionCode ${uiState.appVersionCode}",
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -1111,24 +1307,24 @@ private fun AppUpdateSettingsPage(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Text(
             text = "APK 缓存位置",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = uiState.updateApkDirectoryPath.ifBlank { "暂未创建缓存目录" },
-            color = Color.White.copy(alpha = 0.62f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
             style = MaterialTheme.typography.bodySmall
         )
         Text(
             text = uiState.downloadedUpdateApkPath.ifBlank { "当前没有已下载的更新 APK" },
-            color = Color.White.copy(alpha = 0.48f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -1138,34 +1334,34 @@ private fun AppUpdateSettingsPage(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
             text = update?.let { "最新版本 ${it.versionName} · versionCode ${it.versionCode}" } ?: "尚未检查更新",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         update?.sizeBytes?.let { size ->
             Text(
                 text = "APK 大小：${formatCacheSize(size)}",
-                color = Color.White.copy(alpha = 0.58f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         if (update != null && update.notes.isNotEmpty()) {
             Text(
                 text = update.notes.take(5).joinToString("\n") { "- $it" },
-                color = Color.White.copy(alpha = 0.70f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         if (uiState.updateMessage.isNotBlank()) {
             Text(
                 text = uiState.updateMessage,
-                color = Color.White.copy(alpha = 0.72f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1173,7 +1369,7 @@ private fun AppUpdateSettingsPage(
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Text(
                 text = "${uiState.updateDownloadProgress.coerceIn(0, 100)}%",
-                color = Color.White.copy(alpha = 0.58f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1226,7 +1422,7 @@ private fun UpdateSwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1236,13 +1432,13 @@ private fun UpdateSwitchRow(
         ) {
             Text(
                 text = title,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = subtitle,
-                color = Color.White.copy(alpha = 0.58f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1269,7 +1465,7 @@ private fun DirectorySettingsPage(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1279,13 +1475,13 @@ private fun DirectorySettingsPage(
         ) {
             Text(
                 text = "生成 .nomedia 文件屏蔽图片",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = "开启后会在影片库目录创建 .nomedia，避免相册显示海报和剧照；关闭后删除该文件。",
-                color = Color.White.copy(alpha = 0.56f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1298,7 +1494,15 @@ private fun DirectorySettingsPage(
     Button(
         onClick = onPickLibrary,
         enabled = !uiState.isScanning && !uiState.isScraping,
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(20.dp),
+        colors = libraryScanButtonPalette().let { palette ->
+            ButtonDefaults.buttonColors(
+                containerColor = palette.containerColor,
+                contentColor = palette.contentColor,
+                disabledContainerColor = palette.disabledContainerColor,
+                disabledContentColor = palette.disabledContentColor
+            )
+        }
     ) {
         if (uiState.isScanning) {
             CircularProgressIndicator(strokeWidth = 2.dp, color = Color.Black)
@@ -1317,7 +1521,7 @@ private fun DirectorySettingsPage(
         shape = RoundedCornerShape(20.dp)
     ) {
         if (uiState.isRebuildingStrmIndex) {
-            CircularProgressIndicator(strokeWidth = 2.dp, color = Color.White)
+            CircularProgressIndicator(strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onSurface)
         } else {
             Icon(Icons.Rounded.Article, contentDescription = null)
         }
@@ -1408,7 +1612,7 @@ private fun DomesticPageSwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1418,13 +1622,13 @@ private fun DomesticPageSwitchRow(
         ) {
             Text(
                 text = "开启国产页面",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = "关闭后，影片页面不显示国产分类。默认关闭。",
-                color = Color.White.copy(alpha = 0.58f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1445,7 +1649,7 @@ private fun CloudAddBehaviorPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -1456,13 +1660,13 @@ private fun CloudAddBehaviorPanel(
             ) {
                 Text(
                     text = "开启按钮提示",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = "关闭后，网盘点击添加不会弹出正在添加、已添加这类提示。",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -1478,13 +1682,13 @@ private fun CloudAddBehaviorPanel(
             ) {
                 Text(
                     text = "开启网盘删除",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = "开启后，影片详情删除弹窗会显示“删除(网盘)”，同时删除 115 网盘真实视频。默认关闭。",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -1508,7 +1712,7 @@ private fun ExcludedCloudVideosPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -1519,13 +1723,13 @@ private fun ExcludedCloudVideosPanel(
             ) {
                 Text(
                     text = "排除视频名单",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = "已排除 ${names.size} 个视频。命中后仍可播放，但不显示添加按钮。",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -1619,13 +1823,20 @@ private fun ScrapeSettingsPage(
     onRemovePrioritySource: (ScrapeSource) -> Unit,
     onMovePrioritySourceUp: (ScrapeSource) -> Unit,
     onMovePrioritySourceDown: (ScrapeSource) -> Unit,
-    onRetryCountChange: (String) -> Unit,
+    onImageRetryCountChange: (String) -> Unit,
+    onScrapeRetryCountChange: (String) -> Unit,
     onConcurrencyLimitChange: (String) -> Unit,
     onScrapeProxyAddressChange: (String) -> Unit,
     onScrapeProxyEnabledChange: (Boolean) -> Unit,
     onDmm2SkippedPrefixDraftChange: (String) -> Unit,
     onAddDmm2SkippedPrefix: () -> Unit,
     onRemoveDmm2SkippedPrefix: (String) -> Unit,
+    onNumberPrefixRulePrefixDraftChange: (String) -> Unit,
+    onNumberPrefixRuleNumericDraftChange: (String) -> Unit,
+    onNumberPrefixRuleSourcesChange: (Set<ScrapeSource>) -> Unit,
+    onAddNumberPrefixRule: () -> Unit,
+    onRemoveNumberPrefixRule: (String) -> Unit,
+    onMgstageAmateurPriorityChange: (Boolean) -> Unit,
     onRemoteScrapeConfigUrlChange: (String) -> Unit,
     onMgstagePrefixDraftChange: (String) -> Unit,
     onMgstageNumericPrefixDraftChange: (String) -> Unit,
@@ -1658,31 +1869,45 @@ private fun ScrapeSettingsPage(
         numericDraft = uiState.newMgstageNumericPrefix,
         remoteConfigUrl = uiState.remoteScrapeConfigUrl,
         isRefreshing = uiState.isRefreshingMgstageRules,
+        amateurPriorityEnabled = uiState.mgstageAmateurPriorityEnabled,
         onDraftChange = onMgstagePrefixDraftChange,
         onNumericDraftChange = onMgstageNumericPrefixDraftChange,
         onRemoteConfigUrlChange = onRemoteScrapeConfigUrlChange,
         onAdd = onAddMgstagePrefix,
         onRemove = onRemoveMgstagePrefix,
-        onRefresh = onRefreshMgstageRules
+        onRefresh = onRefreshMgstageRules,
+        onAmateurPriorityChange = onMgstageAmateurPriorityChange
+    )
+    SettingsSectionTitle("数字前缀规则")
+    NumberPrefixRewriteRulePanel(
+        rules = uiState.numberPrefixRewriteRules,
+        prefixDraft = uiState.newNumberPrefixRulePrefix,
+        numericPrefixDraft = uiState.newNumberPrefixRuleNumericPrefix,
+        selectedSources = uiState.newNumberPrefixRuleSources,
+        onPrefixDraftChange = onNumberPrefixRulePrefixDraftChange,
+        onNumericPrefixDraftChange = onNumberPrefixRuleNumericDraftChange,
+        onSourcesChange = onNumberPrefixRuleSourcesChange,
+        onAdd = onAddNumberPrefixRule,
+        onRemove = onRemoveNumberPrefixRule
     )
     SettingsSectionTitle("番号识别")
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .clickable(onClick = onOpenNumberRules)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             text = "番号识别规则",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = "忽略后缀 ${uiState.numberRecognitionIgnoredSuffixes.size} · 分段标记 ${uiState.numberRecognitionPartMarkers.size}",
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -1708,18 +1933,30 @@ private fun ScrapeSettingsPage(
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         colors = settingsTextFieldColors()
     )
+    SettingsSectionTitle("刮削重试")
+    OutlinedTextField(
+        value = uiState.scrapeRetryCountText,
+        onValueChange = onScrapeRetryCountChange,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+        label = { Text("每个来源尝试次数") },
+        supportingText = { Text("范围 1 到 ${AppSettingsRepository.MAX_SCRAPE_RETRY_COUNT}，默认 ${AppSettingsRepository.DEFAULT_SCRAPE_RETRY_COUNT} 次；达到上限后再尝试下一个优先级来源。") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        colors = settingsTextFieldColors()
+    )
     SettingsSectionTitle("刮削代理")
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("使用外部代理", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text("仅用于刮削、图片下载和规则刷新", color = Color.White.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
+                Text("使用外部代理", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("仅用于刮削、图片下载和规则刷新", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f), style = MaterialTheme.typography.bodySmall)
             }
             Switch(checked = uiState.useScrapeProxyEnabled, onCheckedChange = onScrapeProxyEnabledChange)
         }
@@ -1731,7 +1968,7 @@ private fun ScrapeSettingsPage(
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
             label = { Text("代理地址") },
-            supportingText = { Text("例如 192.168.1.10:7890、http://192.168.1.10:7890 或 socks5://192.168.1.10:1080。保存后生效。") },
+            supportingText = { Text("例如 192.168.1.10:7890、http://192.168.1.10:7890 或 socks5://192.168.1.10:1080。开关即时生效，地址需保存后生效。") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             colors = settingsTextFieldColors()
         )
@@ -1739,7 +1976,7 @@ private fun ScrapeSettingsPage(
     SettingsSectionTitle("图片下载")
     OutlinedTextField(
         value = uiState.imageDownloadRetryCountText,
-        onValueChange = onRetryCountChange,
+        onValueChange = onImageRetryCountChange,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         shape = RoundedCornerShape(18.dp),
@@ -1764,19 +2001,19 @@ private fun NumberRecognitionRulesPage(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
             text = "GitHub 规则地址",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = uiState.remoteScrapeConfigUrl,
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 3,
             overflow = TextOverflow.Ellipsis
@@ -1827,24 +2064,24 @@ private fun NumberRecognitionRuleCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
             text = title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = subtitle,
-            color = Color.White.copy(alpha = 0.56f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
             style = MaterialTheme.typography.bodySmall
         )
         Text(
             text = if (values.isEmpty()) "暂无规则" else values.joinToString("、"),
-            color = Color.White.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier
                 .fillMaxWidth()
@@ -1865,25 +2102,121 @@ private fun ScrapeTasksPage(
     onStartCloudFolderBatchTasks: () -> Unit,
     onStopCloudFolderBatchTasks: () -> Unit,
     onCancelCloudFolderBatchTasks: () -> Unit,
-    onRefreshCloudFolderBatchTasks: () -> Unit
+    onRefreshCloudFolderBatchTasks: () -> Unit,
+    onClearCompletedCloudVideoTasks: () -> Unit
 ) {
-    SettingsSectionTitle("影片刮削任务")
-    ManualScrapeTaskPanel(
+    SettingsSectionTitle("统一刮削任务")
+    UnifiedScrapeTaskPanel(
         uiState = uiState,
-        onStart = onStartManualScrapeTasks,
-        onStop = onStopManualScrapeTasks,
-        onCancel = onCancelManualScrapeTasks,
-        onRefresh = onRefreshScrapeTasks,
+        onStart = {
+            onStartManualScrapeTasks()
+            onStartCloudFolderBatchTasks()
+        },
+        onStop = {
+            onStopManualScrapeTasks()
+            onStopCloudFolderBatchTasks()
+        },
+        onCancel = {
+            onCancelManualScrapeTasks()
+            onCancelCloudFolderBatchTasks()
+        },
+        onRefresh = {
+            onRefreshScrapeTasks()
+            onRefreshCloudFolderBatchTasks()
+        },
         onResetFailed = onResetFailedScrapeTasks
     )
-    SettingsSectionTitle("网盘文件夹任务")
-    CloudFolderBatchTaskPanel(
-        uiState = uiState,
-        onStart = onStartCloudFolderBatchTasks,
-        onStop = onStopCloudFolderBatchTasks,
-        onCancel = onCancelCloudFolderBatchTasks,
-        onRefresh = onRefreshCloudFolderBatchTasks
+    SettingsSectionTitle("影片任务（${uiState.scrapeIssueMovies.size}）")
+    ScrapeIssueList(movies = uiState.scrapeIssueMovies, isRunning = uiState.isManualScrapeRunning)
+    SettingsSectionTitle("网盘视频任务（${uiState.cloudVideoTasks.size}）")
+    if (uiState.cloudVideoTasks.any { it.status == CloudVideoTaskStatus.Completed.name }) {
+        OutlinedButton(
+            onClick = onClearCompletedCloudVideoTasks,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Icon(Icons.Rounded.Close, contentDescription = null)
+            Text("清除已完成记录", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+    CloudVideoTaskList(tasks = uiState.cloudVideoTasks, isRunning = uiState.isCloudVideoTaskRunning)
+    SettingsSectionTitle("文件夹发现任务（${uiState.cloudFolderBatchTasks.size}）")
+    CloudFolderBatchTaskList(
+        tasks = uiState.cloudFolderBatchTasks,
+        isRunning = uiState.isCloudFolderBatchRunning
     )
+}
+
+@Composable
+private fun UnifiedScrapeTaskPanel(
+    uiState: SettingsUiState,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onCancel: () -> Unit,
+    onRefresh: () -> Unit,
+    onResetFailed: () -> Unit
+) {
+    val movieSummary = uiState.scrapeTaskSummary
+    val cloudVideoUnfinished = uiState.cloudVideoTasks.count { it.status != CloudVideoTaskStatus.Completed.name }
+    val folderUnfinished = uiState.cloudFolderBatchTasks.count { it.status != CloudFolderBatchTaskStatus.Completed.name }
+    val isRunning = uiState.isManualScrapeRunning || uiState.isCloudVideoTaskRunning || uiState.isCloudFolderBatchRunning
+    val unfinished = movieSummary.unfinished + cloudVideoUnfinished + folderUnfinished
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("所有来源", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "影片 ${movieSummary.unfinished} · 网盘视频 $cloudVideoUnfinished · 文件夹 $folderUnfinished",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            IconButton(onClick = onRefresh, enabled = !isRunning) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "刷新刮削任务", tint = MaterialTheme.colorScheme.onSurface)
+            }
+        }
+        if (isRunning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        Text(
+            text = if (isRunning) "正在按统一队列处理任务。" else "所有入口共用同一套并发、暂停和失败恢复机制。",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Button(
+            onClick = if (isRunning) onStop else onStart,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskPrimaryButtonColors()
+        ) {
+            Icon(if (isRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null)
+            Text(if (isRunning) "暂停所有刮削任务" else "开始/继续所有刮削任务", modifier = Modifier.padding(start = 8.dp))
+        }
+        Button(
+            onClick = onCancel,
+            enabled = unfinished > 0,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = taskCancelButtonColors()
+        ) {
+            Icon(Icons.Rounded.Close, contentDescription = null)
+            Text("取消所有未完成任务", modifier = Modifier.padding(start = 8.dp))
+        }
+        Button(
+            onClick = onResetFailed,
+            enabled = movieSummary.failed > 0 && !isRunning,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = manualTaskSecondaryButtonColors()
+        ) {
+            Icon(Icons.Rounded.Refresh, contentDescription = null)
+            Text("重置失败的影片任务", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
 }
 
 @Composable
@@ -1894,7 +2227,7 @@ private fun CustomJsonScrapeEntryCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -1902,21 +2235,21 @@ private fun CustomJsonScrapeEntryCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = config.name.ifBlank { "自定义 JSON 来源" },
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
             Text(
                 text = if (config.enabled) "已启用" else "未启用",
-                color = Color.White.copy(alpha = if (config.enabled) 0.9f else 0.46f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (config.enabled) 0.9f else 0.46f),
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold
             )
         }
         Text(
             text = config.urlTemplate.ifBlank { "未配置请求地址" },
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -1967,7 +2300,7 @@ private fun CustomJsonScrapePanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -1978,13 +2311,13 @@ private fun CustomJsonScrapePanel(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "自定义 JSON 来源",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = "先填 URL 和结果路径，点测试后可从样本 JSON 中选择字段。候选只来自当前结果路径。",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -2013,7 +2346,7 @@ private fun CustomJsonScrapePanel(
         if (pathCandidates.isNotEmpty()) {
             Text(
                 text = "已生成 ${pathCandidates.size} 个候选路径。需要调整字段时请重新点击测试并配置。",
-                color = Color.White.copy(alpha = 0.62f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -2025,7 +2358,7 @@ private fun CustomJsonScrapePanel(
             colors = taskPrimaryButtonColors()
         ) {
             if (isTesting) {
-                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp), strokeWidth = 2.dp, color = Color.White)
+                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onSurface)
             }
             Text(if (isTesting) "正在测试..." else "测试并生成字段候选")
         }
@@ -2046,11 +2379,11 @@ private fun CustomJsonConfigSelector(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.055f), RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f), RoundedCornerShape(14.dp))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("配置方案", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+        Text("配置方案", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
         Box {
             OutlinedButton(
                 onClick = { expanded = true },
@@ -2063,16 +2396,16 @@ private fun CustomJsonConfigSelector(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
                 modifier = Modifier.heightIn(max = 360.dp),
-                containerColor = Color(0xFF17202B),
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
             ) {
                 configs.forEachIndexed { index, item ->
                     DropdownMenuItem(
                         text = {
                             Column {
-                                Text(item.name.ifBlank { "未命名配置" }, color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(item.name.ifBlank { "未命名配置" }, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                                 Text(
                                     item.urlTemplate.ifBlank { "未配置请求地址" },
-                                    color = Color.White.copy(alpha = 0.62f),
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                                     style = MaterialTheme.typography.bodySmall,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -2110,24 +2443,24 @@ private fun CustomJsonMappingSummary(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.055f), RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f), RoundedCornerShape(14.dp))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Text("字段映射", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+        Text("字段映射", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
         targets.chunked(2).forEach { rowTargets ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 rowTargets.forEach { target ->
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .background(Color.White.copy(alpha = 0.055f), RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f), RoundedCornerShape(10.dp))
                             .padding(8.dp),
                     ) {
                         Text(target.label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                         Text(
                             target.value.ifBlank { "未选择" },
-                            color = if (target.value.isBlank()) MaterialTheme.colorScheme.error else Color.White.copy(alpha = 0.72f),
+                            color = if (target.value.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -2135,7 +2468,7 @@ private fun CustomJsonMappingSummary(
                         val sampleValue = pathCandidates.sampleValue(target.value)
                         Text(
                             sampleValue.ifBlank { if (target.value.isBlank()) "未映射" else "样本未匹配" },
-                            color = if (sampleValue.isBlank()) Color.White.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.62f),
+                            color = if (sampleValue.isBlank()) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -2179,18 +2512,20 @@ private fun MgstagePrefixPanel(
     numericDraft: String,
     remoteConfigUrl: String,
     isRefreshing: Boolean,
+    amateurPriorityEnabled: Boolean,
     onDraftChange: (String) -> Unit,
     onNumericDraftChange: (String) -> Unit,
     onRemoteConfigUrlChange: (String) -> Unit,
     onAdd: () -> Unit,
     onRemove: (String) -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onAmateurPriorityChange: (Boolean) -> Unit
 ) {
     var showManageDialog by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -2201,7 +2536,7 @@ private fun MgstagePrefixPanel(
             ) {
                 Text(
                     text = "番号前缀规则",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
@@ -2211,7 +2546,7 @@ private fun MgstagePrefixPanel(
                     } else {
                         "本地 ${customPrefixes.size} · GitHub ${remotePrefixes.size} · 合并 ${mergedPrefixes.size} 个：${mergedPrefixes.entries.joinToString("、") { it.toMgstageRuleLabel() }}"
                     },
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -2232,11 +2567,20 @@ private fun MgstagePrefixPanel(
                 Text("管理")
             }
         }
-        Text(
-            text = "命中合并规则后，默认刮削会优先尝试 MGStage。",
-            color = Color.White.copy(alpha = 0.52f),
-            style = MaterialTheme.typography.bodySmall
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("MGS素人优先", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "开启后，命中 MGS 前缀规则的影片会优先尝试 MGStage；关闭则严格按刮削源优先级执行。",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Switch(checked = amateurPriorityEnabled, onCheckedChange = onAmateurPriorityChange)
+        }
     }
 
     if (showManageDialog) {
@@ -2373,6 +2717,117 @@ private fun Map.Entry<String, String>.toMgstageRuleLabel(): String =
     "$key→${value.ifBlank { "无" }}"
 
 @Composable
+private fun NumberPrefixRewriteRulePanel(
+    rules: List<NumberPrefixRewriteRule>,
+    prefixDraft: String,
+    numericPrefixDraft: String,
+    selectedSources: Set<ScrapeSource>,
+    onPrefixDraftChange: (String) -> Unit,
+    onNumericPrefixDraftChange: (String) -> Unit,
+    onSourcesChange: (Set<ScrapeSource>) -> Unit,
+    onAdd: () -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var showManageDialog by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("按刮削源补全数字前缀", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (rules.isEmpty()) "未设置。命中后会用完整番号命名影片。" else "已设置 ${rules.size} 条：${rules.joinToString("、") { "${it.prefix}→${it.rewrittenPrefix}" }}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(onClick = { showManageDialog = true }, shape = RoundedCornerShape(18.dp)) {
+                Text("管理")
+            }
+        }
+        Text(
+            text = "例如 DSVR + 3：仅对勾选来源以 3DSVR-1944 查询；无论最终由哪个来源成功，目录、STRM 和 NFO 都使用 3DSVR-1944。",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+    if (showManageDialog) {
+        AlertDialog(
+            onDismissRequest = { showManageDialog = false },
+            title = { Text("数字前缀规则") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = prefixDraft,
+                        onValueChange = onPrefixDraftChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("标准番号前缀") },
+                        placeholder = { Text("例如 DSVR") },
+                        colors = settingsTextFieldColors()
+                    )
+                    OutlinedTextField(
+                        value = numericPrefixDraft,
+                        onValueChange = onNumericPrefixDraftChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("附加数字") },
+                        placeholder = { Text("例如 3") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = settingsTextFieldColors()
+                    )
+                    Text("应用刮削源", style = MaterialTheme.typography.titleSmall)
+                    ScrapeSource.entries.filter { it != ScrapeSource.Priority }.forEach { source ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSourcesChange(
+                                        if (source in selectedSources) selectedSources - source else selectedSources + source
+                                    )
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = source in selectedSources,
+                                onCheckedChange = { checked ->
+                                    onSourcesChange(if (checked) selectedSources + source else selectedSources - source)
+                                }
+                            )
+                            Text(source.label)
+                        }
+                    }
+                    Button(onClick = onAdd, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                        Text("添加或覆盖规则")
+                    }
+                    if (rules.isEmpty()) {
+                        Text("暂无规则")
+                    } else {
+                        rules.forEach { rule ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "${rule.prefix} → ${rule.rewrittenPrefix}（${rule.sources.joinToString("、") { it.label }}）",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                TextButton(onClick = { onRemove(rule.prefix) }) { Text("删除") }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showManageDialog = false }) { Text("完成") } }
+        )
+    }
+}
+
+@Composable
 private fun ManualScrapeTaskPanel(
     uiState: SettingsUiState,
     onStart: () -> Unit,
@@ -2382,10 +2837,12 @@ private fun ManualScrapeTaskPanel(
     onResetFailed: () -> Unit
 ) {
     val summary = uiState.scrapeTaskSummary
+    val isRunning = uiState.isManualScrapeRunning || uiState.isCloudVideoTaskRunning
+    val unfinishedVideoTasks = uiState.cloudVideoTasks.count { it.status != CloudVideoTaskStatus.Completed.name }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -2396,23 +2853,23 @@ private fun ManualScrapeTaskPanel(
             ) {
                 Text(
                     text = "刮削任务",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "待刮削 ${summary.pending} · 运行中 ${summary.running} · 失败 ${summary.failed} · 已完成 ${summary.completed}",
-                    color = Color.White.copy(alpha = 0.62f),
+                    text = "持久化单视频 $unfinishedVideoTasks · 未刮削 ${summary.unscraped} · 待刮削 ${summary.pending} · 运行中 ${summary.running} · 失败 ${summary.failed}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onRefresh, enabled = !uiState.isManualScrapeRunning) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新刮削任务", tint = Color.White)
+            IconButton(onClick = onRefresh, enabled = !isRunning) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "刷新刮削任务", tint = MaterialTheme.colorScheme.onSurface)
             }
         }
-        if (uiState.isManualScrapeRunning) {
+        if (isRunning) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
         Text(
@@ -2423,21 +2880,21 @@ private fun ManualScrapeTaskPanel(
                     "暂无未完成的刮削任务。"
                 }
             },
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall
         )
         Button(
-            onClick = if (uiState.isManualScrapeRunning) onStop else onStart,
+            onClick = if (isRunning) onStop else onStart,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
             colors = taskPrimaryButtonColors()
         ) {
             Icon(
-                imageVector = if (uiState.isManualScrapeRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                imageVector = if (isRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                 contentDescription = null
             )
             Text(
-                text = if (uiState.isManualScrapeRunning) "暂停刮削任务" else "开始/继续刮削任务",
+                text = if (isRunning) "暂停影片任务" else "开始持久化队列及批量刮削",
                 modifier = Modifier.padding(start = 8.dp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -2445,7 +2902,7 @@ private fun ManualScrapeTaskPanel(
         }
         Button(
             onClick = onCancel,
-            enabled = summary.unfinished > 0,
+            enabled = summary.unfinished > 0 || unfinishedVideoTasks > 0,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
             colors = taskCancelButtonColors()
@@ -2460,7 +2917,7 @@ private fun ManualScrapeTaskPanel(
         }
         Button(
             onClick = onResetFailed,
-            enabled = summary.failed > 0 && !uiState.isManualScrapeRunning,
+            enabled = summary.failed > 0 && !isRunning,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
             colors = manualTaskSecondaryButtonColors()
@@ -2470,6 +2927,163 @@ private fun ManualScrapeTaskPanel(
                 text = "重置失败任务为待刮削",
                 modifier = Modifier.padding(start = 8.dp),
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun CloudVideoTaskList(
+    tasks: List<CloudVideoTaskEntity>,
+    isRunning: Boolean
+) {
+    if (tasks.isEmpty()) {
+        Text(
+            text = "暂无单视频添加任务。点击网盘影片的添加按钮后会立即持久化到这里。",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodyMedium
+        )
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(items = tasks, key = CloudVideoTaskEntity::pickcode) { task ->
+            val status = runCatching { CloudVideoTaskStatus.valueOf(task.status) }
+                .getOrDefault(CloudVideoTaskStatus.Pending)
+            val statusText = when (status) {
+                CloudVideoTaskStatus.Pending -> "等待中"
+                CloudVideoTaskStatus.Running -> if (isRunning) "处理中" else "处理中断"
+                CloudVideoTaskStatus.Paused -> "已暂停"
+                CloudVideoTaskStatus.Completed -> "已完成"
+                CloudVideoTaskStatus.Failed -> "失败"
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = task.fileName,
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = statusText,
+                        color = when (status) {
+                            CloudVideoTaskStatus.Failed -> Color(0xFFFF8A80)
+                            CloudVideoTaskStatus.Running -> Color(0xFF80D8FF)
+                            CloudVideoTaskStatus.Pending, CloudVideoTaskStatus.Paused -> Color(0xFFFFD180)
+                            CloudVideoTaskStatus.Completed -> MaterialTheme.colorScheme.primary
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 10.dp)
+                    )
+                }
+                task.failureReason?.takeIf(String::isNotBlank)?.let { reason ->
+                    Text(
+                        text = reason,
+                        color = Color(0xFFFFAB91),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScrapeIssueList(
+    movies: List<MovieEntity>,
+    isRunning: Boolean
+) {
+    if (movies.isEmpty()) {
+        Text(
+            text = "暂无刮削失败或未刮削的文件。",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodyMedium
+        )
+        return
+    }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 520.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(items = movies, key = MovieEntity::id) { movie ->
+            ScrapeIssueCard(movie = movie, isRunning = isRunning)
+        }
+    }
+}
+
+@Composable
+private fun ScrapeIssueCard(movie: MovieEntity, isRunning: Boolean) {
+    val status = runCatching { ScrapeTaskStatus.valueOf(movie.scrapeTaskStatus) }
+        .getOrDefault(ScrapeTaskStatus.None)
+    val statusText = when (status) {
+        ScrapeTaskStatus.Failed -> "刮削失败"
+        ScrapeTaskStatus.Running -> if (isRunning) "正在刮削" else "处理中断"
+        ScrapeTaskStatus.Pending -> "待刮削"
+        ScrapeTaskStatus.Completed -> "缺少 NFO"
+        ScrapeTaskStatus.None -> "未刮削"
+    }
+    val statusColor = when (status) {
+        ScrapeTaskStatus.Failed -> Color(0xFFFF8A80)
+        ScrapeTaskStatus.Running -> Color(0xFF80D8FF)
+        ScrapeTaskStatus.Pending -> Color(0xFFFFD180)
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f)
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = movie.videoName.ifBlank { movie.title },
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = statusText,
+                color = statusColor,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 10.dp)
+            )
+        }
+        if (movie.title.isNotBlank() && movie.title != movie.videoName) {
+            Text(
+                text = movie.title,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        movie.scrapeFailureReason?.takeIf(String::isNotBlank)?.let { reason ->
+            Text(
+                text = reason,
+                color = Color(0xFFFFAB91),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -2495,7 +3109,7 @@ private fun CloudFolderBatchTaskPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -2506,20 +3120,20 @@ private fun CloudFolderBatchTaskPanel(
             ) {
                 Text(
                     text = "网盘文件夹任务",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = "待执行 $pending · 运行中 $running · 已暂停 $paused · 失败 $failed · 已完成 $completed",
-                    color = Color.White.copy(alpha = 0.62f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             IconButton(onClick = onRefresh, enabled = !uiState.isCloudFolderBatchRunning) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新网盘文件夹任务", tint = Color.White)
+                Icon(Icons.Rounded.Refresh, contentDescription = "刷新网盘文件夹任务", tint = MaterialTheme.colorScheme.onSurface)
             }
         }
         if (uiState.isCloudFolderBatchRunning) {
@@ -2533,7 +3147,7 @@ private fun CloudFolderBatchTaskPanel(
                     "暂无未完成的网盘文件夹任务。"
                 }
             },
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall
         )
         Button(
@@ -2578,7 +3192,7 @@ private fun CloudFolderBatchTaskPanel(
             if (activeTasks.isEmpty()) {
                 Text(
                     text = "暂无当前文件夹任务。",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             } else {
@@ -2589,6 +3203,33 @@ private fun CloudFolderBatchTaskPanel(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CloudFolderBatchTaskList(
+    tasks: List<CloudFolderBatchTaskEntity>,
+    isRunning: Boolean
+) {
+    val activeTasks = tasks.filter { it.status != CloudFolderBatchTaskStatus.Completed.name }
+    if (activeTasks.isEmpty()) {
+        Text(
+            text = "暂无未完成的文件夹发现任务。",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.bodyMedium
+        )
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 320.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        activeTasks.forEach { task ->
+            CloudFolderBatchTaskRow(task = task, runnerRunning = isRunning)
         }
     }
 }
@@ -2613,7 +3254,7 @@ private fun CloudFolderBatchTaskRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = task.folderName,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
@@ -2622,7 +3263,7 @@ private fun CloudFolderBatchTaskRow(
             )
             Text(
                 text = task.statusLabel(runnerRunning),
-                color = Color.White.copy(alpha = 0.66f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1
             )
@@ -2639,7 +3280,7 @@ private fun CloudFolderBatchTaskRow(
             } else {
                 "正在收集候选视频"
             },
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -2651,7 +3292,7 @@ private fun CloudFolderBatchTaskRow(
         if (currentText.isNotBlank()) {
             Text(
                 text = "当前：$currentText",
-                color = Color.White.copy(alpha = 0.58f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
@@ -2659,7 +3300,7 @@ private fun CloudFolderBatchTaskRow(
         }
         Text(
             text = "入库 ${task.addedVideos} · 跳过 ${task.skippedVideos} · 刮削失败 ${task.scrapeFailedVideos} · 失败 ${task.failedVideos + task.failedFolders}",
-            color = Color.White.copy(alpha = 0.54f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.54f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -2669,7 +3310,7 @@ private fun CloudFolderBatchTaskRow(
             ?.let { message ->
                 Text(
                     text = message,
-                    color = Color.White.copy(alpha = 0.50f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -2690,26 +3331,41 @@ private fun CloudFolderBatchTaskEntity.statusLabel(runnerRunning: Boolean): Stri
 
 @Composable
 private fun manualTaskSecondaryButtonColors() = ButtonDefaults.buttonColors(
-    containerColor = Color.White.copy(alpha = 0.16f),
-    contentColor = Color.White,
-    disabledContainerColor = Color.White.copy(alpha = 0.08f),
-    disabledContentColor = Color.White.copy(alpha = 0.42f)
+    containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f),
+    contentColor = MaterialTheme.colorScheme.onSurface,
+    disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
 )
 
 @Composable
 private fun taskPrimaryButtonColors() = ButtonDefaults.buttonColors(
-    containerColor = Color.White,
-    contentColor = Color.Black,
-    disabledContainerColor = Color.White.copy(alpha = 0.55f),
-    disabledContentColor = Color.Black.copy(alpha = 0.62f)
+    containerColor = MaterialTheme.colorScheme.primary,
+    contentColor = MaterialTheme.colorScheme.onPrimary,
+    disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
+)
+
+internal data class LibraryScanButtonPalette(
+    val containerColor: Color,
+    val contentColor: Color,
+    val disabledContainerColor: Color,
+    val disabledContentColor: Color
+)
+
+@Composable
+internal fun libraryScanButtonPalette() = LibraryScanButtonPalette(
+    containerColor = MaterialTheme.colorScheme.primary,
+    contentColor = MaterialTheme.colorScheme.onPrimary,
+    disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
 )
 
 @Composable
 private fun taskCancelButtonColors() = ButtonDefaults.buttonColors(
     containerColor = Color(0xFF7B2E2E),
-    contentColor = Color.White,
-    disabledContainerColor = Color.White.copy(alpha = 0.10f),
-    disabledContentColor = Color.White.copy(alpha = 0.42f)
+    contentColor = MaterialTheme.colorScheme.onSurface,
+    disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
 )
 
 @Composable
@@ -2725,7 +3381,7 @@ private fun PriorityScrapeSourcePanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -2736,13 +3392,13 @@ private fun PriorityScrapeSourcePanel(
             ) {
                 Text(
                     text = "优先级刮削顺序",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = sources.joinToString(" -> ") { it.label },
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -2757,12 +3413,12 @@ private fun PriorityScrapeSourcePanel(
         }
         Text(
             text = "默认刮削会按这里的顺序依次尝试，成功一个就停止。手动指定 TheJavDB、JavBus 等来源时不受这个顺序影响。",
-            color = Color.White.copy(alpha = 0.52f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
             style = MaterialTheme.typography.bodySmall
         )
         Text(
-            text = "使用 TheJavDB 接口刮削，日本节点仍然可用，下载图片需要日本节点。",
-            color = Color.White.copy(alpha = 0.52f),
+            text = "DMM、DMM2、TheJavDB刮削都需要日本节点",
+            color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -2869,7 +3525,7 @@ private fun Dmm2SkippedPrefixPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -2880,7 +3536,7 @@ private fun Dmm2SkippedPrefixPanel(
             ) {
                 Text(
                     text = "跳过番号开头",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
@@ -2890,7 +3546,7 @@ private fun Dmm2SkippedPrefixPanel(
                     } else {
                         "已设置 ${prefixes.size} 个：${prefixes.joinToString("、")}"
                     },
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -2986,7 +3642,7 @@ private fun SettingsGroupCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), RoundedCornerShape(18.dp))
                 .padding(vertical = 4.dp),
             content = content
         )
@@ -3008,13 +3664,13 @@ private fun SettingsEntryRow(
     ) {
         Text(
             text = title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = subtitle,
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -3060,7 +3716,7 @@ private fun Cloud115QrLoginPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -3068,18 +3724,18 @@ private fun Cloud115QrLoginPanel(
             Icon(
                 imageVector = Icons.Rounded.Public,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.82f)
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
             )
             Column(modifier = Modifier.padding(start = 10.dp)) {
                 Text(
                     text = "115 二维码登录",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = "扫码成功后会自动保存 Cookie，并写入文件 115cookie_userId_app.txt。",
-                    color = Color.White.copy(alpha = 0.62f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -3101,11 +3757,11 @@ private fun Cloud115QrLoginPanel(
                 Text(
                     text = uiState.selectedCloud115LoginApp.description,
                     modifier = Modifier.weight(1f),
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(text = "登录方式", color = Color.White.copy(alpha = 0.62f))
+                Text(text = "登录方式", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
             }
             DropdownMenu(
                 expanded = expanded,
@@ -3127,7 +3783,7 @@ private fun Cloud115QrLoginPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 220.dp, max = 260.dp)
-                    .background(Color.White, RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.onSurface, RoundedCornerShape(14.dp))
                     .padding(12.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -3143,7 +3799,7 @@ private fun Cloud115QrLoginPanel(
             }
             Text(
                 text = "二维码地址：${uiState.cloud115QrToken.qrImageUrl}",
-                color = Color.White.copy(alpha = 0.42f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -3152,14 +3808,14 @@ private fun Cloud115QrLoginPanel(
         if (uiState.cloud115QrStatusText.isNotBlank()) {
             Text(
                 text = uiState.cloud115QrStatusText,
-                color = Color.White.copy(alpha = 0.72f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         uiState.cloud115QrSavedFile?.let { path ->
             Text(
                 text = "保存位置：$path",
-                color = Color.White.copy(alpha = 0.48f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
@@ -3205,12 +3861,12 @@ private fun SavedCloud115AccountSelector(
     deleteTarget?.let { account ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
-            containerColor = Color(0xFF202126),
-            title = { Text("删除 115 账号？", color = Color.White) },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("删除 115 账号？", color = MaterialTheme.colorScheme.onSurface) },
             text = {
                 Text(
                     text = "确定删除账号「${account.displayName}」的本地 Cookie 文件吗？删除后不会影响 115 网盘真实账号。",
-                    color = Color.White.copy(alpha = 0.72f)
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                 )
             },
             confirmButton = {
@@ -3251,11 +3907,11 @@ private fun SavedCloud115AccountSelector(
                             ?: pending?.displayName
                             ?: if (accounts.isEmpty()) "暂无已保存账号" else "选择已保存账号",
                         modifier = Modifier.weight(1f),
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(text = "账号", color = Color.White.copy(alpha = 0.62f))
+                    Text(text = "账号", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
                 }
                 DropdownMenu(
                     expanded = expanded,
@@ -3303,7 +3959,7 @@ private fun SavedCloud115AccountSelector(
         }
         Text(
             text = "可识别 115cookie_a_ios.txt、115cookie_b_os_linux.txt 这类文件，并切换为当前网盘 Cookie。",
-            color = Color.White.copy(alpha = 0.5f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -3318,7 +3974,7 @@ private fun ImageCachePanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -3326,13 +3982,13 @@ private fun ImageCachePanel(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "图片缓存",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = sizeText,
-                    color = Color.White.copy(alpha = 0.62f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -3356,21 +4012,21 @@ private fun SettingsTopBar(title: String = "设置", onBack: (() -> Unit)? = nul
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), SettingsBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.background)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(start = 14.dp, end = 16.dp, top = 6.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (onBack != null) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回设置", tint = Color.White)
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回设置", tint = MaterialTheme.colorScheme.onSurface)
             }
         } else {
-            Icon(Icons.Rounded.Settings, contentDescription = null, tint = Color.White)
+            Icon(Icons.Rounded.Settings, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
         }
         Text(
             text = title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.ExtraBold,
             modifier = Modifier.padding(start = 10.dp)
@@ -3383,13 +4039,13 @@ private fun DirectorySummary(title: String, selected: Boolean, emptyText: String
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f), RoundedCornerShape(16.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             text = if (selected) title else emptyText,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -3397,7 +4053,7 @@ private fun DirectorySummary(title: String, selected: Boolean, emptyText: String
         )
         Text(
             text = if (selected) "已选择" else "未配置",
-            color = Color.White.copy(alpha = 0.38f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -3407,7 +4063,7 @@ private fun DirectorySummary(title: String, selected: Boolean, emptyText: String
 private fun SettingsSectionTitle(text: String) {
     Text(
         text = text,
-        color = Color.White,
+        color = MaterialTheme.colorScheme.onSurface,
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.Bold
     )
@@ -3415,18 +4071,18 @@ private fun SettingsSectionTitle(text: String) {
 
 @Composable
 private fun settingsTextFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
-    focusedBorderColor = Color.White.copy(alpha = 0.42f),
-    unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
-    focusedContainerColor = Color.White.copy(alpha = 0.08f),
-    unfocusedContainerColor = Color.White.copy(alpha = 0.08f),
-    focusedPlaceholderColor = Color.White.copy(alpha = 0.45f),
-    unfocusedPlaceholderColor = Color.White.copy(alpha = 0.45f),
-    focusedLabelColor = Color.White.copy(alpha = 0.72f),
-    unfocusedLabelColor = Color.White.copy(alpha = 0.62f),
-    focusedSupportingTextColor = Color.White.copy(alpha = 0.52f),
-    unfocusedSupportingTextColor = Color.White.copy(alpha = 0.52f)
+    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+    focusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
+    unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+    focusedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+    unfocusedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+    focusedPlaceholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+    unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+    focusedLabelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+    unfocusedLabelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+    focusedSupportingTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
+    unfocusedSupportingTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f)
 )
 
 @Composable

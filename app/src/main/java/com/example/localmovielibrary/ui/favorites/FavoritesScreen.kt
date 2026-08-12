@@ -45,8 +45,10 @@ import com.example.localmovielibrary.ui.shared.MovieArtwork
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collectLatest
 
-private val FavoritesBackground = Color(0xFF070A0E)
-private val FavoritesPanel = Color.White.copy(alpha = 0.075f)
+private val FavoritesBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val FavoritesPanel: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
 private const val FAVORITES_INITIAL_COUNT = 90
 private const val FAVORITES_PAGE_SIZE = 60
 private const val FAVORITES_PREFETCH_THRESHOLD = 18
@@ -118,20 +120,20 @@ private fun FavoritesTopBar(count: Int) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), FavoritesBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, FavoritesBackground)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             text = "\u6536\u85CF",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.ExtraBold
         )
         Text(
             text = "$count \u90E8\u5F71\u7247",
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -146,7 +148,7 @@ private fun FavoritePosterCard(movie: MovieEntity, imageMode: HomeImageMode, onC
                 .fillMaxWidth()
                 .aspectRatio(if (imageMode == HomeImageMode.Thumb) 16f / 9f else 2f / 3f),
             shape = RoundedCornerShape(10.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF111720)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             MovieArtwork(
@@ -159,7 +161,7 @@ private fun FavoritePosterCard(movie: MovieEntity, imageMode: HomeImageMode, onC
         Spacer(Modifier.height(8.dp))
         Text(
             text = movie.title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
@@ -168,7 +170,7 @@ private fun FavoritePosterCard(movie: MovieEntity, imageMode: HomeImageMode, onC
         movie.year?.let {
             Text(
                 text = it.toString(),
-                color = Color.White.copy(alpha = 0.50f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f),
                 style = MaterialTheme.typography.labelSmall
             )
         }
@@ -187,7 +189,7 @@ private fun EmptyFavoritesState() {
     ) {
         Text(
             text = "\u8FD8\u6CA1\u6709\u6536\u85CF\u5F71\u7247",
-            color = Color.White.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )

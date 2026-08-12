@@ -55,8 +55,10 @@ import com.example.localmovielibrary.ui.shared.MovieArtwork
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collectLatest
 
-private val SearchBackground = Color(0xFF070A0E)
-private val SearchPanel = Color.White.copy(alpha = 0.075f)
+private val SearchBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val SearchPanel: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
 private const val SEARCH_INITIAL_COUNT = 90
 private const val SEARCH_PAGE_SIZE = 60
 private const val SEARCH_PREFETCH_THRESHOLD = 18
@@ -114,7 +116,7 @@ private fun SearchHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), SearchBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, SearchBackground)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp),
         verticalArrangement = Arrangement.spacedBy(9.dp)
@@ -122,7 +124,7 @@ private fun SearchHeader(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "\u641C\u7D22",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.ExtraBold,
                 modifier = Modifier.weight(1f)
@@ -141,24 +143,24 @@ private fun SearchHeader(
             trailingIcon = {
                 if (query.isNotEmpty()) {
                     IconButton(onClick = onClear) {
-                        Icon(Icons.Rounded.Close, contentDescription = "清空搜索")
+                        Icon(Icons.Rounded.Close, contentDescription = "娓呯┖鎼滅储")
                     }
                 }
             },
             placeholder = { Text("\u641C\u7D22\u6807\u9898\u3001\u6F14\u5458\u3001\u756A\u53F7\u3001\u7C7B\u578B\u3001\u6807\u7B7E\u6216\u5E74\u4EFD") },
             colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                focusedBorderColor = Color.White.copy(alpha = 0.42f),
-                unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
-                focusedContainerColor = Color.White.copy(alpha = 0.08f),
-                unfocusedContainerColor = Color.White.copy(alpha = 0.08f),
-                focusedLeadingIconColor = Color.White.copy(alpha = 0.82f),
-                unfocusedLeadingIconColor = Color.White.copy(alpha = 0.62f),
-                focusedTrailingIconColor = Color.White.copy(alpha = 0.82f),
-                unfocusedTrailingIconColor = Color.White.copy(alpha = 0.62f),
-                focusedPlaceholderColor = Color.White.copy(alpha = 0.45f),
-                unfocusedPlaceholderColor = Color.White.copy(alpha = 0.45f)
+                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                focusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
+                unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+                focusedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                unfocusedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                focusedLeadingIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
+                unfocusedLeadingIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                focusedTrailingIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
+                unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                focusedPlaceholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
             )
         )
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -219,7 +221,7 @@ private fun SearchResultsGrid(
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
             text = "\u627E\u5230 ${movies.size} \u90E8\u5F71\u7247",
-            color = Color.White.copy(alpha = 0.68f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)
         )
@@ -251,7 +253,7 @@ private fun SearchMoviePosterCard(movie: MovieEntity, imageMode: HomeImageMode, 
                 .fillMaxWidth()
                 .aspectRatio(if (imageMode == HomeImageMode.Thumb) 16f / 9f else 2f / 3f),
             shape = RoundedCornerShape(10.dp),
-            colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF111720)),
+            colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             MovieArtwork(
@@ -264,7 +266,7 @@ private fun SearchMoviePosterCard(movie: MovieEntity, imageMode: HomeImageMode, 
         Spacer(Modifier.height(8.dp))
         Text(
             text = movie.title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
@@ -273,7 +275,7 @@ private fun SearchMoviePosterCard(movie: MovieEntity, imageMode: HomeImageMode, 
         movie.year?.let {
             Text(
                 text = it.toString(),
-                color = Color.White.copy(alpha = 0.50f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f),
                 style = MaterialTheme.typography.labelSmall
             )
         }
@@ -285,7 +287,7 @@ private fun SearchEmptyPrompt(minSearchLength: Int) {
     Box(modifier = Modifier.fillMaxSize().padding(18.dp), contentAlignment = Alignment.Center) {
         Text(
             text = "\u8F93\u5165\u81F3\u5C11 $minSearchLength \u4E2A\u5B57\u7B26\uFF0C\u641C\u7D22\u672C\u5730\u5F71\u7247\u5E93",
-            color = Color.White.copy(alpha = 0.62f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
             style = MaterialTheme.typography.bodyLarge
         )
     }
@@ -303,7 +305,7 @@ private fun SearchNoResults() {
     ) {
         Text(
             text = "\u6CA1\u6709\u627E\u5230\u76F8\u5173\u5F71\u7247",
-            color = Color.White.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )

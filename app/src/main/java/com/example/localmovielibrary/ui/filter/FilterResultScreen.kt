@@ -42,7 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,8 +54,11 @@ import com.example.localmovielibrary.util.partSortKey
 import kotlinx.coroutines.flow.collectLatest
 import java.util.Locale
 
-private val ResultBackground = Color(0xFF070A0E)
-private val ResultPanel = Color.White.copy(alpha = 0.075f)
+private val ResultBackground: androidx.compose.ui.graphics.Color
+    @Composable get() = MaterialTheme.colorScheme.background
+
+private val ResultPanel: androidx.compose.ui.graphics.Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
 private const val FILTER_INITIAL_COUNT = 90
 private const val FILTER_PAGE_SIZE = 60
 private const val FILTER_PREFETCH_THRESHOLD = 18
@@ -198,7 +200,7 @@ private fun FilterResultTopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), ResultBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, ResultBackground)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(start = 10.dp, end = 18.dp, top = 6.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -207,15 +209,15 @@ private fun FilterResultTopBar(
         IconButton(
             modifier = Modifier
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.34f)),
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
             onClick = onBack
         ) {
-            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = Color.White)
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = MaterialTheme.colorScheme.onSurface)
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title.ifBlank { "\u7B5B\u9009\u7ED3\u679C" },
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -223,7 +225,7 @@ private fun FilterResultTopBar(
             )
             Text(
                 text = "$count \u90E8\u5F71\u7247",
-                color = Color.White.copy(alpha = 0.58f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -239,7 +241,7 @@ private fun ResultPosterCard(movie: MovieEntity, imageMode: HomeImageMode, onCli
                 .fillMaxWidth()
                 .aspectRatio(if (imageMode == HomeImageMode.Thumb) 16f / 9f else 2f / 3f),
             shape = RoundedCornerShape(10.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF111720)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             MovieArtwork(
@@ -252,7 +254,7 @@ private fun ResultPosterCard(movie: MovieEntity, imageMode: HomeImageMode, onCli
         Spacer(Modifier.height(8.dp))
         Text(
             text = movie.title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
@@ -261,7 +263,7 @@ private fun ResultPosterCard(movie: MovieEntity, imageMode: HomeImageMode, onCli
         movie.year?.let {
             Text(
                 text = it.toString(),
-                color = Color.White.copy(alpha = 0.50f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f),
                 style = MaterialTheme.typography.labelSmall
             )
         }
@@ -280,7 +282,7 @@ private fun FilterEmptyState() {
     ) {
         Text(
             text = "\u6CA1\u6709\u627E\u5230\u76F8\u5173\u5F71\u7247",
-            color = Color.White.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )

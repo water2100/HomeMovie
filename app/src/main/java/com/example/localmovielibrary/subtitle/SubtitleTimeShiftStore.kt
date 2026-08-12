@@ -12,20 +12,19 @@ class SubtitleTimeShiftStore(context: Context) {
     private val cacheDirectory = File(appContext.cacheDir, "shifted_subtitles")
 
     fun prepareSubtitle(subtitle: LocalSubtitleFile, offsetMs: Long): LocalSubtitleFile {
-        if (offsetMs == 0L) return subtitle
         val extension = subtitle.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
         if (extension !in supportedExtensions) return subtitle
-        val original = appContext.contentResolver.openInputStream(subtitle.uri)
-            ?.bufferedReader(Charsets.UTF_8)
-            ?.use { it.readText() }
+        val decoded = appContext.contentResolver.openInputStream(subtitle.uri)
+            ?.use { input -> decodeSubtitleBytes(input.readBytes()) }
             ?: return subtitle
+        val original = decoded.text
         val shifted = when (extension) {
             "srt" -> shiftSrt(original, offsetMs)
             "vtt" -> shiftVtt(original, offsetMs)
             "ass", "ssa" -> shiftAss(original, offsetMs)
             else -> original
         }
-        if (shifted == original) return subtitle
+        if (decoded.isUtf8 && shifted == original) return subtitle
         cacheDirectory.mkdirs()
         val cacheName = (subtitle.uri.toString() + "|" + offsetMs).sha256() + "." + extension
         val file = File(cacheDirectory, cacheName)

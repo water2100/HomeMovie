@@ -52,6 +52,10 @@ class CloudFolderBatchTaskRepository(
         dao.nextRunnable(RUNNABLE_STATUSES)
     }
 
+    suspend fun prepareForStart(): Int = withContext(Dispatchers.IO) {
+        dao.prepareForStart(System.currentTimeMillis())
+    }
+
     suspend fun resetForRun(taskId: Long): CloudFolderBatchTaskEntity? = withContext(Dispatchers.IO) {
         val current = dao.get(taskId) ?: return@withContext null
         val now = System.currentTimeMillis()
@@ -150,7 +154,7 @@ class CloudFolderBatchTaskRepository(
             CloudFolderBatchTaskStatus.Failed.name
         )
 
-        val RUNNABLE_STATUSES = UNFINISHED_STATUSES
+        val RUNNABLE_STATUSES = listOf(CloudFolderBatchTaskStatus.Pending.name)
     }
 }
 

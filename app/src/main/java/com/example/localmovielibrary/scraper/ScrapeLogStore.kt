@@ -25,7 +25,7 @@ class ScrapeLogStore(context: Context) {
 
     fun dates(): List<String> {
         val dates = synchronized(lock) {
-            prefs.getStringSet(KEY_DATES, emptySet()).orEmpty()
+            prefs.getStringSet(KEY_DATES, emptySet()).orEmpty() + logCache.keys
         }
         return dates.sortedDescending().ifEmpty { listOf(today()) }
     }
@@ -59,19 +59,57 @@ class ScrapeLogStore(context: Context) {
         _updates.update { it + 1 }
     }
 
+    /** Removes historical lines that cannot belong to a per-number log entry. */
+    fun removeLegacyLines(): Int {
+        val dates = synchronized(lock) {
+            prefs.getStringSet(KEY_DATES, emptySet()).orEmpty() + logCache.keys
+        }
+        var removedCount = 0
+        synchronized(lock) {
+            dates.forEach { date ->
+                val current = logCache.getOrPut(date) { prefs.getString(logKey(date), null).orEmpty() }
+                val retainedLines = current.lineSequence()
+                    .filter { it.isNotBlank() }
+                    .filter(::isNumberLogLine)
+                    .toList()
+                removedCount += current.lineSequence().count { it.isNotBlank() } - retainedLines.size
+                logCache[date] = retainedLines.joinToString("\n")
+            }
+        }
+        if (removedCount == 0) return 0
+        writerScope.launch {
+            writeMutex.withLock {
+                val snapshots = synchronized(lock) {
+                    dates.associateWith { date -> logCache[date].orEmpty() }
+                }
+                prefs.edit().apply {
+                    snapshots.forEach { (date, log) -> putString(logKey(date), log) }
+                    apply()
+                }
+            }
+        }
+        _updates.update { it + 1 }
+        return removedCount
+    }
+
     fun append(message: String) {
         val date = today()
-        val line = "[${time()}] $message"
-        val snapshot = synchronized(lock) {
+        val line = "[${time()}] ${ScrapeLogContext.tag(message)}"
+        synchronized(lock) {
             val current = logCache.getOrPut(date) { prefs.getString(logKey(date), null).orEmpty() }
             val oldLines = current.lineSequence().filter { it.isNotBlank() }.take(MAX_LINES - 1)
             val next = sequenceOf(line).plus(oldLines).joinToString("\n")
             logCache[date] = next
-            val dates = prefs.getStringSet(KEY_DATES, emptySet()).orEmpty().toMutableSet().apply { add(date) }
-            LogSnapshot(date = date, log = next, dates = dates)
         }
         writerScope.launch {
             writeMutex.withLock {
+                val snapshot = synchronized(lock) {
+                    LogSnapshot(
+                        date = date,
+                        log = logCache[date].orEmpty(),
+                        dates = prefs.getStringSet(KEY_DATES, emptySet()).orEmpty() + logCache.keys
+                    )
+                }
                 prefs.edit()
                     .putString(logKey(snapshot.date), snapshot.log)
                     .putStringSet(KEY_DATES, snapshot.dates)
@@ -79,6 +117,17 @@ class ScrapeLogStore(context: Context) {
             }
         }
         _updates.update { it + 1 }
+    }
+
+    fun appendMediaPath(
+        operation: String,
+        status: String,
+        movieId: Long? = null,
+        fileName: String? = null,
+        databaseUri: String,
+        detail: String
+    ) {
+        append(formatMediaPathLog(operation, status, movieId, fileName, databaseUri, detail))
     }
 
     private fun today(): String =
@@ -100,3 +149,28 @@ class ScrapeLogStore(context: Context) {
         const val MAX_LINES = 2_000
     }
 }
+
+internal fun formatMediaPathLog(
+    operation: String,
+    status: String,
+    movieId: Long?,
+    fileName: String?,
+    databaseUri: String,
+    detail: String
+): String = buildString {
+    append("[媒体路径]")
+    append(" 状态=").append(status)
+    append("，操作=").append(operation)
+    movieId?.let { append("，movieId=").append(it) }
+    fileName?.takeIf { it.isNotBlank() }?.let { append("，文件=").append(it) }
+    append("，详情=").append(detail)
+}
+
+private fun isNumberLogLine(line: String): Boolean {
+    val message = line.substringAfter("] ", missingDelimiterValue = "")
+    return message.startsWith("【番号分隔】") ||
+        message.startsWith("【番号=") ||
+        NUMBER_IN_LOG_LINE.containsMatchIn(message)
+}
+
+private val NUMBER_IN_LOG_LINE = Regex("(?i)(?<![A-Z0-9])([A-Z]{2,12}-\\d{2,6})(?:-[A-Z0-9]+)?")

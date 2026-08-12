@@ -14,8 +14,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private const val INITIAL_VISIBLE_LINES = 200
-private const val LOG_PAGE_SIZE = 200
+private const val INITIAL_VISIBLE_LOGS = 100
+private const val LOG_PAGE_SIZE = 100
 private const val LOG_UPDATE_DEBOUNCE_MS = 120L
 
 @OptIn(FlowPreview::class)
@@ -45,10 +45,10 @@ class ScrapeLogViewModel(
 
     fun loadMore() {
         _uiState.update { state ->
-            val nextCount = (state.visibleLineCount + LOG_PAGE_SIZE).coerceAtMost(state.totalLineCount)
+            val nextCount = (state.visibleLogCount + LOG_PAGE_SIZE).coerceAtMost(state.totalLogCount)
             state.copy(
-                visibleLineCount = nextCount,
-                visibleLines = state.allLines.take(nextCount)
+                visibleLogCount = nextCount,
+                visibleNumberLogs = state.allNumberLogs.take(nextCount)
             )
         }
     }
@@ -64,21 +64,32 @@ class ScrapeLogViewModel(
         }
     }
 
+    fun removeLegacyLogs(onComplete: (removedCount: Int) -> Unit) {
+        _uiState.update { it.copy(isLoading = true) }
+        viewModelScope.launch {
+            val removedCount = withContext(Dispatchers.IO) {
+                repository.removeLegacyLogs()
+            }
+            loadAsync(showLoading = false)
+            onComplete(removedCount)
+        }
+    }
+
     private fun loadAsync(selectedDate: String? = null, showLoading: Boolean = true) {
         loadJob?.cancel()
-        val previousVisibleLineCount = _uiState.value.visibleLineCount
+        val previousVisibleLogCount = _uiState.value.visibleLogCount
         if (showLoading) {
             _uiState.update { it.copy(isLoading = true) }
         }
         loadJob = viewModelScope.launch {
             val state = withContext(Dispatchers.IO) {
-                loadState(selectedDate, previousVisibleLineCount)
+                loadState(selectedDate, previousVisibleLogCount)
             }
             _uiState.value = state
         }
     }
 
-    private fun loadState(selectedDate: String? = null, visibleLineHint: Int = INITIAL_VISIBLE_LINES): ScrapeLogUiState {
+    private fun loadState(selectedDate: String? = null, visibleLogHint: Int = INITIAL_VISIBLE_LOGS): ScrapeLogUiState {
         val dates = repository.logDates()
         val selected = selectedDate?.takeIf { it in dates } ?: dates.firstOrNull().orEmpty()
         return ScrapeLogUiState(
@@ -86,7 +97,7 @@ class ScrapeLogViewModel(
             selectedDate = selected,
             log = repository.readLogs(selected),
             isLoading = false
-        ).withVisibleLines(visibleLineHint)
+        ).withVisibleNumberLogs(visibleLogHint)
     }
 
     companion object {
@@ -103,25 +114,23 @@ data class ScrapeLogUiState(
     val dates: List<String> = emptyList(),
     val selectedDate: String = "",
     val log: String = "",
-    val allLines: List<String> = emptyList(),
-    val visibleLines: List<String> = emptyList(),
-    val visibleLineCount: Int = 0,
-    val totalLineCount: Int = 0,
+    val allNumberLogs: List<NumberScrapeLog> = emptyList(),
+    val visibleNumberLogs: List<NumberScrapeLog> = emptyList(),
+    val visibleLogCount: Int = 0,
+    val totalLogCount: Int = 0,
     val isLoading: Boolean = false
 ) {
-    val hasMoreLines: Boolean get() = visibleLineCount < totalLineCount
+    val hasMoreLogs: Boolean get() = visibleLogCount < totalLogCount
 }
 
-private fun ScrapeLogUiState.withVisibleLines(visibleLineHint: Int): ScrapeLogUiState {
-    val lines = log.lineSequence()
-        .filter { it.isNotBlank() }
-        .toList()
-    val requestedCount = maxOf(INITIAL_VISIBLE_LINES, visibleLineHint)
-    val count = minOf(lines.size, requestedCount)
+private fun ScrapeLogUiState.withVisibleNumberLogs(visibleLogHint: Int): ScrapeLogUiState {
+    val numberLogs = parseNumberScrapeLogs(log)
+    val requestedCount = maxOf(INITIAL_VISIBLE_LOGS, visibleLogHint)
+    val count = minOf(numberLogs.size, requestedCount)
     return copy(
-        allLines = lines,
-        visibleLines = lines.take(count),
-        visibleLineCount = count,
-        totalLineCount = lines.size
+        allNumberLogs = numberLogs,
+        visibleNumberLogs = numberLogs.take(count),
+        visibleLogCount = count,
+        totalLogCount = numberLogs.size
     )
 }

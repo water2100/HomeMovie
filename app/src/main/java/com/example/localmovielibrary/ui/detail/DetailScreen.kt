@@ -1,4 +1,4 @@
-﻿package com.example.localmovielibrary.ui.detail
+package com.example.localmovielibrary.ui.detail
 
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -82,6 +82,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.localmovielibrary.data.local.MovieEntity
 import com.example.localmovielibrary.data.repository.MoviePlaybackPart
 import com.example.localmovielibrary.scraper.ActorAvatarStore
+import com.example.localmovielibrary.scraper.ScrapeEventLevel
+import com.example.localmovielibrary.scraper.ScrapeTaskReport
+import com.example.localmovielibrary.scraper.ScrapeTaskStatus
 import com.example.localmovielibrary.ui.shared.UriImage
 import com.example.localmovielibrary.ui.shared.artworkCacheRevision
 import com.example.localmovielibrary.util.detectMovieVariant
@@ -91,10 +94,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val DetailBackground = Color(0xFF101010)
-private val DetailPanel = Color(0xFF1B1B1B)
-private val DetailPanelSoft = Color.White.copy(alpha = 0.075f)
-private val DetailMuted = Color.White.copy(alpha = 0.62f)
+private val DetailBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val DetailPanel: Color
+    @Composable get() = MaterialTheme.colorScheme.surface
+private val DetailPanelSoft: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
+private val DetailMuted: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
 private val EmbyGreen = Color(0xFF54B56B)
 
 @Composable
@@ -108,6 +115,7 @@ fun DetailScreen(
 ) {
     val movie by viewModel.movie.collectAsStateWithLifecycle()
     val isScraping by viewModel.isScraping.collectAsStateWithLifecycle()
+    val lastScrapeReport by viewModel.lastScrapeReport.collectAsStateWithLifecycle()
     val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
     val playbackParts by viewModel.playbackParts.collectAsStateWithLifecycle()
     val cloudVideoSizeBytes by viewModel.cloudVideoSizeBytes.collectAsStateWithLifecycle()
@@ -161,6 +169,7 @@ fun DetailScreen(
             displayMovie?.let {
                 MovieDetailScreen(
                     movie = it,
+                    lastScrapeReport = lastScrapeReport,
                     onBack = onBack,
                     playbackParts = playbackParts,
                     cloudVideoSizeBytes = cloudVideoSizeBytes,
@@ -209,7 +218,7 @@ fun DetailScreen(
             ) {
                 Text(
                     if (isScraping) "正在刷新影片信息..." else "影片信息暂不可用",
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         }
@@ -283,6 +292,7 @@ fun DetailScreen(
 @Composable
 fun MovieDetailScreen(
     movie: MovieEntity,
+    lastScrapeReport: ScrapeTaskReport?,
     onBack: () -> Unit,
     playbackParts: List<MoviePlaybackPart>,
     cloudVideoSizeBytes: Map<String, Long>,
@@ -334,7 +344,7 @@ fun MovieDetailScreen(
                 .background(Color.Black.copy(alpha = 0.42f)),
             onClick = onBack
         ) {
-            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = Color.White)
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回", tint = MaterialTheme.colorScheme.onSurface)
         }
 
         Column(
@@ -356,6 +366,7 @@ fun MovieDetailScreen(
                         onClick = { showScrapeFailureDialog = true }
                     )
                 }
+                lastScrapeReport?.let { ScrapeResultCard(report = it) }
                 MobileMainButtons(playbackParts = playbackParts, onPlay = onPlay, onTrailer = onShowNfo)
                 MobileActionBar(
                     movie = movie,
@@ -413,6 +424,63 @@ fun MovieDetailScreen(
 }
 
 @Composable
+private fun ScrapeResultCard(report: ScrapeTaskReport) {
+    var expanded by rememberSaveable(report.taskId) { mutableStateOf(false) }
+    val succeeded = report.status == ScrapeTaskStatus.Succeeded
+    val failed = report.status == ScrapeTaskStatus.Failed
+    val accent = when {
+        succeeded -> EmbyGreen
+        failed -> Color(0xFFFF6B78)
+        else -> Color(0xFFFFC857)
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(accent.copy(alpha = 0.14f))
+            .clickable { expanded = !expanded }
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(
+                imageVector = if (succeeded) Icons.Rounded.CheckCircle else Icons.Rounded.ErrorOutline,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = "本次${report.operation}${if (succeeded) "已完成" else if (failed) "失败" else "进行中"}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(if (expanded) "收起" else "详情", color = DetailMuted, style = MaterialTheme.typography.labelMedium)
+        }
+        Text(
+            text = "${report.source} · ${report.number}" + report.durationMillis?.let { " · ${formatScrapeDuration(it)}" }.orEmpty(),
+            color = DetailMuted,
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (expanded) {
+            report.events.forEach { event ->
+                val eventColor = when (event.level) {
+                    ScrapeEventLevel.Success -> EmbyGreen
+                    ScrapeEventLevel.Warning -> Color(0xFFFFC857)
+                    ScrapeEventLevel.Error -> Color(0xFFFF6B78)
+                    ScrapeEventLevel.Info -> DetailMuted
+                }
+                Text("${event.stage} · ${event.message}", color = eventColor, style = MaterialTheme.typography.bodySmall)
+            }
+            Text("任务 #${report.taskId}", color = DetailMuted, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+private fun formatScrapeDuration(durationMillis: Long): String =
+    if (durationMillis < 1_000) "< 1 秒" else "%.1f 秒".format(Locale.getDefault(), durationMillis / 1_000.0)
+
+@Composable
 private fun ScrapeFailureNotice(reason: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -433,13 +501,13 @@ private fun ScrapeFailureNotice(reason: String, onClick: () -> Unit) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 text = "未刮削成功，点击查看原因",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text = reason,
-                color = Color.White.copy(alpha = 0.72f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -492,7 +560,7 @@ private fun MobileTitleBlock(movie: MovieEntity, onGenreClick: (String) -> Unit)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = movie.title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.ExtraBold,
             lineHeight = 30.sp
@@ -512,11 +580,11 @@ private fun MobileTitleBlock(movie: MovieEntity, onGenreClick: (String) -> Unit)
                 movie.genres.take(4).forEach { genre ->
                     Text(
                         text = genre,
-                        color = Color.White.copy(alpha = 0.84f),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.84f),
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier
                             .clip(RoundedCornerShape(14.dp))
-                            .background(Color.White.copy(alpha = 0.10f))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
                             .clickable { onGenreClick(genre) }
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     )
@@ -572,7 +640,10 @@ private fun MobileMainButtons(
                     .fillMaxWidth()
                     .height(48.dp),
                 shape = RoundedCornerShape(24.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
             ) {
                 Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.width(8.dp))
@@ -585,7 +656,7 @@ private fun MobileMainButtons(
             ) {
                 playbackParts.forEach { part ->
                     DropdownMenuItem(
-                        text = { Text("播放 ${part.label}", color = Color.White) },
+                        text = { Text("播放 ${part.label}", color = MaterialTheme.colorScheme.onSurface) },
                         onClick = {
                             partMenuExpanded = false
                             onPlay(part)
@@ -601,8 +672,8 @@ private fun MobileMainButtons(
                 .height(48.dp),
             shape = RoundedCornerShape(24.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White.copy(alpha = 0.10f),
-                contentColor = Color.White
+                containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                contentColor = MaterialTheme.colorScheme.onSurface
             )
         ) {
             Icon(Icons.Rounded.SmartDisplay, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -800,7 +871,7 @@ private fun DetailActionItem(
         Icon(
             icon,
             contentDescription = label,
-            tint = if (active) EmbyGreen else Color.White,
+            tint = if (active) EmbyGreen else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.size(25.dp)
         )
         Text(label, color = DetailMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
@@ -817,14 +888,14 @@ private fun ReleaseAndOverview(movie: MovieEntity, onTagClick: (String) -> Unit)
         movie.premiered?.takeIf { it.isNotBlank() }?.let {
             Text(
                 text = "发行日期 $it",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
         }
         Text(
             text = overview,
-            color = Color.White.copy(alpha = 0.78f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
             style = MaterialTheme.typography.bodyMedium,
             lineHeight = 21.sp,
             maxLines = if (expanded) Int.MAX_VALUE else 4,
@@ -833,7 +904,7 @@ private fun ReleaseAndOverview(movie: MovieEntity, onTagClick: (String) -> Unit)
         if (overview.length > 120) {
             Text(
                 text = if (expanded) "收起" else "更多",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.clickable { expanded = !expanded }
@@ -893,12 +964,12 @@ private fun CastCard(name: String, avatarUri: String?, onClick: () -> Unit) {
                     maxDecodeSize = 320
                 )
             } else {
-                Icon(Icons.Rounded.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(34.dp))
+                Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(34.dp))
             }
         }
         Text(
             text = name,
-            color = Color.White.copy(alpha = 0.88f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -983,10 +1054,10 @@ private fun SmallPosterCard(
                 cacheKey = cacheKey
             )
             if (imageUri == null) {
-                Icon(Icons.Rounded.Movie, contentDescription = null, tint = Color.White.copy(alpha = 0.76f))
+                Icon(Icons.Rounded.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.76f))
             }
         }
-        Text(title, color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(title, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         if (subtitle.isNotBlank()) {
             Text(subtitle, color = DetailMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -1023,7 +1094,7 @@ private fun OtherInfoSection(
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         DetailSectionTitle("其他信息")
-        Text("标签", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Text("标签", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
         EditableTagFlow(
             tags = tagValues,
             genres = genreValues,
@@ -1038,7 +1109,7 @@ private fun OtherInfoSection(
         )
         InfoLine("系列", movie.series.orEmpty())
         InfoLine("工作室", movie.studios.joinToString(", "))
-        InfoLine("路径信息", readableFolderPath(movie.videoUri))
+        InfoLine("文件路径", readableMediaPath(movie.videoUri))
         InfoLine("添加时间", formatAddedTime(movie.scannedAtMillis))
     }
 }
@@ -1052,7 +1123,7 @@ private fun List<String>.distinctByNormalizedText(): List<String> =
 private fun InfoLine(label: String, value: String) {
     if (value.isBlank()) return
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Text(label, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
         Text(
             value,
             color = DetailMuted,
@@ -1074,12 +1145,12 @@ private fun MediaInfoBlock(movie: MovieEntity, versions: List<VersionInfo>) {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("媒体信息", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Text("媒体信息", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color.White.copy(alpha = 0.065f))
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.065f))
                 .horizontalScroll(rememberScrollState())
         ) {
             VersionInfoRow(
@@ -1107,7 +1178,7 @@ private fun MediaInfoBlock(movie: MovieEntity, versions: List<VersionInfo>) {
 private fun VersionInfoRow(values: List<String>, isHeader: Boolean = false) {
     Row(
         modifier = Modifier
-            .background(if (isHeader) Color.White.copy(alpha = 0.075f) else Color.Transparent)
+            .background(if (isHeader) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f) else Color.Transparent)
             .padding(horizontal = 10.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1116,7 +1187,7 @@ private fun VersionInfoRow(values: List<String>, isHeader: Boolean = false) {
         values.forEachIndexed { index, value ->
             Text(
                 text = value,
-                color = if (isHeader) Color.White else DetailMuted,
+                color = if (isHeader) MaterialTheme.colorScheme.onSurface else DetailMuted,
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 2,
@@ -1145,10 +1216,10 @@ private fun versionLabel(part: MoviePlaybackPart): String {
     }
 }
 
-private fun readableFolderPath(uriString: String): String {
+private fun readableMediaPath(uriString: String): String {
     val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return uriString
     if (uri.scheme == "file") {
-        return uri.path?.substringBeforeLast('/', missingDelimiterValue = uri.path.orEmpty()).orEmpty()
+        return uri.path.orEmpty()
     }
 
     val documentId = uri.pathSegments
@@ -1163,7 +1234,6 @@ private fun readableFolderPath(uriString: String): String {
     val decoded = Uri.decode(storageId)
     val volume = decoded.substringBefore(':', "")
     val relativePath = decoded.substringAfter(':', "")
-        .substringBeforeLast('/', missingDelimiterValue = decoded.substringAfter(':', ""))
 
     return when {
         volume.equals("primary", ignoreCase = true) && relativePath.isNotBlank() -> "/storage/emulated/0/$relativePath"
@@ -1228,11 +1298,11 @@ private fun ChipFlow(values: List<String>, onClick: (String) -> Unit) {
         values.filter { it.isNotBlank() }.forEach { value ->
             Text(
                 text = value,
-                color = Color.White.copy(alpha = 0.84f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.84f),
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.10f))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
                     .clickable { onClick(value) }
                     .padding(horizontal = 10.dp, vertical = 5.dp)
             )
@@ -1254,12 +1324,12 @@ private fun EditableTagFlow(
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.10f)),
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = value,
-                    color = Color.White.copy(alpha = 0.84f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.84f),
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier
                         .clickable { onClick(value) }
@@ -1267,7 +1337,7 @@ private fun EditableTagFlow(
                 )
                 Text(
                     text = "×",
-                    color = Color.White.copy(alpha = 0.88f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
@@ -1279,18 +1349,18 @@ private fun EditableTagFlow(
         genres.filter { it.isNotBlank() }.forEach { value ->
             Text(
                 text = value,
-                color = Color.White.copy(alpha = 0.70f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f),
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.07f))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f))
                     .clickable { onClick(value) }
                     .padding(horizontal = 10.dp, vertical = 5.dp)
             )
         }
         Text(
             text = "＋ 自定义添加",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
@@ -1306,7 +1376,7 @@ private fun EditableTagFlow(
 fun DetailSectionTitle(title: String) {
     Text(
         text = title,
-        color = Color.White,
+        color = MaterialTheme.colorScheme.onSurface,
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.ExtraBold
     )
@@ -1396,15 +1466,15 @@ private fun AddCustomTagDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DetailPanel,
-        titleContentColor = Color.White,
-        textContentColor = Color.White.copy(alpha = 0.82f),
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
         title = { Text("添加自定义标签") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                     text = "为《$movieTitle》添加一个标签。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.72f)
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                 )
                 OutlinedTextField(
                     value = draft,
@@ -1413,15 +1483,15 @@ private fun AddCustomTagDialog(
                     label = { Text("标签") },
                     placeholder = { Text("例如 已整理 / 待重看") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        cursorColor = Color.White,
-                        focusedLabelColor = Color.White,
-                        unfocusedLabelColor = Color.White.copy(alpha = 0.68f),
-                        focusedPlaceholderColor = Color.White.copy(alpha = 0.42f),
-                        unfocusedPlaceholderColor = Color.White.copy(alpha = 0.42f),
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        cursorColor = MaterialTheme.colorScheme.onSurface,
+                        focusedLabelColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+                        focusedPlaceholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
+                        unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
                         focusedBorderColor = EmbyGreen,
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.30f)
+                        unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.30f)
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1492,8 +1562,8 @@ private fun ConfirmDeleteTagDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DetailPanel,
-        titleContentColor = Color.White,
-        textContentColor = Color.White.copy(alpha = 0.82f),
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
         title = { Text("删除标签？") },
         text = { Text("确认删除标签“$tag”吗？") },
         confirmButton = {

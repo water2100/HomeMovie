@@ -17,11 +17,15 @@ import com.example.localmovielibrary.scraper.NetworkProbe
 import com.example.localmovielibrary.scraper.NfoWriter
 import com.example.localmovielibrary.scraper.OfficialScraper
 import com.example.localmovielibrary.scraper.ScrapeLogStore
-import com.example.localmovielibrary.scraper.ScrapeRunResult
+import com.example.localmovielibrary.scraper.ScrapeLogContext
+import com.example.localmovielibrary.scraper.ScrapeTaskJournal
+import com.example.localmovielibrary.scraper.ScrapeTaskReport
+import com.example.localmovielibrary.scraper.ScrapeEventLevel
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.scraper.ScrapeProxySelector
 import com.example.localmovielibrary.scraper.ScrapedMovieInfo
 import com.example.localmovielibrary.scraper.normalizeMgstageSearchNumber
+import com.example.localmovielibrary.scraper.rewriteNumberPrefix
 import com.example.localmovielibrary.util.MovieVariant
 import com.example.localmovielibrary.util.detectMovieVariant
 import com.example.localmovielibrary.util.displayNumberWithVariant
@@ -55,6 +59,8 @@ class StrmScrapeRepository(
     private val settingsRepository: AppSettingsRepository,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val logStore: ScrapeLogStore = ScrapeLogStore(context),
+    private val taskJournal: ScrapeTaskJournal = ScrapeTaskJournal(context),
+    private val storedDocumentLocator: StoredDocumentLocator = StoredDocumentLocator(context),
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .proxySelector(ScrapeProxySelector(settingsRepository))
         .build(),
@@ -65,7 +71,14 @@ class StrmScrapeRepository(
         ioDispatcher = ioDispatcher
     ),
     private val dmmScraper: DmmScraper = DmmScraper(client = httpClient, ioDispatcher = ioDispatcher),
-    private val dmm2Scraper: Dmm2Scraper = Dmm2Scraper(client = httpClient, ioDispatcher = ioDispatcher, logger = logStore::append),
+    private val dmm2Scraper: Dmm2Scraper = Dmm2Scraper(
+        client = httpClient,
+        ioDispatcher = ioDispatcher,
+        logger = logStore::append,
+        // The repository retries the complete source request using the user setting.
+        // Keep the scraper's transport retry at one attempt to avoid multiplying retries.
+        graphqlRetryCountProvider = { 1 }
+    ),
     private val officialScraper: OfficialScraper = OfficialScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val mgstageScraper: MgstageScraper = MgstageScraper(client = httpClient, ioDispatcher = ioDispatcher),
     private val javbusScraper: JavbusScraper = JavbusScraper(client = httpClient, ioDispatcher = ioDispatcher),
@@ -100,9 +113,14 @@ class StrmScrapeRepository(
         if (date == null) logStore.clearAll() else logStore.clear(date)
     }
 
+    fun removeLegacyLogs(): Int = logStore.removeLegacyLines()
+
     fun appendLog(message: String) {
         logStore.append(message)
     }
+
+    fun latestScrapeReport(movieId: Long): ScrapeTaskReport? = taskJournal.latestForMovie(movieId)
+    val scrapeTaskReports: StateFlow<List<ScrapeTaskReport>> get() = taskJournal.reports
 
     private suspend fun <T> runQueuedScrapeTask(
         label: String,
@@ -174,39 +192,9 @@ class StrmScrapeRepository(
     }
 
     private fun appendMovieDivider(title: String, number: String, fileName: String, source: ScrapeSource? = null) {
-        val sourceText = source?.let { ", source=${it.label}" }.orEmpty()
-        logStore.append("----------------------------------------")
-        logStore.append("$title: number=$number, file=$fileName$sourceText")
-    }
-
-    suspend fun findStrmUriByNumber(
-        libraryRootUri: String,
-        number: String,
-        partLabel: String?,
-        nameHint: String? = null
-    ): String? = withContext(ioDispatcher) {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(libraryRootUri)) ?: return@withContext null
-        val hintToken = nameHint?.distinctPickcodeSuffix()?.removePrefix("_")
-        val expectedVariant = nameHint?.let { detectMovieVariant(it) }
-        fun walk(directory: DocumentFile): String? {
-            directory.listFiles().forEach { child ->
-                if (child.isDirectory && !child.isExcludedAssetDirectory()) {
-                    walk(child)?.let { return it }
-                    return@forEach
-                }
-                if (!child.isFile || !child.name.orEmpty().endsWith(".strm", ignoreCase = true)) return@forEach
-                val name = child.name.orEmpty()
-                if (!name.contains(number, ignoreCase = true)) return@forEach
-                if (hintToken != null && !name.contains(hintToken, ignoreCase = true)) return@forEach
-                if (expectedVariant != null && detectMovieVariant(name) != expectedVariant) return@forEach
-                if (partLabel != null && !Regex("""(?i)[-_ ]${Regex.escape(partLabel)}(?:\.strm$|[^a-z0-9])""").containsMatchIn(name)) {
-                    return@forEach
-                }
-                return child.uri.toString()
-            }
-            return null
-        }
-        return@withContext walk(root)
+        val sourceText = source?.let { "，来源=${it.label}" }.orEmpty()
+        logStore.append("【番号分隔】$number")
+        logStore.append("[影片刮削] 状态=开始，类型=$title，番号=$number，文件=$fileName$sourceText")
     }
 
     fun getDefaultScrapeSource(): ScrapeSource = settingsRepository.getDefaultScrapeSource()
@@ -218,10 +206,10 @@ class StrmScrapeRepository(
         customJsonScraper.previewPathCandidates(number)
 
     suspend fun refreshMgstageNumberPrefixes(): Set<String> =
-        remoteScrapeConfigRepository.getMgstageNumberPrefixes(forceRefresh = true)
+        remoteScrapeConfigRepository.syncRemoteNumberRecognitionRules()
 
-    suspend fun refreshNumberRecognitionRules(forceRefresh: Boolean = false): Set<String> =
-        remoteScrapeConfigRepository.refreshNumberRecognitionRules(forceRefresh = forceRefresh)
+    fun loadCachedNumberRecognitionRules(): Set<String> =
+        remoteScrapeConfigRepository.loadCachedNumberRecognitionRules()
 
     suspend fun canReachGoogle(): Boolean = withContext(ioDispatcher) {
         var reachable = false
@@ -233,15 +221,25 @@ class StrmScrapeRepository(
         reachable
     }
 
-    suspend fun scrapeMovie(movie: MovieEntity, source: ScrapeSource, forceDistinct: Boolean = false): ScrapedMovieInfo =
-        scrapeMovieWithOutput(movie, source, forceDistinct).info
-
     suspend fun scrapeMovieWithOutput(movie: MovieEntity, source: ScrapeSource, forceDistinct: Boolean = false): ScrapedMovieWriteResult = runQueuedScrapeTask(
         label = "scrape:${movie.videoName}:${source.label}",
         serialMutex = source.serialScrapeMutex()
     ) {
         val target = findTargetForMovie(movie)
-        scrapeTargetWithOutput(target, source, forceDistinct)
+        val number = extractMovieNumberWithRules(target.file.name.orEmpty())
+            ?: error("无法从文件名提取番号：${target.file.name}")
+        appendMovieDivider("影片刮削", number, target.file.name.orEmpty(), source)
+        val taskId = taskJournal.start(movie.id, number, target.file.name.orEmpty(), "刮削", source.label)
+        logStore.append("[刮削任务:$taskId] 开始：$number，来源=${source.label}")
+        runCatching {
+            scrapeTargetWithOutput(target, source, forceDistinct, taskId, dividerAlreadyLogged = true)
+        }.onFailure { error ->
+            if (error !is CancellationException) {
+                val message = error.message ?: error::class.java.simpleName
+                taskJournal.finish(taskId, success = false, message = message)
+                logStore.append("[刮削任务:$taskId] 失败：$message")
+            }
+        }.getOrThrow()
     }
 
     suspend fun scrapeStrmUriWithOutput(
@@ -253,103 +251,81 @@ class StrmScrapeRepository(
         label = "scrape-uri:${Uri.parse(strmUri).lastPathSegment.orEmpty()}:${source.label}",
         serialMutex = source.serialScrapeMutex()
     ) {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(libraryRootUri))
-            ?: error("影片库目录不可用")
-        val target = findTargetFast(root, libraryRootUri, strmUri)
-            ?: error("当前 STRM 文件不存在")
-        scrapeTargetWithOutput(target, source, forceDistinct)
+        val target = requireStoredDocument(
+            movieId = null,
+            fileName = Uri.parse(strmUri).lastPathSegment.orEmpty(),
+            databaseUri = strmUri,
+            operation = "新增 STRM 刮削定位"
+        ) {
+            storedDocumentLocator.find(libraryRootUri, strmUri)?.toStrmTarget()
+        }
+        scrapeTargetWithOutput(target, source, forceDistinct, taskId = null)
     }
 
     private suspend fun scrapeTargetWithOutput(
         target: StrmTarget,
         source: ScrapeSource,
-        forceDistinct: Boolean
+        forceDistinct: Boolean,
+        taskId: String?,
+        dividerAlreadyLogged: Boolean = false
     ): ScrapedMovieWriteResult {
         val number = extractMovieNumberWithRules(target.file.name.orEmpty())
             ?: error("无法从文件名提取番号：${target.file.name}")
 
-        logStore.append("Start scrape: file=${target.file.name}, number=$number, source=${source.label}")
-        appendMovieDivider("Start movie scrape", number, target.file.name.orEmpty(), source)
-        val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
-        logStore.append("Metadata fetched: ${info.title.ifBlank { number }}")
-        val strmUri = writeOrganizedScrapeFiles(target, info, number, forceDistinct)
-        downloadActorAvatars(info)
-        logStore.append("Movie scrape finished: $number")
-        return ScrapedMovieWriteResult(info = info, strmUri = strmUri)
+        if (!dividerAlreadyLogged) {
+            appendMovieDivider("影片刮削", number, target.file.name.orEmpty(), source)
+        }
+        return ScrapeLogContext.withMovieNumber(number) {
+            taskId?.let { taskJournal.record(it, "识别", "已识别番号 $number；来源 ${source.label}") }
+            val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
+            logStore.append("[影片刮削] 状态=元数据获取成功，番号=$number，标题=${info.title.ifBlank { number }}")
+            taskId?.let { taskJournal.record(it, "请求", "元数据获取成功：${info.title.ifBlank { number }}", ScrapeEventLevel.Success) }
+            val strmUri = writeOrganizedScrapeFiles(target, info, number, forceDistinct)
+            downloadActorAvatars(info)
+            logStore.append("[影片刮削] 状态=文件整理完成，番号=$number；说明=等待影片数据库同步")
+            taskId?.let { taskJournal.record(it, "写入", "NFO 与图片已写入；等待数据库同步") }
+            ScrapedMovieWriteResult(info = info, strmUri = strmUri, taskId = taskId)
+        }
     }
 
-    suspend fun rescrapeMovie(movie: MovieEntity, source: ScrapeSource): ScrapedMovieInfo = runQueuedScrapeTask(
+    fun finishMovieScrapeTask(taskId: String?, success: Boolean, message: String) {
+        taskId ?: return
+        taskJournal.finish(taskId, success, message)
+        logStore.append("[刮削任务:$taskId] ${if (success) "完成" else "失败"}：$message")
+    }
+
+    suspend fun rescrapeMovie(movie: MovieEntity, source: ScrapeSource): ScrapedMovieInfo =
+        rescrapeMovieWithOutput(movie, source).info
+
+    suspend fun rescrapeMovieWithOutput(movie: MovieEntity, source: ScrapeSource): RescrapedMovieWriteResult = runQueuedScrapeTask(
         label = "rescrape:${movie.videoName}:${source.label}",
         serialMutex = source.serialScrapeMutex()
     ) {
         val target = findTargetForMovie(movie)
         val number = extractMovieNumberWithRules(target.file.name.orEmpty(), movie.title)
             ?: error("无法从文件名提取番号：${target.file.name}")
-
-        logStore.append("Start rescrape: file=${target.file.name}, number=$number, source=${source.label}")
-        appendMovieDivider("Start movie rescrape", number, target.file.name.orEmpty(), source)
-        val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
-        logStore.append("Rescrape metadata fetched: ${info.title.ifBlank { number }}")
-        rewriteScrapeFilesInPlace(target, info)
-        downloadActorAvatars(info)
-        logStore.append("Movie rescrape finished: $number")
-        info
-    }
-
-    suspend fun scrapeUnscrapedStrm(source: ScrapeSource): ScrapeRunResult = runQueuedScrapeTask(
-        label = "batch:${source.label}",
-        serialMutex = source.serialScrapeMutex()
-    ) {
-        logStore.append("Start batch scrape: ${source.label}")
-        if (!canReachGoogle()) {
-            error("Google 连通性测试失败")
-        }
-
-        val rootUri = settingsRepository.getLibraryRootUri()
-            ?: error("请先在设置中选择影片库目录")
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(rootUri))
-            ?: error("影片库目录不可用")
-        if (!root.canWrite()) {
-            logStore.append("Warning: library root may not be writable; NFO/images may fail")
-        }
-
-        val targets = mutableListOf<StrmTarget>()
-        collectTargets(root, targets)
-        logStore.append("Found unscraped STRM files: ${targets.size}")
-
-        var success = 0
-        var skipped = 0
-        var failed = 0
-        targets.forEach { target ->
-            val number = extractMovieNumberWithRules(target.file.name.orEmpty())
-            if (number == null) {
-                skipped += 1
-                logStore.append("Skipped: cannot extract number from ${target.file.name}")
-                return@forEach
-            }
-            if (source != ScrapeSource.Priority) dmm2SkipMessage(source, number)?.let { message ->
-                skipped += 1
-                logStore.append("Skipped: $message")
-                return@forEach
-            }
-
-            runCatching {
-                logStore.append("Scraping $number, file=${target.file.name}")
-                appendMovieDivider("Start batch movie scrape", number, target.file.name.orEmpty(), source)
+        appendMovieDivider("影片重新刮削", number, target.file.name.orEmpty(), source)
+        val taskId = taskJournal.start(movie.id, number, target.file.name.orEmpty(), "重新刮削", source.label)
+        logStore.append("[刮削任务:$taskId] 开始重新刮削：$number，来源=${source.label}")
+        runCatching {
+            ScrapeLogContext.withMovieNumber(number) {
+                taskJournal.record(taskId, "识别", "已识别番号 $number；来源 ${source.label}")
                 val info = scrapeWithFallback(source, number, target.file.name.orEmpty())
-                logStore.append("Metadata fetched: $number")
-                writeOrganizedScrapeFiles(target, info, number)
+                logStore.append("[影片重新刮削] 状态=元数据获取成功，番号=$number，标题=${info.title.ifBlank { number }}")
+                taskJournal.record(taskId, "请求", "元数据获取成功：${info.title.ifBlank { number }}", ScrapeEventLevel.Success)
+                rewriteScrapeFilesInPlace(target, info)
                 downloadActorAvatars(info)
-                success += 1
-                logStore.append("Success: $number -> ${info.title}")
-            }.onFailure { error ->
-                failed += 1
-                logStore.append("Failed: $number, ${error.message ?: error::class.java.simpleName}")
+                logStore.append("[影片重新刮削] 状态=文件写入完成，番号=$number；说明=等待影片数据库刷新")
+                taskJournal.record(taskId, "写入", "NFO 与图片已更新；等待数据库刷新")
+                RescrapedMovieWriteResult(info, taskId)
             }
-        }
-        val result = ScrapeRunResult(targets.size, success, skipped, failed)
-        logStore.append("Batch scrape finished: success=$success, failed=$failed, skipped=$skipped")
-        result
+        }.onFailure { error ->
+            if (error !is CancellationException) {
+                val message = error.message ?: error::class.java.simpleName
+                taskJournal.finish(taskId, success = false, message = message)
+                logStore.append("[刮削任务:$taskId] 失败：$message")
+            }
+        }.getOrThrow()
     }
 
     private suspend fun scrapeWithFallback(
@@ -358,6 +334,8 @@ class StrmScrapeRepository(
         fileName: String
     ): ScrapedMovieInfo {
         val sources = scrapeSourcesFor(requestedSource, number)
+        val prefixRewriteRules = settingsRepository.getNumberPrefixRewriteRules()
+        val outputNumber = rewriteNumberPrefix(number, prefixRewriteRules)
         val failures = mutableListOf<String>()
         sources.forEachIndexed { index, source ->
             dmm2SkipMessage(source, number)?.let { message ->
@@ -368,13 +346,30 @@ class StrmScrapeRepository(
             if (requestedSource == ScrapeSource.Priority) {
                 logStore.append("优先级刮削尝试 ${index + 1}/${sources.size}：${source.label}，file=$fileName，number=$number")
             }
+            val sourceNumber = rewriteNumberPrefix(number, prefixRewriteRules, source)
+            if (!sourceNumber.equals(number, ignoreCase = true)) {
+                logStore.append("数字前缀规则命中：${source.label} 使用 $sourceNumber 查询")
+            }
+            val retryCount = settingsRepository.getScrapeRetryCount()
             runCatching {
-                scrapeSource(source, number, useSerialMutex = requestedSource == ScrapeSource.Priority)
+                retryScrapeRequest(
+                    attemptCount = retryCount,
+                    onAttemptFailure = { attempt, error ->
+                        logStore.append(
+                            "刮削来源 ${source.label} 第 $attempt/$retryCount 次失败：${error.message ?: error::class.java.simpleName}"
+                        )
+                    }
+                ) {
+                    scrapeSource(source, sourceNumber, useSerialMutex = requestedSource == ScrapeSource.Priority)
+                }
             }.onSuccess { info ->
                 if (requestedSource == ScrapeSource.Priority) {
                     logStore.append("优先级刮削成功：${source.label} -> ${info.title.ifBlank { number }}")
                 }
-                return info.copy(source = info.source.ifBlank { source.label })
+                return info.copy(
+                    number = outputNumber,
+                    source = info.source.ifBlank { source.label }
+                )
             }.onFailure { error ->
                 if (error is CancellationException) throw error
                 val message = error.message ?: error::class.java.simpleName
@@ -413,32 +408,26 @@ class StrmScrapeRepository(
     }
 
     private suspend fun extractMovieNumberWithRules(vararg values: String?): String? {
-        refreshNumberRecognitionRules(forceRefresh = false)
-        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
-            MovieNumberExtractor.extract(value)?.let { return it }
-        }
-        refreshNumberRecognitionRules(forceRefresh = true)
-        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
-            MovieNumberExtractor.extract(value)?.let { return it }
-        }
-        return null
+        return extractNumberWithCachedRules(
+            values = values.toList(),
+            extractor = MovieNumberExtractor::extract,
+            loadCachedRules = ::loadCachedNumberRecognitionRules
+        )
     }
 
     private suspend fun extractOutputNumberWithRules(vararg values: String?): String? {
-        refreshNumberRecognitionRules(forceRefresh = false)
-        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
-            MovieNumberExtractor.extractDisplayNumber(value)?.let { return it }
-        }
-        refreshNumberRecognitionRules(forceRefresh = true)
-        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
-            MovieNumberExtractor.extractDisplayNumber(value)?.let { return it }
-        }
-        return null
+        val number = extractNumberWithCachedRules(
+            values = values.toList(),
+            extractor = MovieNumberExtractor::extractDisplayNumber,
+            loadCachedRules = ::loadCachedNumberRecognitionRules
+        )
+        return number?.let { rewriteNumberPrefix(it, settingsRepository.getNumberPrefixRewriteRules()) }
     }
 
     private suspend fun scrapeSourcesFor(source: ScrapeSource, number: String): List<ScrapeSource> {
         if (source != ScrapeSource.Priority) return listOf(source)
         val configuredSources = settingsRepository.getPriorityScrapeSources()
+        if (!settingsRepository.isMgstageAmateurPriorityEnabled()) return configuredSources
         val prefix = numberPrefix(number) ?: return configuredSources
         val mgstagePrefixes = remoteScrapeConfigRepository.getMgstageNumberPrefixes()
         if (prefix !in mgstagePrefixes) return configuredSources
@@ -578,47 +567,24 @@ class StrmScrapeRepository(
         if (!movie.videoName.endsWith(".strm", ignoreCase = true)) {
             error("当前影片不是 STRM 文件")
         }
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(movie.libraryRootUri))
-            ?: error("影片库目录不可用")
-        return findTargetFast(root, movie.libraryRootUri, movie.videoUri)
-            ?: findTarget(root, movie.videoUri)
-            ?: findMovedTargetForMovie(root, movie)?.also { target ->
-                logStore.append("当前记录 STRM 已移动，已定位到整理后的文件：${target.file.name}")
-            }
-            ?: error("当前 STRM 文件不存在")
+        return requireStoredDocument(
+            movieId = movie.id,
+            fileName = movie.videoName,
+            databaseUri = movie.videoUri,
+            operation = "刮削定位"
+        ) {
+            storedDocumentLocator.find(movie.libraryRootUri, movie.videoUri)?.toStrmTarget()
+        }
     }
 
-    private fun findMovedTargetForMovie(root: DocumentFile, movie: MovieEntity): StrmTarget? {
-        val sourceName = movie.videoName.orEmpty()
-        val number = MovieNumberExtractor.extract(sourceName)
-            ?: MovieNumberExtractor.extract(movie.title)
-            ?: MovieNumberExtractor.extract(movie.originalTitle.orEmpty())
-            ?: return null
-        val hintToken = sourceName.distinctPickcodeSuffix()?.removePrefix("_")?.takeIf { it.isNotBlank() }
-        val expectedVariant = detectMovieVariant(sourceName)
-        val partLabel = extractMovieNumberInfo(sourceName)?.partLabel
-
-        fun walk(directory: DocumentFile, parentDirectory: DocumentFile?): StrmTarget? {
-            directory.listFiles().forEach { child ->
-                if (child.isDirectory && !child.isExcludedAssetDirectory()) {
-                    walk(child, directory)?.let { return it }
-                    return@forEach
-                }
-                if (!child.isFile || !child.name.orEmpty().endsWith(".strm", ignoreCase = true)) return@forEach
-                val name = child.name.orEmpty()
-                if (!name.contains(number, ignoreCase = true)) return@forEach
-                if (hintToken != null && !name.contains(hintToken, ignoreCase = true)) return@forEach
-                if (detectMovieVariant(name) != expectedVariant) return@forEach
-                if (partLabel != null && !Regex("""(?i)[-_ ]${Regex.escape(partLabel)}(?:\.strm$|[^a-z0-9])""").containsMatchIn(name)) {
-                    return@forEach
-                }
-                val baseName = name.substringBeforeLast('.', name)
-                return StrmTarget(directory, child, baseName, parentDirectory)
-            }
-            return null
-        }
-
-        return walk(root, null)
+    private fun LocatedDocument.toStrmTarget(): StrmTarget {
+        val name = file.name.orEmpty()
+        return StrmTarget(
+            directory = directory,
+            file = file,
+            baseName = name.substringBeforeLast('.', name),
+            parentDirectory = parentDirectory
+        )
     }
 
     private suspend fun writeOrganizedScrapeFiles(target: StrmTarget, info: ScrapedMovieInfo, fallbackNumber: String, forceDistinct: Boolean = false): String {
@@ -644,7 +610,7 @@ class StrmScrapeRepository(
         val partLabel = extractMovieNumberInfo(target.file.name.orEmpty())?.partLabel
         val strmName = "$baseName${playbackSourceSuffix(partLabel, variant)}.strm"
         val newStrm = copyStrmFile(target.file, movieDirectory, strmName)
-        logStore.append("STRM written: $strmName")
+        logStore.append("[媒体路径] 状态=新文件已写入，操作=刮削整理，文件=$strmName，说明=等待数据库更新")
 
         try {
             val nfoName = "$baseName.nfo"
@@ -837,9 +803,13 @@ class StrmScrapeRepository(
     private fun deleteOldStrmIfMoved(target: StrmTarget, newStrm: DocumentFile) {
         if (target.file.uri == newStrm.uri) return
         if (target.file.delete()) {
-            logStore.append("Old STRM deleted: ${target.file.name}")
+            logStore.append(
+                "[媒体路径] 状态=文件移动完成，操作=刮削整理，文件=${newStrm.name}，详情=旧 STRM 已删除；等待调用方同步数据库"
+            )
         } else {
-            logStore.append("Warning: failed to delete old STRM: ${target.file.name}")
+            logStore.append(
+                "[媒体路径] 状态=警告，操作=刮削整理，文件=${target.file.name}，详情=新 STRM 已写入，但旧 STRM 删除失败；数据库将指向新文件"
+            )
         }
     }
 
@@ -859,72 +829,6 @@ class StrmScrapeRepository(
                 logStore.append("Deleted legacy NFO file: $legacyName")
             }
         }
-    }
-
-    private fun collectTargets(directory: DocumentFile, out: MutableList<StrmTarget>) {
-        val children = directory.listFiles().toList()
-        val names = children.mapNotNull { it.name?.lowercase() }.toSet()
-        children.filter { it.isFile && it.name.orEmpty().endsWith(".strm", ignoreCase = true) }.forEach { strm ->
-            val baseName = strm.name.orEmpty().substringBeforeLast('.', strm.name.orEmpty())
-            if ("${baseName.lowercase()}.nfo" !in names) {
-                out += StrmTarget(directory, strm, baseName, parentDirectory = null)
-            }
-        }
-        children.filter { it.isDirectory && !it.isExcludedAssetDirectory() }.forEach { collectTargets(it, out) }
-    }
-
-    private fun findTarget(directory: DocumentFile, videoUri: String, parentDirectory: DocumentFile? = null): StrmTarget? {
-        directory.listFiles().forEach { child ->
-            if (child.isFile && child.uri.toString() == videoUri) {
-                val baseName = child.name.orEmpty().substringBeforeLast('.', child.name.orEmpty())
-                return StrmTarget(directory, child, baseName, parentDirectory)
-            }
-            if (child.isDirectory && !child.isExcludedAssetDirectory()) {
-                findTarget(child, videoUri, directory)?.let { return it }
-            }
-        }
-        return null
-    }
-
-    private fun findTargetFast(root: DocumentFile, rootUriString: String, videoUriString: String): StrmTarget? {
-        val rootDocId = Uri.parse(rootUriString).treeDocumentId() ?: return null
-        val videoDocId = Uri.parse(videoUriString).documentId() ?: return null
-        if (!videoDocId.startsWith(rootDocId)) return null
-        val relativePath = videoDocId
-            .removePrefix(rootDocId)
-            .removePrefix("/")
-            .takeIf { it.isNotBlank() }
-            ?: return null
-        val segments = relativePath.split('/').filter { it.isNotBlank() }
-        if (segments.isEmpty()) return null
-
-        val parentSegments = segments.dropLast(1)
-        val fileName = segments.last()
-        var parentDirectory: DocumentFile? = null
-        val directory = parentSegments.fold(root as DocumentFile?) { current, segment ->
-            parentDirectory = current
-            current?.findFile(segment)?.takeIf { it.isDirectory }
-        } ?: root.takeIf { parentSegments.isEmpty() } ?: return null
-        val file = directory.findFile(fileName)?.takeIf { it.isFile } ?: return null
-        val baseName = file.name.orEmpty().substringBeforeLast('.', file.name.orEmpty())
-        return StrmTarget(
-            directory = directory,
-            file = file,
-            baseName = baseName,
-            parentDirectory = parentDirectory?.takeIf { directory.uri != root.uri }
-        )
-    }
-
-    private fun Uri.treeDocumentId(): String? {
-        val index = pathSegments.indexOf("tree")
-        return index.takeIf { it >= 0 && it + 1 < pathSegments.size }
-            ?.let { Uri.decode(pathSegments[it + 1]) }
-    }
-
-    private fun Uri.documentId(): String? {
-        val index = pathSegments.indexOf("document")
-        return index.takeIf { it >= 0 && it + 1 < pathSegments.size }
-            ?.let { Uri.decode(pathSegments[it + 1]) }
     }
 
     private fun writeTextFile(directory: DocumentFile, fileName: String, content: String): DocumentFile {
@@ -1135,6 +1039,42 @@ class StrmScrapeRepository(
     }
 }
 
+internal suspend fun <T> retryScrapeRequest(
+    attemptCount: Int,
+    retryDelayMillis: Long = 1_000L,
+    onAttemptFailure: (attempt: Int, error: Throwable) -> Unit = { _, _ -> },
+    block: suspend (attempt: Int) -> T
+): T {
+    require(attemptCount > 0) { "attemptCount must be positive" }
+    var lastError: Throwable? = null
+    repeat(attemptCount) { index ->
+        val attempt = index + 1
+        try {
+            return block(attempt)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            lastError = error
+            onAttemptFailure(attempt, error)
+            if (attempt < attemptCount && retryDelayMillis > 0L) {
+                delay(retryDelayMillis)
+            }
+        }
+    }
+    throw lastError ?: IllegalStateException("刮削失败")
+}
+
+internal fun extractNumberWithCachedRules(
+    values: List<String?>,
+    extractor: (String) -> String?,
+    loadCachedRules: () -> Unit
+): String? {
+    val candidates = values.mapNotNull { it?.takeIf(String::isNotBlank) }
+    loadCachedRules()
+    candidates.forEach { value -> extractor(value)?.let { return it } }
+    return null
+}
+
 data class ActorAvatarUpdateResult(
     val totalMissing: Int,
     val downloaded: Int,
@@ -1143,7 +1083,13 @@ data class ActorAvatarUpdateResult(
 
 data class ScrapedMovieWriteResult(
     val info: ScrapedMovieInfo,
-    val strmUri: String
+    val strmUri: String,
+    val taskId: String? = null
+)
+
+data class RescrapedMovieWriteResult(
+    val info: ScrapedMovieInfo,
+    val taskId: String
 )
 
 data class ActorAvatarUpdateState(

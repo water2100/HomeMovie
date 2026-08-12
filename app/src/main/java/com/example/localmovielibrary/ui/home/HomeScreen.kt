@@ -1,4 +1,4 @@
-﻿package com.example.localmovielibrary.ui.home
+package com.example.localmovielibrary.ui.home
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -40,15 +40,18 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -76,6 +79,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.localmovielibrary.data.local.DomesticVideoSourceEntity
 import com.example.localmovielibrary.data.local.MovieEntity
+import com.example.localmovielibrary.data.local.ScrapeTaskStatus
 import com.example.localmovielibrary.data.repository.DomesticMovieWithSources
 import com.example.localmovielibrary.data.repository.MovieMetadataSummary
 import com.example.localmovielibrary.playback.USER_AGENT
@@ -86,9 +90,12 @@ import com.example.localmovielibrary.util.metadataKey
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collectLatest
 
-private val MoviesBackground = Color(0xFF070A0E)
-private val MoviesSurface = Color(0xFF111720)
-private val MoviesPanel = Color.White.copy(alpha = 0.075f)
+private val MoviesBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val MoviesSurface: Color
+    @Composable get() = MaterialTheme.colorScheme.surface
+private val MoviesPanel: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
 private val MoviesAccent = Color(0xFF36C5F0)
 private const val ALL_MOVIES_INITIAL_COUNT = 90
 private const val ALL_MOVIES_PAGE_SIZE = 60
@@ -112,6 +119,9 @@ fun MoviesScreen(
     onOpenLibrary: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val visibleRecentlyAdded = remember(uiState.recentlyAdded, uiState.scrapeIssueMovies) {
+        excludeScrapeIssueMovies(uiState.recentlyAdded, uiState.scrapeIssueMovies)
+    }
     val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
     var lastScrollResetKey by rememberSaveable {
         mutableStateOf("${uiState.sortState.option.name}:${uiState.sortState.direction.name}:${uiState.imageMode.name}")
@@ -176,20 +186,22 @@ fun MoviesScreen(
                     )
                 }
             }
-            item(
-                key = "recently-added-section",
-                contentType = "movie-rail-section",
-                span = { GridItemSpan(maxLineSpan) }
-            ) {
-                HomeMovieSection(title = "\u6700\u8FD1\u6DFB\u52A0") {
-                HorizontalMovieRail(
-                    movies = uiState.recentlyAdded,
-                    imageMode = uiState.imageMode,
+            if (visibleRecentlyAdded.isNotEmpty()) {
+                item(
+                    key = "recently-added-section",
+                    contentType = "movie-rail-section",
+                    span = { GridItemSpan(maxLineSpan) }
+                ) {
+                    HomeMovieSection(title = "\u6700\u8FD1\u6DFB\u52A0") {
+                    HorizontalMovieRail(
+                        movies = visibleRecentlyAdded,
+                        imageMode = uiState.imageMode,
                         onMovieClick = onMovieClick,
                         onPlay = onPlay,
                         onToggleFavorite = viewModel::toggleFavorite,
                         onToggleWatched = viewModel::toggleWatched
-                    )
+                        )
+                    }
                 }
             }
 
@@ -229,6 +241,9 @@ fun MoviesLibraryScreen(
         LibraryTab.entries.filter { tab -> uiState.domesticPageEnabled || tab != LibraryTab.Domestic }
     }
     val selectedTab = availableTabs.firstOrNull { it.name == selectedTabName } ?: LibraryTab.All
+    val regularMovies = remember(uiState.movies, uiState.scrapeIssueMovies) {
+        excludeScrapeIssueMovies(uiState.movies, uiState.scrapeIssueMovies)
+    }
 
     LaunchedEffect(Unit) {
         viewModel.refreshDomesticPageEnabled()
@@ -241,7 +256,13 @@ fun MoviesLibraryScreen(
     }
 
     LaunchedEffect(selectedTab, uiState.movies.size) {
-        if (selectedTab != LibraryTab.All && selectedTab != LibraryTab.Vr && selectedTab != LibraryTab.Domestic && selectedTab != LibraryTab.Years) {
+        if (
+            selectedTab != LibraryTab.All &&
+            selectedTab != LibraryTab.Unscraped &&
+            selectedTab != LibraryTab.Vr &&
+            selectedTab != LibraryTab.Domestic &&
+            selectedTab != LibraryTab.Years
+        ) {
             viewModel.refreshLibrarySummaries()
         }
     }
@@ -270,7 +291,7 @@ fun MoviesLibraryScreen(
         }
         when (selectedTab) {
             LibraryTab.All -> LibraryAllMoviesGrid(
-                movies = uiState.movies.filterNot { it.isVrMovie() },
+                movies = regularMovies.filterNot { it.isVrMovie() },
                 imageMode = uiState.imageMode,
                 sortState = uiState.sortState,
                 onMovieClick = onMovieClick,
@@ -278,8 +299,20 @@ fun MoviesLibraryScreen(
                 onToggleFavorite = viewModel::toggleFavorite,
                 onToggleWatched = viewModel::toggleWatched
             )
+            LibraryTab.Unscraped -> UnscrapedMoviesTab(
+                movies = uiState.scrapeIssueMovies,
+                imageMode = uiState.imageMode,
+                sortState = uiState.sortState,
+                runnerState = uiState.scrapeRunnerState,
+                onStart = viewModel::startBatchScrape,
+                onPause = viewModel::pauseBatchScrape,
+                onMovieClick = onMovieClick,
+                onPlay = onPlay,
+                onToggleFavorite = viewModel::toggleFavorite,
+                onToggleWatched = viewModel::toggleWatched
+            )
             LibraryTab.Vr -> LibraryAllMoviesGrid(
-                movies = uiState.movies.filter { it.isVrMovie() },
+                movies = regularMovies.filter { it.isVrMovie() },
                 imageMode = uiState.imageMode,
                 sortState = uiState.sortState,
                 onMovieClick = onMovieClick,
@@ -316,7 +349,7 @@ fun MoviesLibraryScreen(
             )
             LibraryTab.Years -> LibrarySummaryGrid(
                 title = "年份",
-                summaries = uiState.movies.mapNotNull { it.year?.toString() }.summaryValues().sortedByDescending { it.value },
+                summaries = regularMovies.mapNotNull { it.year?.toString() }.summaryValues().sortedByDescending { it.value },
                 emptyText = "还没有年份信息",
                 onClick = { onFilterClick("year", it.value) }
             )
@@ -326,6 +359,87 @@ fun MoviesLibraryScreen(
                 emptyText = "还没有工作室信息",
                 onClick = { onFilterClick("studio", it.value) }
             )
+        }
+    }
+}
+
+@Composable
+private fun UnscrapedMoviesTab(
+    movies: List<MovieEntity>,
+    imageMode: HomeImageMode,
+    sortState: HomeSortState,
+    runnerState: com.example.localmovielibrary.data.repository.MovieScrapeTaskRunnerState,
+    onStart: () -> Unit,
+    onPause: () -> Unit,
+    onMovieClick: (Long) -> Unit,
+    onPlay: (MovieEntity) -> Unit,
+    onToggleFavorite: (MovieEntity) -> Unit,
+    onToggleWatched: (MovieEntity) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MoviesPanel)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "未刮削影片 ${movies.size} 部",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = runnerState.message.ifBlank {
+                            "显示刮削失败、从未刮削或缺少 NFO 的影片"
+                        },
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Button(
+                    onClick = if (runnerState.isRunning) onPause else onStart,
+                    enabled = runnerState.isRunning || movies.isNotEmpty()
+                ) {
+                    Icon(
+                        imageVector = if (runnerState.isRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = null
+                    )
+                    Text(
+                        text = if (runnerState.isRunning) "暂停" else "批量刮削",
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                }
+            }
+            if (runnerState.isRunning) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+        if (movies.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "没有刮削失败或未刮削的影片",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
+                )
+            }
+        } else {
+            Box(modifier = Modifier.weight(1f)) {
+                LibraryAllMoviesGrid(
+                    movies = movies,
+                    imageMode = imageMode,
+                    sortState = sortState,
+                    showScrapeStatus = true,
+                    onMovieClick = onMovieClick,
+                    onPlay = onPlay,
+                    onToggleFavorite = onToggleFavorite,
+                    onToggleWatched = onToggleWatched
+                )
+            }
         }
     }
 }
@@ -346,7 +460,7 @@ fun MoviesTopBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), MoviesBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, MoviesBackground)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(start = 18.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -355,13 +469,13 @@ fun MoviesTopBar(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "\u9996\u9875",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
                     text = scanMessage(scanState),
-                    color = Color.White.copy(alpha = 0.56f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -373,7 +487,7 @@ fun MoviesTopBar(
                 IconButton(onClick = { imageModeExpanded = true }) {
                     Text(
                         text = if (imageMode == HomeImageMode.Poster) "海报" else "缩略",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -398,7 +512,7 @@ fun MoviesTopBar(
 
             Box {
                 IconButton(onClick = { sortExpanded = true }) {
-                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序", tint = MaterialTheme.colorScheme.onSurface)
                 }
                 if (sortExpanded) {
                     SortDialog(
@@ -445,12 +559,12 @@ private fun SortDialog(
                     .widthIn(max = 360.dp)
                     .heightIn(max = 620.dp)
                     .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xFF242426))
+                    .background(MaterialTheme.colorScheme.surface)
                     .padding(top = 18.dp, bottom = 10.dp)
             ) {
                 Text(
                     text = "\u6392\u5E8F:",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     modifier = Modifier.align(Alignment.CenterHorizontally)
@@ -493,18 +607,20 @@ private fun SortDialogRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(44.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f) else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 22.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(modifier = Modifier.width(34.dp), contentAlignment = Alignment.CenterStart) {
             if (selected) {
-                Icon(Icons.Rounded.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(21.dp))
+                Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(21.dp))
             }
         }
         Text(
             text = sortLabel(option),
-            color = Color.White.copy(alpha = 0.92f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.weight(1f)
         )
@@ -512,7 +628,7 @@ private fun SortDialogRow(
             Icon(
                 imageVector = if (direction == HomeSortDirection.Descending) Icons.Rounded.ArrowDownward else Icons.Rounded.ArrowUpward,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.62f),
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 modifier = Modifier.size(22.dp)
             )
         }
@@ -529,13 +645,13 @@ private fun StatPill(label: String, value: String) {
     ) {
         Text(
             text = value,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = label,
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.labelSmall
         )
     }
@@ -555,7 +671,7 @@ private fun LibraryEntryCard(
             .clip(RoundedCornerShape(20.dp))
             .background(
                 Brush.horizontalGradient(
-                    listOf(Color(0xFF182232), Color(0xFF111720))
+                    listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surface)
                 )
             )
             .clickable(onClick = onClick)
@@ -566,19 +682,19 @@ private fun LibraryEntryCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "全部影片",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
                     text = "按全部、合集、演员、标签、类型继续浏览",
-                    color = Color.White.copy(alpha = 0.58f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
             Text(
                 text = "进入",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold
             )
@@ -601,27 +717,27 @@ private fun PendingMoviesBanner(
             .padding(horizontal = 18.dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(Color(0xFF163247))
+            .background(MaterialTheme.colorScheme.primaryContainer)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "\u6709 ${count} \u90E8\u65B0\u5F71\u7247",
-                color = Color.White,
+                text = "有 ${count} 部影片待更新",
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "\u70B9\u51FB\u540E\u4E00\u6B21\u6027\u5237\u65B0\u5F71\u7247\u9875\u9762",
-                color = Color.White.copy(alpha = 0.62f),
+                text = "点击后一次性刷新影片页面",
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         Text(
             text = "\u5237\u65B0",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.ExtraBold
         )
@@ -658,7 +774,7 @@ private fun LibraryTopBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), MoviesBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, MoviesBackground)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(top = 6.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -670,13 +786,13 @@ private fun LibraryTopBar(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "影片库",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
                     text = "${stats.total} 部影片",
-                    color = Color.White.copy(alpha = 0.56f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -684,7 +800,7 @@ private fun LibraryTopBar(
                 IconButton(onClick = { imageModeExpanded = true }) {
                     Text(
                         text = if (imageMode == HomeImageMode.Poster) "海报" else "缩略",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -708,7 +824,7 @@ private fun LibraryTopBar(
             }
             Box {
                 IconButton(onClick = { sortExpanded = true }) {
-                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序", tint = MaterialTheme.colorScheme.onSurface)
                 }
                 if (sortExpanded) {
                     SortDialog(
@@ -732,12 +848,12 @@ private fun LibraryTopBar(
                 val selected = selectedTab == tab
                 Text(
                     text = tab.label,
-                    color = if (selected) Color.Black else Color.White.copy(alpha = 0.82f),
+                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(18.dp))
-                        .background(if (selected) Color.White else Color.White.copy(alpha = 0.10f))
+                        .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
                         .clickable { onTabSelected(tab) }
                         .padding(horizontal = 15.dp, vertical = 9.dp)
                 )
@@ -751,6 +867,7 @@ private fun LibraryAllMoviesGrid(
     movies: List<MovieEntity>,
     imageMode: HomeImageMode,
     sortState: HomeSortState,
+    showScrapeStatus: Boolean = false,
     onMovieClick: (Long) -> Unit,
     onPlay: (MovieEntity) -> Unit,
     onToggleFavorite: (MovieEntity) -> Unit,
@@ -806,6 +923,7 @@ private fun LibraryAllMoviesGrid(
                 movie = movie,
                 width = Dp.Unspecified,
                 imageMode = imageMode,
+                showScrapeStatus = showScrapeStatus,
                 onClick = { onMovieClick(movie.id) },
                 onPlay = { onPlay(movie) },
                 onToggleFavorite = { onToggleFavorite(movie) },
@@ -816,7 +934,7 @@ private fun LibraryAllMoviesGrid(
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
                     text = "已显示 ${visibleMovies.size} / ${movies.size}",
-                    color = Color.White.copy(alpha = 0.42f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -835,7 +953,7 @@ private fun DomesticMoviesGrid(
     var sourcePickerMovie by remember { mutableStateOf<DomesticMovieWithSources?>(null) }
     if (movies.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("暂无国产影片", color = Color.White.copy(alpha = 0.62f))
+            Text("暂无国产影片", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
         }
         return
     }
@@ -869,19 +987,19 @@ private fun DomesticMoviesGrid(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(24.dp))
-                    .background(Color(0xFF20242B))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
                     text = "选择播放源",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = movie.movie.folderName,
-                    color = Color.White.copy(alpha = 0.64f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -896,7 +1014,7 @@ private fun DomesticMoviesGrid(
                                 sourcePickerMovie = null
                                 onPlay(movie, source)
                             }
-                            .background(Color.White.copy(alpha = 0.08f))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -910,13 +1028,13 @@ private fun DomesticMoviesGrid(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "瑙嗛 ${index + 1}",
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = source.videoName,
-                                color = Color.White.copy(alpha = 0.64f),
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
                                 style = MaterialTheme.typography.bodySmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -970,7 +1088,7 @@ private fun DomesticMovieCard(
         Spacer(Modifier.height(7.dp))
         Text(
             text = movie.folderName,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -978,7 +1096,7 @@ private fun DomesticMovieCard(
         )
         Text(
             text = if (item.sources.size > 1) "${item.sources.size} 个视频源" else movie.videoName,
-            color = Color.White.copy(alpha = 0.56f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -1003,14 +1121,14 @@ private fun LibrarySummaryGrid(
         item(span = { GridItemSpan(maxLineSpan) }) {
             Text(
                 text = "$title ${summaries.size}",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.ExtraBold
             )
         }
         if (summaries.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(emptyText, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium)
+                Text(emptyText, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium)
             }
         } else {
             items(
@@ -1043,7 +1161,7 @@ private fun ActorSummaryGrid(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "演员 ${summaries.size}",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -1051,7 +1169,7 @@ private fun ActorSummaryGrid(
         }
         if (summaries.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Text("还没有演员信息", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium)
+                Text("还没有演员信息", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f), style = MaterialTheme.typography.bodyMedium)
             }
         } else {
             items(
@@ -1082,7 +1200,7 @@ private fun SummaryCard(summary: MovieMetadataSummary, onClick: () -> Unit) {
     ) {
         Text(
             text = summary.value,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
@@ -1090,7 +1208,7 @@ private fun SummaryCard(summary: MovieMetadataSummary, onClick: () -> Unit) {
         )
         Text(
             text = "${summary.count} 部影片",
-            color = Color.White.copy(alpha = 0.56f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -1116,12 +1234,12 @@ private fun ActorSummaryCard(summary: MovieMetadataSummary, avatarUri: String?, 
             if (avatarUri != null) {
                 UriImage(uri = avatarUri, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, maxDecodeSize = 360)
             } else {
-                Icon(Icons.Rounded.Person, contentDescription = null, tint = Color.White.copy(alpha = 0.82f), modifier = Modifier.size(38.dp))
+                Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f), modifier = Modifier.size(38.dp))
             }
         }
         Text(
             text = summary.value,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -1129,7 +1247,7 @@ private fun ActorSummaryCard(summary: MovieMetadataSummary, avatarUri: String?, 
         )
         Text(
             text = "${summary.count} 部",
-            color = Color.White.copy(alpha = 0.50f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f),
             style = MaterialTheme.typography.labelSmall
         )
     }
@@ -1145,7 +1263,7 @@ private fun HomeSectionHeader(title: String, subtitle: String? = null) {
     ) {
         Text(
             text = title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold
         )
@@ -1153,7 +1271,7 @@ private fun HomeSectionHeader(title: String, subtitle: String? = null) {
             Spacer(Modifier.width(8.dp))
             Text(
                 text = it,
-                color = Color.White.copy(alpha = 0.48f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -1197,6 +1315,7 @@ fun MoviePosterCard(
     movie: MovieEntity,
     width: Dp,
     imageMode: HomeImageMode = HomeImageMode.Poster,
+    showScrapeStatus: Boolean = false,
     onClick: () -> Unit,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -1230,11 +1349,36 @@ fun MoviePosterCard(
                         Icon(
                             imageVector = Icons.Rounded.Favorite,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(8.dp)
                                 .size(18.dp)
+                        )
+                    }
+                    if (showScrapeStatus) {
+                        val statusText = when (movie.scrapeTaskStatus) {
+                            ScrapeTaskStatus.Failed.name -> "刮削失败"
+                            ScrapeTaskStatus.Running.name -> "刮削中"
+                            ScrapeTaskStatus.Pending.name -> "待刮削"
+                            else -> "未刮削"
+                        }
+                        Text(
+                            text = statusText,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .background(
+                                    if (movie.scrapeTaskStatus == ScrapeTaskStatus.Failed.name) {
+                                        Color(0xFFD84315)
+                                    } else {
+                                        Color.Black.copy(alpha = 0.72f)
+                                    },
+                                    RoundedCornerShape(topEnd = 8.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
                         )
                     }
                 }
@@ -1284,7 +1428,7 @@ fun MoviePosterCard(
         Spacer(Modifier.height(8.dp))
         Text(
             text = movie.title,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
@@ -1293,9 +1437,20 @@ fun MoviePosterCard(
         movie.year?.let {
             Text(
                 text = it.toString(),
-                color = Color.White.copy(alpha = 0.50f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.50f),
                 style = MaterialTheme.typography.labelSmall
             )
+        }
+        if (showScrapeStatus) {
+            movie.scrapeFailureReason?.takeIf(String::isNotBlank)?.let { reason ->
+                Text(
+                    text = reason,
+                    color = Color(0xFFFFAB91),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -1307,14 +1462,14 @@ private fun PosterPlaceholder(title: String) {
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    listOf(Color(0xFF202A35), Color(0xFF10151B))
+                    listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surface)
                 )
             ),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = title.take(2).uppercase(),
-            color = Color.White.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.ExtraBold
         )
@@ -1340,7 +1495,7 @@ private fun EmptyLibraryState(
         ) {
             Text(
                 text = "\u5F71\u7247\u5E93\u8FD8\u662F\u7A7A\u7684",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
@@ -1350,7 +1505,7 @@ private fun EmptyLibraryState(
                 } else {
                     "\u9009\u62E9\u4E00\u4E2A\u5A92\u4F53\u5E93\u76EE\u5F55\u5F00\u59CB\u6574\u7406\u5F71\u7247"
                 },
-                color = Color.White.copy(alpha = 0.62f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 style = MaterialTheme.typography.bodyMedium
             )
             AssistChip(
@@ -1370,6 +1525,7 @@ private fun scanMessage(scanState: ScanState): String = when (scanState) {
 
 private enum class LibraryTab(val label: String) {
     All("全部"),
+    Unscraped("未刮削"),
     Vr("VR"),
     Domestic("国产"),
     Collections("合集"),

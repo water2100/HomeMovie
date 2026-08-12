@@ -16,6 +16,7 @@ import com.example.localmovielibrary.data.repository.RemoveCustomTagResult
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
 import com.example.localmovielibrary.playback.PickcodeExtractor
 import com.example.localmovielibrary.scraper.ScrapeSource
+import com.example.localmovielibrary.scraper.ScrapeTaskReport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,9 @@ class DetailViewModel(
 
     private val _isScraping = MutableStateFlow(false)
     val isScraping: StateFlow<Boolean> = _isScraping
+
+    private val _lastScrapeReport = MutableStateFlow(scrapeRepository.latestScrapeReport(movieId))
+    val lastScrapeReport: StateFlow<ScrapeTaskReport?> = _lastScrapeReport
 
     private val _similarMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     val similarMovies: StateFlow<List<MovieEntity>> = _similarMovies
@@ -180,14 +184,18 @@ class DetailViewModel(
         val current = movie.value ?: return
         viewModelScope.launch {
             events.send(DetailEvent.Message("正在刷新影片..."))
-            val refreshed = repository.refreshMovieRecoveringMovedStrm(current.id)
+            val refreshed = repository.refreshMovieAtStoredPath(current.id)
             if (refreshed != null) {
                 events.send(DetailEvent.Message("影片已刷新"))
                 if (refreshed.id != current.id) {
                     events.send(DetailEvent.OpenMovie(refreshed.id))
                 }
             } else {
-                events.send(DetailEvent.Message("无法刷新此影片，可能需要重新扫描影片库"))
+                val message = "影片数据库路径已失效，不会自动搜索媒体库；请在设置页手动扫描"
+                scrapeRepository.appendLog(
+                    "[媒体路径错误] 操作=详情刷新，movieId=${current.id}，文件=${current.videoName}，原因=文件不存在、被外部移动或权限失效；处理=未自动扫描"
+                )
+                events.send(DetailEvent.Message(message))
             }
         }
     }
@@ -322,19 +330,31 @@ class DetailViewModel(
             runCatching {
                 val result = scrapeRepository.clearScrapeFiles(current)
                 scrapeRepository.appendLog("开始刷新单个影片，刷新还原后的 STRM")
-                repository.scanSingleMovie(
+                val refreshed = repository.scanSingleMovie(
                     rootUri = Uri.parse(current.libraryRootUri),
                     videoUri = Uri.parse(result.strmUri),
                     mergeByMovieNumber = true,
                     excludedMergeMovieId = current.id
-                )?.id ?: repository.findMovieByNumber(current.libraryRootUri, result.number)?.id
+                ) ?: error("还原后的 STRM 已生成，但数据库路径更新失败")
+                cloudStrmRecordRepository.getByMovieId(current.id).forEach { record ->
+                    cloudStrmRecordRepository.updateStrmLocation(
+                        pickcode = record.pickcode,
+                        strmUri = refreshed.videoUri,
+                        libraryRootUri = refreshed.libraryRootUri,
+                        movieId = refreshed.id
+                    )
+                }
+                scrapeRepository.appendLog(
+                    "[媒体路径] 状态=成功，操作=清除刮削并还原 STRM 后更新数据库，movieId=${refreshed.id}，文件=${refreshed.videoName}，详情=影片表和 STRM 索引表已同步"
+                )
+                refreshed.id
             }.onSuccess { newMovieId ->
-                if (newMovieId != null && newMovieId != current.id) {
+                if (newMovieId != current.id) {
                     repository.deleteMovie(current.id)
                 }
                 _isScraping.value = false
                 events.trySend(DetailEvent.Message("已清除刮削内容并还原"))
-                newMovieId?.let { events.trySend(DetailEvent.OpenMovie(it)) } ?: events.trySend(DetailEvent.Deleted)
+                events.trySend(DetailEvent.OpenMovie(newMovieId))
             }.onFailure { error ->
                 _isScraping.value = false
                 if (error is CancellationException) throw error
@@ -353,41 +373,33 @@ class DetailViewModel(
             runCatching {
                 val result = scrapeRepository.scrapeMovieWithOutput(current, source)
                 scrapeRepository.appendLog("开始刷新单个影片，刷新整理后的文件")
-                refreshScrapedMovie(current, result.info.number, result.strmUri)
-            }.onSuccess {
+                refreshScrapedMovie(current, result.strmUri) to result.taskId
+            }.onSuccess { (newMovieId, taskId) ->
+                scrapeRepository.finishMovieScrapeTask(taskId, success = true, message = "影片数据库已同步")
+                _lastScrapeReport.value = scrapeRepository.latestScrapeReport(current.id)
                 _isScraping.value = false
                 events.trySend(DetailEvent.Message("刮削完成，文件已整理到影片文件夹"))
-                it?.let { movieId -> events.trySend(DetailEvent.OpenMovie(movieId)) }
+                newMovieId?.let { movieId -> events.trySend(DetailEvent.OpenMovie(movieId)) }
             }.onFailure { error ->
                 _isScraping.value = false
                 if (error is CancellationException) throw error
                 scrapeRepository.appendLog("当前影片刮削失败：${error.message ?: error::class.java.simpleName}")
+                _lastScrapeReport.value = scrapeRepository.latestScrapeReport(current.id)
                 events.trySend(DetailEvent.Message(error.message ?: "刮削失败，请查看日志"))
             }
         }
     }
 
-    private suspend fun refreshScrapedMovie(current: MovieEntity, number: String, knownStrmUri: String? = null): Long? {
-        val finalUri = knownStrmUri ?: scrapeRepository.findStrmUriByNumber(
-            current.libraryRootUri,
-            number,
-            partLabel = null,
-            nameHint = current.videoName
+    private suspend fun refreshScrapedMovie(current: MovieEntity, newStrmUri: String): Long? {
+        val refreshed = repository.refreshMovieAfterScrape(
+            original = current,
+            scrapedStrmUri = newStrmUri,
+            mergeByMovieNumber = true
         )
-        val refreshed = finalUri?.let { strmUri ->
-            repository.refreshMovieAfterScrape(
-                original = current,
-                scrapedStrmUri = strmUri,
-                mergeByMovieNumber = true
-            )
-        }
         if (refreshed != null) {
-            scrapeRepository.appendLog("单个影片刷新完成：${refreshed.videoName}")
             return refreshed.id
         }
-        scrapeRepository.appendLog("未定位到整理后的 STRM，尝试刷新当前影片记录：$number")
-        repository.refreshMovieRecoveringMovedStrm(current.id)?.let { return it.id }
-        return repository.findMovieByNumber(current.libraryRootUri, number)?.id
+        error("刮削后的 STRM 已生成，但数据库路径更新失败；不会自动扫描媒体库")
     }
 
     private fun rescrapeCurrent(source: ScrapeSource) {
@@ -397,15 +409,20 @@ class DetailViewModel(
             _isScraping.value = true
             events.trySend(DetailEvent.Message("开始用 ${source.displayName} 重新刮削..."))
             runCatching {
-                scrapeRepository.rescrapeMovie(current, source)
-                repository.refreshMovieRecoveringMovedStrm(current.id)
-            }.onSuccess {
+                val result = scrapeRepository.rescrapeMovieWithOutput(current, source)
+                repository.refreshMovieAtStoredPath(current.id)
+                    ?: error("重新刮削完成，但数据库中的 STRM 路径已失效：${current.videoUri}")
+                result.taskId
+            }.onSuccess { taskId ->
+                scrapeRepository.finishMovieScrapeTask(taskId, success = true, message = "影片数据库已刷新")
+                _lastScrapeReport.value = scrapeRepository.latestScrapeReport(current.id)
                 _isScraping.value = false
                 events.trySend(DetailEvent.Message("重新刮削完成，影片信息已刷新"))
             }.onFailure { error ->
                 _isScraping.value = false
                 if (error is CancellationException) throw error
                 scrapeRepository.appendLog("当前影片重新刮削失败：${error.message ?: error::class.java.simpleName}")
+                _lastScrapeReport.value = scrapeRepository.latestScrapeReport(current.id)
                 events.trySend(DetailEvent.Message(error.message ?: "重新刮削失败，请查看日志"))
             }
         }

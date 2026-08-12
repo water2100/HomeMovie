@@ -22,7 +22,9 @@ class CloudFolderBatchTaskRunner(
     private val recordRepository: CloudStrmRecordRepository,
     private val settingsRepository: AppSettingsRepository,
     private val movieRepository: MovieRepository,
-    private val scrapeRepository: StrmScrapeRepository
+    private val scrapeRepository: StrmScrapeRepository,
+    private val videoAddProcessor: CloudVideoAddProcessor,
+    private val cloudVideoTaskRunner: CloudVideoTaskRunner
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val runMutex = Mutex()
@@ -39,6 +41,7 @@ class CloudFolderBatchTaskRunner(
         cancelRequested = false
         job = scope.launch {
             runMutex.withLock {
+                taskRepository.prepareForStart()
                 _isRunning.value = true
                 try {
                     runPendingTasks()
@@ -87,6 +90,7 @@ class CloudFolderBatchTaskRunner(
     private suspend fun runTask(task: com.example.localmovielibrary.data.local.CloudFolderBatchTaskEntity) {
         taskRepository.resetForRun(task.id) ?: return
         val summary = CloudFolderBatchRunSummary(folderName = task.folderName)
+        val submittedPickcodes = linkedSetOf<String>()
         val candidates = mutableListOf<CloudFolderVideoCandidate>()
         val numberChecker = CloudAddNumberChecker()
         val folder = Cloud115FileItem(
@@ -146,7 +150,12 @@ class CloudFolderBatchTaskRunner(
             }
             runCatching {
                 withAddLock(item.name) {
-                    processCloudVideoAddAllowScrapeFailure(item, pickcode, forceDistinct = false)
+                    processCloudVideoAddAllowScrapeFailure(
+                        item = item,
+                        pickcode = pickcode,
+                        forceDistinct = false,
+                        submittedPickcodes = submittedPickcodes
+                    )
                 }
             }.onSuccess { result ->
                 summary.addedVideos += 1
@@ -164,9 +173,28 @@ class CloudFolderBatchTaskRunner(
             }
         }
 
+        if (submittedPickcodes.isNotEmpty()) {
+            cloudVideoTaskRunner.start()
+        }
+        val terminalTasks = cloudVideoTaskRunner.awaitTerminal(submittedPickcodes)
+        val failedTasks = terminalTasks.values.filter { it.status == "Failed" }
+        if (failedTasks.isNotEmpty()) {
+            summary.addedVideos = (summary.addedVideos - failedTasks.size).coerceAtLeast(0)
+            summary.scrapeFailedVideos += failedTasks.size
+            failedTasks.take(3).forEach { failed ->
+                summary.rememberFailure("${failed.fileName}: ${failed.failureReason.orEmpty()}")
+            }
+            persistProgress(task.id, summary, currentPath = task.folderName, currentFileName = null)
+        }
+
         val message = summary.toUserMessage()
-        taskRepository.markCompleted(task.id, summary.toProgress(task.folderName, null), message)
-        scrapeRepository.appendLog("网盘文件夹任务完成：${task.folderName}，$message")
+        if (summary.scrapeFailedVideos > 0 || summary.failedVideos > 0 || summary.failedFolders > 0) {
+            taskRepository.markFailed(task.id, message)
+            scrapeRepository.appendLog("网盘文件夹任务结束但存在失败：${task.folderName}，$message")
+        } else {
+            taskRepository.markCompleted(task.id, summary.toProgress(task.folderName, null), message)
+            scrapeRepository.appendLog("网盘文件夹任务完成：${task.folderName}，$message")
+        }
     }
 
     private suspend fun collectFolderVideoCandidates(
@@ -265,6 +293,25 @@ class CloudFolderBatchTaskRunner(
     private suspend fun processCloudVideoAddAllowScrapeFailure(
         item: Cloud115FileItem,
         pickcode: String,
+        forceDistinct: Boolean,
+        submittedPickcodes: MutableSet<String>
+    ): CloudFolderVideoAddResult {
+        val task = cloudVideoTaskRunner.enqueue(item, forceDistinct)
+        submittedPickcodes += task.pickcode
+        return CloudFolderVideoAddResult(
+            pickcode = pickcode,
+            message = "已提交统一刮削队列：${item.name}"
+        )
+    }
+
+    /**
+     * Kept temporarily for source-history comparison only. Folder execution now uses
+     * [CloudVideoAddProcessor], the same implementation as single-video imports.
+     */
+    @Suppress("unused")
+    private suspend fun legacyProcessCloudVideoAddAllowScrapeFailure(
+        item: Cloud115FileItem,
+        pickcode: String,
         forceDistinct: Boolean
     ): CloudFolderVideoAddResult {
         scrapeRepository.appendLog("开始处理网盘文件夹任务：${item.name} / $pickcode")
@@ -324,28 +371,39 @@ class CloudFolderBatchTaskRunner(
             )
         }
 
-        scrapeRepository.appendLog("网盘文件夹任务刮削完成，开始刷新单个影片：$number")
-        val refreshedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(scrapeResult.strmUri), mergeByMovieNumber = !generated.forceDistinct)
-        if (refreshedMovie != null) {
-            if (
-                addedMovie != null &&
-                addedMovie.id != refreshedMovie.id &&
-                addedMovie.videoUri != refreshedMovie.videoUri
-            ) {
-                movieRepository.deleteMovie(addedMovie.id)
-                scrapeRepository.appendLog("已删除网盘文件夹任务刮削前临时入库记录，避免重复显示：${addedMovie.videoName}")
-            }
-            movieRepository.markScrapeTaskCompleted(refreshedMovie.id)
-            recordRepository.updateStrmLocation(
-                pickcode = pickcode,
-                strmUri = scrapeResult.strmUri,
-                libraryRootUri = refreshedMovie.libraryRootUri,
-                movieId = refreshedMovie.id
+        scrapeRepository.appendLog("网盘文件夹任务文件整理完成，开始同步影片数据库：$number")
+        val refreshedMovie = runCatching {
+            finalizeOrganizedScrape(
+                refreshMovie = {
+                    movieRepository.refreshMovieAfterScrape(
+                        original = movieForScrape,
+                        scrapedStrmUri = scrapeResult.strmUri,
+                        mergeByMovieNumber = !generated.forceDistinct
+                    )
+                },
+                markCompleted = { movieRepository.markScrapeTaskCompleted(it.id) },
+                markFailed = { reason -> movieRepository.markScrapeTaskFailed(movieForScrape.id, reason) },
+                missingMovieMessage = "整理后的 STRM 已写入，但影片路径或元数据未同步到数据库：$number"
             )
-        } else {
-            movieRepository.markScrapeTaskCompleted(movieForScrape.id)
-            scrapeRepository.appendLog("网盘文件夹任务刮削后未定位到整理后的 STRM，已清空原影片失败标记：$number")
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            val reason = error.message ?: "整理后的 STRM 未同步到数据库：$number"
+            scrapeRepository.appendLog("网盘文件夹任务刮削失败：$reason")
+            return CloudFolderVideoAddResult(
+                pickcode = pickcode,
+                message = reason,
+                scrapeFailed = true
+            )
         }
+        recordRepository.updateStrmLocation(
+            pickcode = pickcode,
+            strmUri = refreshedMovie.videoUri,
+            libraryRootUri = refreshedMovie.libraryRootUri,
+            movieId = refreshedMovie.id
+        )
+        scrapeRepository.appendLog(
+            "[媒体路径] 状态=成功，操作=网盘文件夹刮削整理并更新数据库，movieId=${refreshedMovie.id}，文件=${refreshedMovie.videoName}，详情=影片表和 STRM 索引表已同步"
+        )
         return CloudFolderVideoAddResult(
             pickcode = pickcode,
             message = if (generated.created) {
@@ -380,28 +438,18 @@ class CloudFolderBatchTaskRunner(
 
     private inner class CloudAddNumberChecker {
         private var loadedCachedRules = false
-        private var forcedRefreshTried = false
 
         suspend fun extract(fileName: String): String? {
             if (!loadedCachedRules) {
-                scrapeRepository.refreshNumberRecognitionRules(forceRefresh = false)
+                scrapeRepository.loadCachedNumberRecognitionRules()
                 loadedCachedRules = true
-            }
-            MovieNumberExtractor.extract(fileName)?.let { return it }
-            if (!forcedRefreshTried) {
-                scrapeRepository.refreshNumberRecognitionRules(forceRefresh = true)
-                forcedRefreshTried = true
             }
             return MovieNumberExtractor.extract(fileName)
         }
     }
 
     private suspend fun extractMovieNumberWithRules(vararg values: String?): String? {
-        scrapeRepository.refreshNumberRecognitionRules(forceRefresh = false)
-        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
-            MovieNumberExtractor.extract(value)?.let { return it }
-        }
-        scrapeRepository.refreshNumberRecognitionRules(forceRefresh = true)
+        scrapeRepository.loadCachedNumberRecognitionRules()
         values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
             MovieNumberExtractor.extract(value)?.let { return it }
         }

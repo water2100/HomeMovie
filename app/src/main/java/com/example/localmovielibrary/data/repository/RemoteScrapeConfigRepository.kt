@@ -19,54 +19,46 @@ class RemoteScrapeConfigRepository(
         .build(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
-    suspend fun getMgstageNumberPrefixes(forceRefresh: Boolean = false): Set<String> = withContext(ioDispatcher) {
-        val custom = settingsRepository.getCustomMgstageNumberPrefixes()
-        val cachedRemote = settingsRepository.getCachedMgstageNumberPrefixes()
-        val fallback = cachedRemote + custom
+    fun getMgstageNumberPrefixes(): Set<String> {
+        loadCachedNumberRecognitionRules()
+        return settingsRepository.getMergedMgstageNumberPrefixes()
+    }
+
+    fun loadCachedNumberRecognitionRules(): Set<String> {
+        NumberRecognitionRules.updateIgnoredSuffixes(settingsRepository.getCachedNumberRecognitionIgnoredSuffixes())
+        NumberRecognitionRules.updatePartMarkers(settingsRepository.getCachedNumberRecognitionPartMarkers())
+        NumberRecognitionRules.updateNumericPrefixAliases(settingsRepository.getMergedMgstageSearchPrefixAliases())
+        return settingsRepository.getCachedNumberRecognitionIgnoredSuffixes()
+    }
+
+    suspend fun syncRemoteNumberRecognitionRules(): Set<String> = withContext(ioDispatcher) {
         val configUrl = settingsRepository.getRemoteScrapeConfigUrl()
-        if (configUrl.isBlank()) return@withContext fallback
+        if (configUrl.isBlank()) error("远程刮削规则地址为空")
 
         val now = System.currentTimeMillis()
-        val shouldRefresh = forceRefresh ||
-            now - settingsRepository.getRemoteScrapeConfigLastFetchMillis() >= REFRESH_INTERVAL_MS
-        if (!shouldRefresh) return@withContext fallback
-
-        runCatching {
-            val request = Request.Builder()
-                .url(updateRequestUrl(configUrl))
-                .header("Accept", "application/json")
-                .header("User-Agent", "HomeMovie/remote-scrape-config")
-                .build()
-            val body = client.newCall(request).execute().use { response ->
-                val text = response.body?.string().orEmpty()
-                if (!response.isSuccessful) error("远程刮削配置请求失败 HTTP ${response.code}")
-                if (text.isBlank()) error("远程刮削配置为空")
-                text
-            }
-            parseMgstageRules(body)
-        }.onSuccess { rules ->
-            settingsRepository.saveRemoteScrapeConfigLastFetchMillis(now)
-            settingsRepository.saveCachedMgstageNumberPrefixes(rules.prefixes)
-            settingsRepository.saveCachedMgstageSearchPrefixAliases(rules.searchPrefixAliases)
-            settingsRepository.saveCachedNumberRecognitionIgnoredSuffixes(rules.numberRecognitionIgnoredSuffixes)
-            settingsRepository.saveCachedNumberRecognitionPartMarkers(rules.numberRecognitionPartMarkers)
-            NumberRecognitionRules.updateNumericPrefixAliases(settingsRepository.getMergedMgstageSearchPrefixAliases())
-            return@withContext settingsRepository.getMergedMgstageNumberPrefixes()
-        }.onFailure {
-            settingsRepository.saveRemoteScrapeConfigLastFetchMillis(now)
+        val request = Request.Builder()
+            .url(updateRequestUrl(configUrl))
+            .header("Accept", "application/json")
+            .header("User-Agent", "HomeMovie/remote-scrape-config")
+            .build()
+        val body = client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("远程刮削配置请求失败 HTTP ${response.code}")
+            if (text.isBlank()) error("远程刮削配置为空")
+            text
         }
-
-        fallback
+        val rules = parseMgstageRules(body)
+        settingsRepository.saveRemoteScrapeConfigLastFetchMillis(now)
+        settingsRepository.saveCachedMgstageNumberPrefixes(rules.prefixes)
+        settingsRepository.saveCachedMgstageSearchPrefixAliases(rules.searchPrefixAliases)
+        settingsRepository.saveCachedNumberRecognitionIgnoredSuffixes(rules.numberRecognitionIgnoredSuffixes)
+        settingsRepository.saveCachedNumberRecognitionPartMarkers(rules.numberRecognitionPartMarkers)
+        loadCachedNumberRecognitionRules()
+        settingsRepository.getMergedMgstageNumberPrefixes()
     }
 
     fun getCachedMgstageSearchPrefixAliases(): Map<String, String> =
         settingsRepository.getMergedMgstageSearchPrefixAliases()
-
-    suspend fun refreshNumberRecognitionRules(forceRefresh: Boolean = false): Set<String> {
-        getMgstageNumberPrefixes(forceRefresh = forceRefresh)
-        NumberRecognitionRules.updatePartMarkers(settingsRepository.getCachedNumberRecognitionPartMarkers())
-        return settingsRepository.getCachedNumberRecognitionIgnoredSuffixes()
-    }
 
     private fun parseMgstageRules(jsonText: String): MgstageRules {
         val json = JSONObject(jsonText)
@@ -187,7 +179,6 @@ class RemoteScrapeConfigRepository(
             .takeIf { value -> value.isNotBlank() && value.any { it.isLetter() } }
 
     private companion object {
-        const val REFRESH_INTERVAL_MS = 10L * 60L * 1000L
         const val LEGACY_CUTE_PREFIX = "CUTE"
     }
 }

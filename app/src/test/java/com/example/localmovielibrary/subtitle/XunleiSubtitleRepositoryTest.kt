@@ -6,13 +6,14 @@ import org.junit.Test
 class XunleiSubtitleRepositoryTest {
     @Test
     fun normalizesNumberWithMinimumThreeDigits() {
-        assertEquals("MIAB-043", normalizeXunleiSubtitleNumber("MIAB-043"))
-        assertEquals("MIAB-043", normalizeXunleiSubtitleNumber("MIAB-43"))
-        assertEquals("MIAB-001", normalizeXunleiSubtitleNumber("miab001"))
+        assertEquals("miab-043", normalizeXunleiSubtitleNumber("MIAB-043"))
+        assertEquals("miab-043", normalizeXunleiSubtitleNumber("MIAB-43"))
+        assertEquals("miab-001", normalizeXunleiSubtitleNumber("miab001"))
+        assertEquals("waaa-315", normalizeXunleiSubtitleNumber("WAAA-315"))
     }
 
     @Test
     fun keepsLongerDigitWidth() {
-        assertEquals("VRPRD-00156", normalizeXunleiSubtitleNumber("VRPRD-00156"))
+        assertEquals("vrprd-00156", normalizeXunleiSubtitleNumber("VRPRD-00156"))
     }
 }

@@ -262,7 +262,11 @@ class CloudStrmRecordRepository(
         )
     }
 
-    private fun normalizedSegmentName(directory: DocumentFile, currentName: String, info: com.example.localmovielibrary.util.MovieNumberInfo?): String? {
+    private fun normalizedSegmentName(
+        directory: DocumentFile,
+        currentName: String,
+        info: com.example.localmovielibrary.util.MovieNumberInfo?
+    ): String? {
         val part = info?.partLabel ?: return null
         val base = directory.name?.takeIf { it.contains(info.number, ignoreCase = true) } ?: info.number
         val desired = "$base${playbackSourceSuffix(part, detectMovieVariant(currentName))}.strm".sanitizeFileName()
@@ -279,6 +283,7 @@ class CloudStrmRecordRepository(
 
     private fun String.sanitizeFileName(): String =
         replace(Regex("""[\\/:*?"<>|]"""), "_").trim().ifBlank { "video.strm" }
+
 }
 
 data class CloudStrmIndexResult(

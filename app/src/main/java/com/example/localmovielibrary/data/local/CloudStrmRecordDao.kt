@@ -80,6 +80,25 @@ interface CloudStrmRecordDao {
     @Query("DELETE FROM cloud_strm_records WHERE movieId IN (:movieIds)")
     suspend fun deleteByMovieIds(movieIds: List<Long>)
 
+    @Query(
+        """
+        UPDATE cloud_strm_records
+        SET strmUri = :newStrmUri,
+            fileName = :newFileName,
+            libraryRootUri = :libraryRootUri,
+            updatedAt = :updatedAt
+        WHERE movieId = :movieId AND strmUri = :oldStrmUri
+        """
+    )
+    suspend fun updateStoredMediaLocation(
+        movieId: Long,
+        oldStrmUri: String,
+        newStrmUri: String,
+        newFileName: String,
+        libraryRootUri: String,
+        updatedAt: Long
+    ): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(record: CloudStrmRecordEntity)
 

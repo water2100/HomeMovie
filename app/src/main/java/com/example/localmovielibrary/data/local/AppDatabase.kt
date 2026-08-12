@@ -12,9 +12,10 @@ import androidx.room.TypeConverters
         CloudStrmRecordEntity::class,
         DomesticMovieEntity::class,
         DomesticVideoSourceEntity::class,
-        CloudFolderBatchTaskEntity::class
+        CloudFolderBatchTaskEntity::class,
+        CloudVideoTaskEntity::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = false
 )
 @TypeConverters(MovieTypeConverters::class)
@@ -26,4 +27,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun domesticMovieDao(): DomesticMovieDao
     abstract fun domesticVideoSourceDao(): DomesticVideoSourceDao
     abstract fun cloudFolderBatchTaskDao(): CloudFolderBatchTaskDao
+    abstract fun cloudVideoTaskDao(): CloudVideoTaskDao
 }
