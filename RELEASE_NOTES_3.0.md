@@ -1,20 +1,20 @@
 # HomeMovie v3.0
 
-## Unified scraping workflow
+## 统一刮削流程
 
-- Individual cloud videos and cloud-folder imports now use the same persistent import-and-scrape pipeline.
-- Scrape concurrency is shared across entries (2 workers by default, configurable up to 4).
-- The unified Scrape Tasks page centralizes start, pause, resume, cancellation, cleanup, and task detail views.
+- 单个网盘视频与网盘文件夹导入现在共用同一套持久化导入和刮削流程。
+- 刮削并发配置统一生效：默认 2 路，最高可配置为 4 路。
+- 新的“统一刮削任务”页面集中管理任务的开始、暂停、继续、取消、清理和明细查看。
 
-## Playback and subtitles
+## 播放与字幕
 
-- Played videos are automatically marked as watched and reflected in recent playback.
-- Added daily application/playback usage statistics.
-- Improved subtitle encoding compatibility and fixed Xunlei subtitle search for case-sensitive titles such as `waaa-315`.
-- Added player progress-bar customization and subtitle styling previews.
+- 播放过的影片会自动标记为已观看，并同步显示在最近播放中。
+- 新增每日软件使用时长和播放时长统计。
+- 改善字幕编码兼容性，修复迅雷字幕搜索对 `waaa-315` 等大小写敏感片号的查询问题。
+- 新增播放器进度条样式自定义，以及字幕样式实时预览。
 
-## Experience and appearance
+## 体验与外观
 
-- Added a light theme and completed theme adaptation across library, details, search, favorites, cloud, task, filter-result, and log pages.
-- New library entries now refresh automatically with debounced updates.
-- Updated Chinese and English README documentation, including the OpenAI Codex collaboration note.
+- 新增浅色主题，并完成影视库、详情、搜索、收藏、网盘、任务、筛选结果和日志页面的适配。
+- 新增影片会经过防抖后自动刷新到影视库，无需手动点击刷新。
+- 重写中英文 README，并标注 OpenAI Codex 协助开发。
