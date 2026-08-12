@@ -1,14 +1,13 @@
 {
-  "versionCode": 19,
-  "versionName": "2.0.4",
-  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v2.0.4/HomeMovie-v2.0.4-debug.apk",
-  "sha256": "7604E75722AD7F2639D8417F8217D2308A912E88BF0D0A02673D2010E27086FE",
-  "size": 23066267,
+  "versionCode": 20,
+  "versionName": "3.0",
+  "apkUrl": "https://github.com/water2100/HomeMovie/releases/download/v3.0/HomeMovie-v3.0-debug.apk",
+  "sha256": "BB41DDDF7FE2095BDB4C8FD442CD2453FEBE9F640A05A24758E001821C473FE1",
+  "size": 23279255,
   "notes": [
-    "新增播放器快进与后退时间设置。",
-    "最近添加会随影视库刷新立即同步。",
-    "修复最近播放记录及分集、版本、STRM 播放地址的匹配。",
-    "精简影片库排序菜单，移除无效、重复或不可靠的排序项。",
-    "优化自定义 JSON 刮削、115 网盘目录加载与字幕功能。"
+    "统一单视频与网盘文件夹的持久化并发刮削流程。",
+    "新增浅色主题并完成主要页面的主题适配。",
+    "优化已观看、自动刷新、播放统计和字幕编码/搜索体验。",
+    "新增播放器进度条与字幕样式预览设置。"
   ]
 }
