@@ -76,7 +76,11 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
     val unfinishedFolderBatchTaskCount by appContainer.cloudFolderBatchTaskRepository
         .observeUnfinishedTaskCount()
         .collectAsState(initial = 0)
-    val unfinishedScrapeTaskCount = unfinishedMovieScrapeTaskCount + unfinishedFolderBatchTaskCount
+    val unfinishedCloudVideoTaskCount by appContainer.cloudVideoTaskRepository
+        .observeUnfinishedTaskCount()
+        .collectAsState(initial = 0)
+    val unfinishedScrapeTaskCount = unfinishedMovieScrapeTaskCount +
+        unfinishedFolderBatchTaskCount + unfinishedCloudVideoTaskCount
     val latestUnfinishedScrapeTaskCount by rememberUpdatedState(unfinishedScrapeTaskCount)
     var scrapeTaskPromptDismissed by remember { mutableStateOf(false) }
     var showStartupScrapeTaskPrompt by remember { mutableStateOf(false) }
@@ -84,6 +88,8 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
     var showStartupAnimation by remember {
         mutableStateOf(appContainer.settingsRepository.isStartupAnimationEnabled())
     }
+    val useLightTheme by appContainer.settingsRepository.observeLightThemeEnabled()
+        .collectAsState(initial = appContainer.settingsRepository.isLightThemeEnabled())
     val showBottomBar = currentRoute == Route.Home ||
         currentRoute == Route.Movies ||
         currentRoute == Route.MovieLibrary ||
@@ -115,8 +121,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
         }
     }
 
+    HomeMovieTheme(useLightTheme = useLightTheme) {
     Scaffold(
-        containerColor = Color(0xFF070A0E),
+        containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (showBottomBar) {
@@ -137,7 +144,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
     ) { innerPadding ->
         Box(
             modifier = Modifier
-                .background(Color(0xFF070A0E))
+                .background(MaterialTheme.colorScheme.background)
                 .padding(innerPadding)
         ) {
             NavHost(navController = navController, startDestination = Route.Home) {
@@ -148,13 +155,14 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             domesticMovieRepository = appContainer.domesticMovieRepository,
                             settingsRepository = appContainer.settingsRepository,
                             scrapeRepository = appContainer.strmScrapeRepository,
-                            playbackProgressRepository = appContainer.playbackProgressRepository
+                            playbackProgressRepository = appContainer.playbackProgressRepository,
+                            movieScrapeTaskRunner = appContainer.movieScrapeTaskRunner
                         )
                     )
                     HomeScreen(
                         viewModel = viewModel,
                         onMovieClick = { movieId -> navController.navigate(Route.detail(movieId)) },
-                        onPlay = { movie -> navController.navigate(Route.player(movie.videoUri, movie.title, movie.videoName)) },
+                        onPlay = { movie -> navController.navigate(Route.player(movie.videoUri, movie.title, movie.videoName, movie.id)) },
                         onOpenLibrary = { navController.navigate(Route.Movies) }
                     )
                 }
@@ -165,15 +173,16 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             domesticMovieRepository = appContainer.domesticMovieRepository,
                             settingsRepository = appContainer.settingsRepository,
                             scrapeRepository = appContainer.strmScrapeRepository,
-                            playbackProgressRepository = appContainer.playbackProgressRepository
+                            playbackProgressRepository = appContainer.playbackProgressRepository,
+                            movieScrapeTaskRunner = appContainer.movieScrapeTaskRunner
                         )
                     )
                     MoviesLibraryScreen(
                         viewModel = viewModel,
                         onMovieClick = { movieId -> navController.navigate(Route.detail(movieId)) },
-                        onPlay = { movie -> navController.navigate(Route.player(movie.videoUri, movie.title, movie.videoName)) },
+                        onPlay = { movie -> navController.navigate(Route.player(movie.videoUri, movie.title, movie.videoName, movie.id)) },
                         onDomesticPlay = { movie, source ->
-                            navController.navigate(Route.player("cloud115://play/${source.videoPickcode}", movie.movie.folderName, source.videoName))
+                            navController.navigate(Route.player("cloud115://play/${source.videoPickcode}", movie.movie.folderName, source.videoName, movie.movie.id))
                         },
                         onFilterClick = { filterType, filterValue ->
                             navController.navigate(Route.filterResult(filterType, filterValue))
@@ -200,7 +209,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             scrapeRepository = appContainer.strmScrapeRepository,
                             domesticMovieRepository = appContainer.domesticMovieRepository,
                             folderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
-                            folderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
+                            folderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner,
+                            videoTaskRepository = appContainer.cloudVideoTaskRepository,
+                            videoTaskRunner = appContainer.cloudVideoTaskRunner
                         )
                     )
                     CloudBrowserScreen(
@@ -223,7 +234,10 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
-                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner,
+                            cloudVideoTaskRepository = appContainer.cloudVideoTaskRepository,
+                            cloudVideoTaskRunner = appContainer.cloudVideoTaskRunner,
+                            movieScrapeTaskRunner = appContainer.movieScrapeTaskRunner
                         )
                     )
                     SettingsScreen(
@@ -241,7 +255,10 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
-                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner,
+                            cloudVideoTaskRepository = appContainer.cloudVideoTaskRepository,
+                            cloudVideoTaskRunner = appContainer.cloudVideoTaskRunner,
+                            movieScrapeTaskRunner = appContainer.movieScrapeTaskRunner
                         )
                     )
                     SettingsScreen(
@@ -261,7 +278,10 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             appUpdateRepository = appContainer.appUpdateRepository,
                             cloud115QrLoginClient = appContainer.cloud115QrLoginClient,
                             cloudFolderBatchTaskRepository = appContainer.cloudFolderBatchTaskRepository,
-                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner
+                            cloudFolderBatchTaskRunner = appContainer.cloudFolderBatchTaskRunner,
+                            cloudVideoTaskRepository = appContainer.cloudVideoTaskRepository,
+                            cloudVideoTaskRunner = appContainer.cloudVideoTaskRunner,
+                            movieScrapeTaskRunner = appContainer.movieScrapeTaskRunner
                         )
                     )
                     SettingsScreen(
@@ -310,7 +330,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                     DetailScreen(
                         viewModel = viewModel,
                         onBack = { navController.popBackStack() },
-                        onPlay = { videoUri, title, fileName -> navController.navigate(Route.player(videoUri, title, fileName)) },
+                        onPlay = { videoUri, title, fileName -> navController.navigate(Route.player(videoUri, title, fileName, movieId)) },
                         onFilterClick = { filterType, filterValue ->
                             navController.navigate(Route.filterResult(filterType, filterValue))
                         },
@@ -352,12 +372,14 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                         navArgument("fileName") {
                             type = NavType.StringType
                             defaultValue = ""
-                        }
+                        },
+                        navArgument("movieId") { type = NavType.LongType; defaultValue = -1L }
                     )
                 ) { entry ->
                     val videoUri = entry.arguments?.getString("videoUri") ?: return@composable
                     val title = entry.arguments?.getString("title") ?: "Movie"
                     val fileName = entry.arguments?.getString("fileName").orEmpty()
+                    val movieId = entry.arguments?.getLong("movieId") ?: -1L
                     val parsedUri = Uri.parse(videoUri)
                     val application = LocalContext.current.applicationContext as android.app.Application
                     val viewModel: PlayerViewModel = viewModel(
@@ -371,7 +393,10 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             cloud115Client = appContainer.cloud115Client,
                             cloudStrmRecordRepository = appContainer.cloudStrmRecordRepository,
                             settingsRepository = appContainer.settingsRepository,
-                            playbackProgressRepository = appContainer.playbackProgressRepository
+                            playbackProgressRepository = appContainer.playbackProgressRepository,
+                            movieRepository = appContainer.movieRepository,
+                            movieId = movieId,
+                            usageStatsRepository = appContainer.usageStatsRepository
                         )
                     )
                     PlayerScreen(
@@ -398,7 +423,11 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                 Text(
                     buildString {
                         append("检测到您有未完成任务")
-                        if (unfinishedMovieScrapeTaskCount > 0 || unfinishedFolderBatchTaskCount > 0) {
+                        if (
+                            unfinishedMovieScrapeTaskCount > 0 ||
+                            unfinishedFolderBatchTaskCount > 0 ||
+                            unfinishedCloudVideoTaskCount > 0
+                        ) {
                             append("：")
                             val parts = mutableListOf<String>()
                             if (unfinishedMovieScrapeTaskCount > 0) {
@@ -406,6 +435,9 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
                             }
                             if (unfinishedFolderBatchTaskCount > 0) {
                                 parts += "网盘文件夹任务 $unfinishedFolderBatchTaskCount 个"
+                            }
+                            if (unfinishedCloudVideoTaskCount > 0) {
+                                parts += "单视频持久化任务 $unfinishedCloudVideoTaskCount 个"
                             }
                             append(parts.joinToString("，"))
                         }
@@ -472,6 +504,7 @@ fun LocalMovieLibraryAppRoot(appContainer: AppContainer) {
             }
         )
     }
+    }
 }
 
 private fun AppContainer.homeImageMode(): HomeImageMode =
@@ -485,7 +518,7 @@ private fun AppBottomNavigation(
     onNavigate: (String) -> Unit
 ) {
     NavigationBar(
-        containerColor = Color(0xFF0B1016),
+        containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp
     ) {
         NavigationBarItem(
@@ -539,11 +572,11 @@ private fun AppBottomNavigation(
 
 @Composable
 private fun bottomNavColors() = NavigationBarItemDefaults.colors(
-    selectedIconColor = Color.Black,
-    selectedTextColor = Color.White,
-    indicatorColor = Color.White,
-    unselectedIconColor = Color.White.copy(alpha = 0.58f),
-    unselectedTextColor = Color.White.copy(alpha = 0.58f)
+    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+    unselectedIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+    unselectedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f)
 )
 
 private object Route {
@@ -559,15 +592,15 @@ private object Route {
     const val ScrapeLogs = "scrapeLogs"
     const val Detail = "movieDetail/{movieId}"
     const val FilterResult = "filterResult/{filterType}/{filterValue}"
-    const val Player = "player/{videoUri}?title={title}&fileName={fileName}"
+    const val Player = "player/{videoUri}?title={title}&fileName={fileName}&movieId={movieId}"
 
     fun detail(movieId: Long) = "movieDetail/$movieId"
 
     fun filterResult(filterType: String, filterValue: String) =
         "filterResult/${Uri.encode(filterType)}/${Uri.encode(filterValue)}"
 
-    fun player(videoUri: String, title: String, fileName: String) =
-        "player/${Uri.encode(videoUri)}?title=${Uri.encode(title)}&fileName=${Uri.encode(fileName)}"
+    fun player(videoUri: String, title: String, fileName: String, movieId: Long = -1L) =
+        "player/${Uri.encode(videoUri)}?title=${Uri.encode(title)}&fileName=${Uri.encode(fileName)}&movieId=$movieId"
 }
 
 private fun formatUpdateSize(bytes: Long): String {

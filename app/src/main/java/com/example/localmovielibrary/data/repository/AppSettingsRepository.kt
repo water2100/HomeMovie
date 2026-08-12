@@ -7,6 +7,7 @@ import com.example.localmovielibrary.cloud115.Cloud115CookieProvider
 import com.example.localmovielibrary.cloud115.Cloud115LoginApps
 import com.example.localmovielibrary.scraper.ScrapeSource
 import com.example.localmovielibrary.scraper.CustomJsonScrapeConfig
+import com.example.localmovielibrary.scraper.NumberPrefixRewriteRule
 import com.example.localmovielibrary.subtitle.SubtitleSearchProvider
 import com.example.localmovielibrary.util.NumberRecognitionRules
 import org.json.JSONArray
@@ -14,6 +15,9 @@ import org.json.JSONObject
 import java.security.MessageDigest
 import java.net.InetSocketAddress
 import java.net.Proxy
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 
 class AppSettingsRepository(context: Context) {
     private val appContext = context.applicationContext
@@ -26,6 +30,21 @@ class AppSettingsRepository(context: Context) {
     }
 
     fun getCookies(): String = prefs.getString(Cloud115CookieProvider.KEY_COOKIES, null).orEmpty()
+
+    fun isLightThemeEnabled(): Boolean = prefs.getBoolean(KEY_LIGHT_THEME_ENABLED, false)
+
+    fun saveLightThemeEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LIGHT_THEME_ENABLED, enabled).apply()
+    }
+
+    fun observeLightThemeEnabled(): Flow<Boolean> = callbackFlow {
+        trySend(isLightThemeEnabled())
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == KEY_LIGHT_THEME_ENABLED) trySend(isLightThemeEnabled())
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
 
     fun saveCookies(value: String) {
         prefs.edit().putString(Cloud115CookieProvider.KEY_COOKIES, value.trim()).apply()
@@ -228,6 +247,15 @@ class AppSettingsRepository(context: Context) {
         prefs.edit().putInt(KEY_IMAGE_DOWNLOAD_RETRY_COUNT, count.coerceIn(1, 10)).apply()
     }
 
+    fun getScrapeRetryCount(): Int {
+        return prefs.getInt(KEY_SCRAPE_RETRY_COUNT, DEFAULT_SCRAPE_RETRY_COUNT)
+            .coerceIn(1, MAX_SCRAPE_RETRY_COUNT)
+    }
+
+    fun saveScrapeRetryCount(count: Int) {
+        prefs.edit().putInt(KEY_SCRAPE_RETRY_COUNT, count.coerceIn(1, MAX_SCRAPE_RETRY_COUNT)).apply()
+    }
+
     fun getScrapeConcurrencyLimit(): Int {
         return prefs.getInt(KEY_SCRAPE_CONCURRENCY_LIMIT, DEFAULT_SCRAPE_CONCURRENCY_LIMIT)
             .coerceIn(1, MAX_SCRAPE_CONCURRENCY_LIMIT)
@@ -287,6 +315,33 @@ class AppSettingsRepository(context: Context) {
     fun removeDmm2SkippedNumberPrefix(prefix: String) {
         val normalized = prefix.normalizedNumberPrefixOrNull() ?: return
         saveDmm2SkippedNumberPrefixes(getDmm2SkippedNumberPrefixes() - normalized)
+    }
+
+    fun getNumberPrefixRewriteRules(): List<NumberPrefixRewriteRule> =
+        prefs.getString(KEY_NUMBER_PREFIX_REWRITE_RULES, null)
+            ?.let(::parseNumberPrefixRewriteRules)
+            .orEmpty()
+
+    fun saveNumberPrefixRewriteRules(rules: List<NumberPrefixRewriteRule>) {
+        val normalized = rules.mapNotNull { rule ->
+            val prefix = rule.prefix.normalizedNumberPrefixOrNull()
+                ?.dropWhile(Char::isDigit)
+                ?.takeIf { it.isNotBlank() && it.any(Char::isLetter) }
+                ?: return@mapNotNull null
+            val numericPrefix = rule.numericPrefix.filter(Char::isDigit)
+            if (numericPrefix.isBlank()) return@mapNotNull null
+            val sources = rule.sources.filter { it != ScrapeSource.Priority }.toSet()
+            if (sources.isEmpty()) return@mapNotNull null
+            NumberPrefixRewriteRule(prefix, numericPrefix, sources)
+        }.distinctBy { it.prefix }
+        prefs.edit().putString(KEY_NUMBER_PREFIX_REWRITE_RULES, normalized.toJsonString()).apply()
+    }
+
+    fun isMgstageAmateurPriorityEnabled(): Boolean =
+        prefs.getBoolean(KEY_MGSTAGE_AMATEUR_PRIORITY_ENABLED, false)
+
+    fun saveMgstageAmateurPriorityEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_MGSTAGE_AMATEUR_PRIORITY_ENABLED, enabled).apply()
     }
 
     fun getRemoteScrapeConfigUrl(): String =
@@ -633,6 +688,28 @@ class AppSettingsRepository(context: Context) {
             .apply()
     }
 
+    fun getPlayerProgressBarWidthDp(): Int =
+        prefs.getInt(KEY_PLAYER_PROGRESS_BAR_WIDTH_DP, DEFAULT_PLAYER_PROGRESS_BAR_WIDTH_DP)
+            .coerceIn(MIN_PLAYER_PROGRESS_BAR_WIDTH_DP, MAX_PLAYER_PROGRESS_BAR_WIDTH_DP)
+
+    fun savePlayerProgressBarWidthDp(value: Int) {
+        prefs.edit().putInt(KEY_PLAYER_PROGRESS_BAR_WIDTH_DP, value.coerceIn(MIN_PLAYER_PROGRESS_BAR_WIDTH_DP, MAX_PLAYER_PROGRESS_BAR_WIDTH_DP)).apply()
+    }
+
+    fun getPlayerProgressBarColor(): Int = prefs.getInt(KEY_PLAYER_PROGRESS_BAR_COLOR, DEFAULT_PLAYER_PROGRESS_BAR_COLOR)
+
+    fun savePlayerProgressBarColor(value: Int) {
+        prefs.edit().putInt(KEY_PLAYER_PROGRESS_BAR_COLOR, value).apply()
+    }
+
+    fun getPlayerProgressBarAlphaPercent(): Int =
+        prefs.getInt(KEY_PLAYER_PROGRESS_BAR_ALPHA_PERCENT, DEFAULT_PLAYER_PROGRESS_BAR_ALPHA_PERCENT)
+            .coerceIn(MIN_PLAYER_PROGRESS_BAR_ALPHA_PERCENT, MAX_PLAYER_PROGRESS_BAR_ALPHA_PERCENT)
+
+    fun savePlayerProgressBarAlphaPercent(value: Int) {
+        prefs.edit().putInt(KEY_PLAYER_PROGRESS_BAR_ALPHA_PERCENT, value.coerceIn(MIN_PLAYER_PROGRESS_BAR_ALPHA_PERCENT, MAX_PLAYER_PROGRESS_BAR_ALPHA_PERCENT)).apply()
+    }
+
     fun isExternalSubtitleEnabled(mediaKey: String): Boolean =
         prefs.getBoolean(externalSubtitleKey(KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX, mediaKey), false)
 
@@ -834,6 +911,48 @@ class AppSettingsRepository(context: Context) {
             )
         }.getOrNull()
 
+    private fun parseNumberPrefixRewriteRules(jsonText: String): List<NumberPrefixRewriteRule>? =
+        runCatching {
+            JSONArray(jsonText).let { array ->
+                buildList {
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val prefix = item.optString("prefix").normalizedNumberPrefixOrNull()
+                            ?.dropWhile(Char::isDigit)
+                            ?.takeIf { it.isNotBlank() && it.any(Char::isLetter) }
+                            ?: continue
+                        val numericPrefix = item.optString("numericPrefix").filter(Char::isDigit)
+                        val sources = item.optJSONArray("sources")
+                            ?.let { values ->
+                                buildSet {
+                                    for (sourceIndex in 0 until values.length()) {
+                                        ScrapeSource.fromStoredName(values.optString(sourceIndex))
+                                            ?.takeIf { it != ScrapeSource.Priority }
+                                            ?.let(::add)
+                                    }
+                                }
+                            }
+                            .orEmpty()
+                        if (numericPrefix.isNotBlank() && sources.isNotEmpty()) {
+                            add(NumberPrefixRewriteRule(prefix, numericPrefix, sources))
+                        }
+                    }
+                }.distinctBy { it.prefix }
+            }
+        }.getOrNull()
+
+    private fun List<NumberPrefixRewriteRule>.toJsonString(): String =
+        JSONArray().also { array ->
+            forEach { rule ->
+                array.put(
+                    JSONObject()
+                        .put("prefix", rule.prefix)
+                        .put("numericPrefix", rule.numericPrefix)
+                        .put("sources", JSONArray(rule.sources.map(ScrapeSource::name)))
+                )
+            }
+        }.toString()
+
     private fun normalizeMgstageSearchPrefixAliases(aliases: Map<String, String>): Map<String, String> =
         aliases.mapNotNull { (key, value) ->
             val normalizedKey = key.normalizedMgstageNumberPrefixOrNull() ?: return@mapNotNull null
@@ -900,10 +1019,13 @@ class AppSettingsRepository(context: Context) {
         const val KEY_DEFAULT_SCRAPE_SOURCE = "default_scrape_source"
         const val KEY_PRIORITY_SCRAPE_SOURCES = "priority_scrape_sources"
         const val KEY_IMAGE_DOWNLOAD_RETRY_COUNT = "image_download_retry_count"
+        const val KEY_SCRAPE_RETRY_COUNT = "scrape_retry_count"
         const val KEY_SCRAPE_CONCURRENCY_LIMIT = "scrape_concurrency_limit"
         const val KEY_SCRAPE_PROXY_ADDRESS = "scrape_proxy_address"
         const val KEY_SCRAPE_PROXY_ENABLED = "scrape_proxy_enabled"
         const val KEY_DMM2_SKIPPED_NUMBER_PREFIXES = "dmm2_skipped_number_prefixes"
+        const val KEY_NUMBER_PREFIX_REWRITE_RULES = "number_prefix_rewrite_rules"
+        const val KEY_MGSTAGE_AMATEUR_PRIORITY_ENABLED = "mgstage_amateur_priority_enabled"
         const val KEY_REMOTE_SCRAPE_CONFIG_URL = "remote_scrape_config_url"
         const val DEFAULT_REMOTE_SCRAPE_CONFIG_URL =
             "https://github.com/water2100/HomeMovie/releases/latest/download/scrape-config.json"
@@ -929,8 +1051,12 @@ class AppSettingsRepository(context: Context) {
         const val KEY_CLOUD_EXCLUDED_VIDEO_NAMES = "cloud_excluded_video_names"
         const val KEY_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = "cloud_scrape_skip_below_size_mb"
         const val KEY_EXTERNAL_SUBTITLE_FONT_SIZE_SP = "external_subtitle_font_size_sp"
+        const val KEY_LIGHT_THEME_ENABLED = "light_theme_enabled"
         const val KEY_EXTERNAL_SUBTITLE_BOTTOM_PADDING_PERCENT = "external_subtitle_bottom_padding_percent"
         const val KEY_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = "external_subtitle_background_alpha_percent"
+        const val KEY_PLAYER_PROGRESS_BAR_WIDTH_DP = "player_progress_bar_width_dp"
+        const val KEY_PLAYER_PROGRESS_BAR_COLOR = "player_progress_bar_color"
+        const val KEY_PLAYER_PROGRESS_BAR_ALPHA_PERCENT = "player_progress_bar_alpha_percent"
         const val KEY_EXTERNAL_SUBTITLE_ENABLED_PREFIX = "external_subtitle_enabled_"
         const val KEY_EXTERNAL_SUBTITLE_NAME_PREFIX = "external_subtitle_name_"
         const val KEY_EXTERNAL_SUBTITLE_OFFSET_PREFIX = "external_subtitle_offset_"
@@ -957,6 +1083,8 @@ class AppSettingsRepository(context: Context) {
         const val KEY_CUSTOM_JSON_SCRAPE_THUMB_PATH = "custom_json_scrape_thumb_path"
         const val KEY_CUSTOM_JSON_SCRAPE_FANART_PATH = "custom_json_scrape_fanart_path"
         const val DEFAULT_IMAGE_DOWNLOAD_RETRY_COUNT = 5
+        const val DEFAULT_SCRAPE_RETRY_COUNT = 3
+        const val MAX_SCRAPE_RETRY_COUNT = 10
         const val DEFAULT_SCRAPE_CONCURRENCY_LIMIT = 2
         const val MAX_SCRAPE_CONCURRENCY_LIMIT = 4
         const val DEFAULT_CLOUD_SCRAPE_SKIP_BELOW_SIZE_MB = 100
@@ -1025,6 +1153,13 @@ class AppSettingsRepository(context: Context) {
         const val DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
         const val MIN_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 0
         const val MAX_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT = 80
+        const val DEFAULT_PLAYER_PROGRESS_BAR_WIDTH_DP = 4
+        const val MIN_PLAYER_PROGRESS_BAR_WIDTH_DP = 2
+        const val MAX_PLAYER_PROGRESS_BAR_WIDTH_DP = 12
+        const val DEFAULT_PLAYER_PROGRESS_BAR_COLOR = 0xFFFFFFFF.toInt()
+        const val DEFAULT_PLAYER_PROGRESS_BAR_ALPHA_PERCENT = 100
+        const val MIN_PLAYER_PROGRESS_BAR_ALPHA_PERCENT = 20
+        const val MAX_PLAYER_PROGRESS_BAR_ALPHA_PERCENT = 100
         const val MIN_EXTERNAL_SUBTITLE_OFFSET_MS = -600_000L
         const val MAX_EXTERNAL_SUBTITLE_OFFSET_MS = 600_000L
         private const val NOMEDIA_FILE_NAME = ".nomedia"

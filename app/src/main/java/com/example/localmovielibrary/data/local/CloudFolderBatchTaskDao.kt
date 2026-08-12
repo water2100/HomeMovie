@@ -50,6 +50,15 @@ interface CloudFolderBatchTaskDao {
     )
     suspend fun nextRunnable(statuses: List<String>): CloudFolderBatchTaskEntity?
 
+    @Query(
+        """
+        UPDATE cloud_folder_batch_tasks
+        SET status = 'Pending', failureMessage = NULL, updatedAt = :updatedAt
+        WHERE status IN ('Running', 'Paused', 'Failed')
+        """
+    )
+    suspend fun prepareForStart(updatedAt: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(task: CloudFolderBatchTaskEntity)
 

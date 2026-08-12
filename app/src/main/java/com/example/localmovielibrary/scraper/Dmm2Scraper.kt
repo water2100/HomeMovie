@@ -18,7 +18,8 @@ import java.util.TimeZone
 class Dmm2Scraper(
     private val client: OkHttpClient = OkHttpClient(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val logger: ((String) -> Unit)? = null
+    private val logger: ((String) -> Unit)? = null,
+    private val graphqlRetryCountProvider: () -> Int = { DEFAULT_GRAPHQL_RETRY_COUNT }
 ) : MovieScraper {
     override val source: ScrapeSource = ScrapeSource.Dmm2
 
@@ -85,7 +86,8 @@ class Dmm2Scraper(
 
     private suspend fun postGraphql(payload: JSONObject, referer: String): JSONObject {
         var lastError: Throwable? = null
-        repeat(GRAPHQL_RETRY_COUNT) { attempt ->
+        val retryCount = graphqlRetryCountProvider().coerceAtLeast(1)
+        repeat(retryCount) { attempt ->
             runCatching {
                 val request = Request.Builder()
                     .url(GRAPHQL_URL)
@@ -106,7 +108,7 @@ class Dmm2Scraper(
                 }
             }.onFailure { error ->
                 lastError = error
-                if (attempt < GRAPHQL_RETRY_COUNT - 1) delay(1500)
+                if (attempt < retryCount - 1) delay(1500)
             }
         }
         throw RuntimeException("DMM2 GraphQL 请求连续失败：${lastError?.message ?: lastError?.javaClass?.simpleName}")
@@ -266,7 +268,7 @@ class Dmm2Scraper(
         const val GRAPHQL_URL = "https://api.video.dmm.co.jp/graphql"
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        const val GRAPHQL_RETRY_COUNT = 3
+        const val DEFAULT_GRAPHQL_RETRY_COUNT = 3
         const val SEARCH_LOG_LIMIT = 10
 
         const val SEARCH_QUERY = """

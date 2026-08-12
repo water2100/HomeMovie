@@ -1,169 +1,105 @@
-# 家庭电影院
+# HomeMovie / 家庭电影院
 
-家庭电影院是一个基于 Kotlin、Jetpack Compose、Room 和 AndroidX Media3 / ExoPlayer 的 Android 本地影视库 App。项目面向本地影片、NFO 元数据、海报墙、115 网盘 STRM 工作流和离线语音字幕实验能力，目标是在手机上提供一个接近 Emby / Jellyfin 风格的私人影视库体验。
+[English](#english) · [中文](#中文)
 
-当前版本：`1.2.0`
+> 一个面向个人媒体收藏的 Android 影视库：扫描本地视频与 STRM、刮削元数据、播放、字幕与 115 网盘工作流。
 
+当前版本：`2.0.4`
 
-## Development with Codex
+## 中文
 
-HomeMovie was developed with assistance from OpenAI Codex, which helped with architecture design, implementation, debugging, and iterative improvements.
+### 功能概览
 
-## 使用说明
+- 本地影视库：通过 Android Storage Access Framework 选择目录，扫描视频、`.strm`、NFO、海报和背景图。
+- 元数据刮削：支持多个来源、失败恢复、任务日志、持久化任务与可配置并发。
+- 统一任务管线：单视频与网盘文件夹入口共用同一导入/刮削队列；默认 2 路并发，最高 4 路。
+- 115 网盘：二维码登录、文件夹浏览、排序、STRM 生成、直链缓存与播放。
+- 播放器：AndroidX Media3 / ExoPlayer 播放本地文件、STRM 和网盘视频，支持播放进度、已观看记录和 VR 辅助模式。
+- 字幕：本地外挂字幕、在线字幕搜索、编码兼容处理、字幕与进度条样式预览及自定义。
+- 浏览体验：搜索、收藏、演员/标签/类别筛选、详情页、最近播放、使用时长统计。
+- 主题：支持深色与浅色主题，页面、筛选结果和任务日志均随主题切换。
 
-### 1. 目录设置
-主要用于设置下载的图片和 NFO 信息的位置。手动新建一个影视库专用文件夹即可。  
-STRM 位置也设置成这个文件夹，然后保存设置。
+### 快速开始
 
-### 2. 网盘设置
-首先需要扫描二维码登录，选择你想要的登录方式并获取二维码，然后使用 115 App 扫码登录。其他设置不用管。
+1. 使用 Android Studio 打开项目根目录并完成 Gradle Sync。
+2. 运行 `app` 模块，首次进入后在设置中选择影视库目录。
+3. 扫描本地视频，或在网盘页面登录 115 后添加视频/文件夹。
+4. 在“刮削任务”中查看、暂停、继续或清理任务；并发数可在设置中调整。
 
-### 3. 刮削
-这里默认即可，后续会具体说明这些刮削方式。  
-注意：`DMM` 和 `DMM2` 刮削必须挂日本节点，否则无法刮削。
-
-### 4. 字幕
-实时字幕效果不是很好，想用也可以用。需要下载模型，模型下载时建议挂节点，否则会很慢。
-
-### 5. 使用
-115 网盘登录以后，可以在网盘界面选择想要添加的视频，会自动使用 `DMM2` 刮削，然后在影片页面就能看到刚刚刮削的影片。  
-注意：`DMM2` 适合现在的新片，因为它是从 DMM 中逆向出的接口，有高清图片；老影片可能没有数据。  
-也可以在网盘界面点击视频直接播放，支持 VR 视频播放。播放 VR 视频时，点击播放器右上角切换到 `360`，会启用陀螺仪效果，转动手机时画面也会跟着转动。
-
-## 2026-06-07：1.2.0 相比 1.1.0 的提升和新增内容
-
-- 播放器外挂字幕新增开关，默认关闭；选择本地字幕或在线字幕后会自动开启。
-- 外挂字幕支持按视频记住上次选择，下次播放同一视频时会优先自动加载已保存的外挂字幕。
-- 字幕弹窗布局优化，标题字号、列表高度和底部空白更适合手机屏幕。
-- 修复沉浸播放时锁按钮一直显示的问题，锁按钮现在会跟随控制层显示与隐藏。
-- 网盘文件夹新增长按复制 CID 功能，便于配置 A 目录或排查文件夹来源。
-- 统一优化首页、影片库、网盘、搜索、收藏、设置、日志、筛选结果等页面顶部栏的状态栏间距和字号，减少与手机 WiFi、电量图标挤在一起的问题。
-- 设置 -> 网盘设置新增“开启国产页面”开关，默认关闭；关闭后影片库不显示“国产”分类。
-- 刮削设置新增 DMM2 跳过番号开头列表，默认包含 `ABF`、`ABW`、`ABP`、`REBDB`、`TRE`、`PPT`、`CHN`、`BGN`，命中后会提示 `DMM2不支持对应番号刮削` 并跳过。
-- DMM2 批量刮削命中跳过前缀时计入 skipped，不再作为失败请求继续访问网络。
-
-## 2026-06-07：1.1.0 相比 1.0.0 的提升和新增内容
-
-- 新增 `JavBus` 刮削方式，适合补充 DMM / DMM2 无法覆盖的影片信息，并处理了 JavBus 图片下载需要 Referer 的限制。
-- 字幕搜索能力增强：增加 Javzimu、AVSubtitles、迅雷字幕等外挂字幕来源，并将迅雷作为默认字幕搜索方式。
-- 播放器字幕体验优化：切换外挂字幕时不再从头重新播放，可以更自然地加载字幕。
-- 新增播放器字幕样式自定义设置，可调整外挂字幕字号、位置和背景透明度，避免黑色背景遮挡画面。
-- 网盘浏览支持按时间和大小切换排序，文件夹也会参与大小排序，查找大文件更方便。
-- 网盘添加入库流程更稳：图片下载失败不会再导致 STRM 被提前删除，避免影片库出现文件已不存在但详情页无法删除的异常记录。
-- 115 网盘设置更简洁：移除 MissAV Cookie 手动控件，相关信息改为需要时自动处理。
-- 演员页面简化：移除手动更新头像入口，减少不必要的控件。
-- 影片库整理与刷新逻辑优化，降低 STRM 移动、重复记录和旧影片库残留带来的显示异常。
-
-
-
-## 主要功能
-
-- 本地影片库扫描：支持通过 Android Storage Access Framework 选择影片库目录，扫描本地视频和 `.strm` 文件。
-- NFO 元数据读取：支持读取影片同目录下的 NFO，解析标题、演员、类型、标签、简介、发行日期、片商等信息。
-- 海报与背景图识别：支持 `poster`、`thumb`、`fanart` 等本地图片，并提供图片缓存以改善海报墙滑动体验。
-- Emby 风格界面：包含首页、影片页、收藏页、搜索页、网盘页、详情页、筛选结果页、日志页和设置页。
-- Media3 播放器：支持本地视频、STRM、115 网盘直链播放，并保留播放进度。
-- STRM 解析链路：支持从 STRM 提取 pickcode，缓存 115 真实视频直链，过期后自动重新获取。
-- 115 网盘浏览：支持二维码登录、文件夹浏览、按时间或大小排序、视频添加入库、直链缓存和网盘播放。
-- 刮削能力：支持 DMM、DMM2、Official、JavBus、MissAV 等来源，默认刮削方式为 DMM2。
-- 多版本和分段视频：支持普通版、4K/8K 版本以及分段视频在详情页中作为不同播放源选择。
-- 国产 A 目录：支持单独的国产视频数据入口和展示页面。
-- VR 播放辅助：支持普通 2D 与多种 VR 模式切换，包括 360、180、SBS、OU 等。
-- 字幕能力：支持外挂字幕搜索、字幕样式调节、sherpa-onnx 本地 ASR、百度翻译和 DeepSeek 翻译配置，并可保存生成的字幕文件。
-
-## 技术栈
-
-- Kotlin
-- Jetpack Compose
-- Material 3
-- AndroidX Lifecycle / ViewModel
-- Room
-- Kotlin Coroutines / Flow
-- AndroidX Media3 / ExoPlayer
-- OkHttp
-- Coil
-- sherpa-onnx
-- Gradle Kotlin DSL
-
-## 项目结构
-
-```text
-app/src/main/java/com/example/localmovielibrary/
-├── asr/          # 本地 ASR 与模型管理
-├── cloud115/     # 115 网盘登录、Cookie、接口和文件模型
-├── data/         # Room、DAO、Entity、Repository
-├── playback/     # 播放请求、STRM/M3U/直链解析、VR 设置
-├── scanner/      # 影片扫描、NFO 解析、图片识别
-├── scraper/      # 元数据刮削器、NFO 写入、日志
-├── subtitle/     # 实时字幕保存与读取
-├── translate/    # 百度翻译、DeepSeek 翻译和提示词模板
-├── ui/           # Compose 页面和 ViewModel
-└── util/         # 番号、版本、文本等工具
-```
-
-## 构建
-
-使用 Android Studio 打开项目根目录，等待 Gradle Sync 完成后运行 `app` 即可。
-
-命令行编译 Kotlin：
+### 构建
 
 ```powershell
+# 编译 Kotlin
 .\gradlew.bat :app:compileDebugKotlin
-```
 
-打包 Debug APK：
-
-```powershell
+# 打包 Debug APK
 .\gradlew.bat :app:assembleDebug
 ```
 
-生成的 APK 位于：
+APK 输出位置：
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/debug/
 ```
 
-## 本地模型
+### 技术栈
 
-实时字幕使用的 ASR 模型不随仓库和 APK 分发。请在 App 的设置页面中下载或选择模型。
+- Kotlin、Jetpack Compose、Material 3
+- Room、Coroutines、Flow、ViewModel
+- AndroidX Media3 / ExoPlayer、OkHttp、Coil
+- Android Storage Access Framework、115 网盘 STRM 工作流
 
-本地调试时可将模型放在：
+### 隐私与安全
 
-```text
-app/external-models/
+请勿提交 Cookie、API Key、签名证书、ASR 模型或 APK。仓库的 `.gitignore` 已排除常见敏感文件与构建产物；115 登录信息仅应保存在设备本地。
+
+### 开发说明
+
+本项目由维护者主导开发，并在需求梳理、代码实现、测试与文档工作中获得 **OpenAI Codex 协助**。Codex 是协作开发工具，不替代人工的设计决策、代码审查与发布验证。
+
+---
+
+## English
+
+### Overview
+
+HomeMovie is a personal Android media-library app for local video files and STRM-based cloud playback. It combines library scanning, metadata scraping, playback, subtitles, and a 115 cloud-drive workflow in one app.
+
+### Highlights
+
+- Scan local videos, `.strm` files, NFO metadata, posters, and fanart through Android's Storage Access Framework.
+- Scrape metadata from multiple providers with persistent jobs, logs, recovery, and configurable concurrency.
+- Use one shared import-and-scrape pipeline for individual cloud videos and folder imports (2 workers by default, up to 4).
+- Browse 115 cloud storage, log in by QR code, generate STRM files, cache direct links, and play cloud media.
+- Play local and cloud media with AndroidX Media3 / ExoPlayer, watch-history tracking, progress restore, and VR helper modes.
+- Search and load external subtitles, handle common subtitle encodings, and customize subtitle and progress-bar appearance with previews.
+- Browse by search, favorites, actors, tags, genres, recent playback, and usage statistics.
+- Switch between dark and light themes across library, settings, filter results, and scrape logs.
+
+### Getting started
+
+1. Open this repository in Android Studio and finish Gradle Sync.
+2. Run the `app` module and choose a library directory in Settings.
+3. Scan local media, or sign in to 115 from the Cloud page and add videos or folders.
+4. Use the unified **Scrape Tasks** page to inspect, pause, resume, or clear jobs. Configure concurrency in Settings.
+
+### Build
+
+```powershell
+.\gradlew.bat :app:compileDebugKotlin
+.\gradlew.bat :app:assembleDebug
 ```
 
-该目录已加入 `.gitignore`，不会上传到 GitHub。
+Debug APKs are generated under `app/build/outputs/apk/debug/`.
 
-## 隐私与敏感数据
+### Tech stack
 
-以下内容不应提交到仓库：
+Kotlin · Jetpack Compose · Material 3 · Room · Coroutines / Flow · ViewModel · AndroidX Media3 / ExoPlayer · OkHttp · Coil
 
-- 115 Cookie
-- API Key / Secret Key
-- 本地 SDK 配置
-- 签名证书
-- ASR 模型文件
-- APK 构建产物
+### Security
 
-`.gitignore` 已排除常见敏感文件和大体积二进制文件，包括：
+Do not commit cookies, API keys, signing keys, ASR models, or APKs. The provided `.gitignore` excludes common sensitive files and build artifacts. Keep cloud-login data on the local device only.
 
-- `local.properties`
-- `app/src/main/assets/115-cookies.txt`
-- `app/src/main/assets/sherpa-onnx-sense-voice-ja/`
-- `app/external-models/`
-- `*.onnx`
-- `*.apk`
-- `*.keystore` / `*.jks` / `*.pem` / `*.key`
+### Development note
 
-115 网盘账号 Cookie 请通过 App 设置页二维码登录或账号管理功能保存到设备本地。
-
-## 发布
-
-从 `1.0.0` 开始启用正式版本号。
-
-APK 不提交到代码仓库，建议作为 GitHub Release 附件发布。
-
-## 说明
-
-这是一个持续开发中的个人影视库项目。部分功能依赖用户自己的媒体库结构、115 网盘账号、网络环境和刮削来源可访问性。使用前建议先在少量影片上测试扫描、刮削、播放和字幕流程。
+This project is maintainer-led and was developed with assistance from **OpenAI Codex** for requirements exploration, implementation, testing, and documentation. Codex is a collaborative development tool; human design decisions, review, and release validation remain essential.

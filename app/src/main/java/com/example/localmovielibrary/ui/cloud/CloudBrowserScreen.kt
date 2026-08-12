@@ -1,4 +1,4 @@
-﻿package com.example.localmovielibrary.ui.cloud
+package com.example.localmovielibrary.ui.cloud
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -71,8 +71,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val CloudBackground = Color(0xFF070A0E)
-private val CloudPanel = Color.White.copy(alpha = 0.075f)
+private val CloudBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val CloudPanel: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.075f)
 
 @Composable
 fun CloudBrowserScreen(
@@ -205,7 +207,7 @@ fun CloudBrowserScreen(
 
             when {
                 uiState.isLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color.White)
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.onSurface)
                 }
                 uiState.errorMessage != null -> CloudMessage(text = uiState.errorMessage.orEmpty())
                 uiState.items.isEmpty() -> CloudMessage(text = "这个目录是空的")
@@ -250,7 +252,7 @@ private fun CloudTopBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color(0xFF101923), CloudBackground)))
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, CloudBackground)))
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 10.dp)
     ) {
@@ -259,19 +261,19 @@ private fun CloudTopBar(
                 Icon(
                     Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = if (canGoBackFolder) "返回上一级目录" else "返回影片",
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(22.dp)
                 )
             }
             Icon(
                 Icons.Rounded.Cloud,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.9f),
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f),
                 modifier = Modifier.size(20.dp)
             )
             Text(
                 text = "115 网盘",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
                 maxLines = 1,
@@ -283,12 +285,12 @@ private fun CloudTopBar(
             Box {
                 Text(
                     text = sortOption.label,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
-                        .background(Color.White.copy(alpha = 0.10f))
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
                         .clickable { sortMenuExpanded = true }
                         .padding(horizontal = 8.dp, vertical = 5.dp)
                 )
@@ -311,14 +313,14 @@ private fun CloudTopBar(
                 Icon(
                     imageVector = if (sortAscending) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
                     contentDescription = "${sortOption.label}${if (sortAscending) "正序" else "倒序"}",
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(20.dp)
                 )
             }
         }
         Text(
             text = path.joinToString(" / ") { it.name },
-            color = Color.White.copy(alpha = 0.58f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -430,13 +432,13 @@ private fun CloudFileRow(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.10f)),
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = if (item.isDirectory) Icons.Rounded.Folder else Icons.Rounded.VideoFile,
                     contentDescription = null,
-                    tint = if (item.isDirectory) Color(0xFFE7C267) else Color.White.copy(alpha = 0.76f)
+                    tint = if (item.isDirectory) Color(0xFFE7C267) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.76f)
                 )
             }
             Column(
@@ -447,7 +449,7 @@ private fun CloudFileRow(
             ) {
                 Text(
                     text = item.name,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 3,
@@ -455,7 +457,7 @@ private fun CloudFileRow(
                 )
                 Text(
                     text = subtitle,
-                    color = Color.White.copy(alpha = 0.56f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.56f),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -506,7 +508,7 @@ private fun AddVideoButton(isAdding: Boolean, isAdded: Boolean, onAddVideo: () -
     if (isAdded) {
         Text(
             text = "已添加",
-            color = Color.White.copy(alpha = 0.52f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 10.dp)
         )
@@ -515,7 +517,7 @@ private fun AddVideoButton(isAdding: Boolean, isAdded: Boolean, onAddVideo: () -
     if (isAdding) {
         Text(
             text = "添加中",
-            color = Color.White.copy(alpha = 0.52f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.52f),
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 10.dp)
         )
@@ -545,7 +547,7 @@ private fun CloudMessage(text: String) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = text,
-                color = Color.White.copy(alpha = 0.74f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )

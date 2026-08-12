@@ -15,14 +15,54 @@ interface MovieDao {
     @Query("SELECT COUNT(*) FROM movies WHERE scrapeTaskStatus IN (:statuses)")
     fun observeScrapeTaskCount(statuses: List<String>): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM movies WHERE nfoUri IS NULL OR scrapeTaskStatus IN (:statuses)")
+    fun observeScrapeIssueCount(statuses: List<String>): Flow<Int>
+
     @Query("SELECT COUNT(*) FROM movies WHERE scrapeTaskStatus = :status")
     suspend fun countScrapeTasks(status: String): Int
 
     @Query("SELECT COUNT(*) FROM movies WHERE scrapeTaskStatus IN (:statuses)")
     suspend fun countScrapeTasks(statuses: List<String>): Int
 
+    @Query("SELECT COUNT(*) FROM movies WHERE nfoUri IS NULL AND scrapeTaskStatus NOT IN (:trackedStatuses)")
+    suspend fun countUntrackedMoviesWithoutNfo(trackedStatuses: List<String>): Int
+
     @Query("SELECT * FROM movies WHERE scrapeTaskStatus IN (:statuses) ORDER BY updatedAt ASC, scannedAtMillis ASC")
     suspend fun getScrapeTaskMovies(statuses: List<String>): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT * FROM movies
+        WHERE nfoUri IS NULL OR scrapeTaskStatus IN (:statuses)
+        ORDER BY
+            CASE scrapeTaskStatus
+                WHEN 'Failed' THEN 0
+                WHEN 'Running' THEN 1
+                WHEN 'Pending' THEN 2
+                ELSE 3
+            END,
+            updatedAt DESC,
+            scannedAtMillis DESC
+        """
+    )
+    suspend fun getScrapeIssueMovies(statuses: List<String>): List<MovieEntity>
+
+    @Query(
+        """
+        SELECT * FROM movies
+        WHERE nfoUri IS NULL OR scrapeTaskStatus IN (:statuses)
+        ORDER BY
+            CASE scrapeTaskStatus
+                WHEN 'Failed' THEN 0
+                WHEN 'Running' THEN 1
+                WHEN 'Pending' THEN 2
+                ELSE 3
+            END,
+            updatedAt DESC,
+            scannedAtMillis DESC
+        """
+    )
+    fun observeScrapeIssueMovies(statuses: List<String>): Flow<List<MovieEntity>>
 
     @Query(
         """
@@ -449,6 +489,21 @@ interface MovieDao {
     @Query("UPDATE movies SET isWatched = :isWatched, updatedAt = :updatedAt WHERE id = :id")
     suspend fun setWatched(id: Long, isWatched: Boolean, updatedAt: Long)
 
+    @Query(
+        """
+        UPDATE movies
+        SET videoUri = :newVideoUri, videoName = :newVideoName, updatedAt = :updatedAt
+        WHERE id = :id AND videoUri = :oldVideoUri
+        """
+    )
+    suspend fun updateStoredMediaLocation(
+        id: Long,
+        oldVideoUri: String,
+        newVideoUri: String,
+        newVideoName: String,
+        updatedAt: Long
+    ): Int
+
     @Query("SELECT tags FROM movies WHERE id = :id")
     suspend fun getTags(id: Long): List<String>?
 
@@ -466,6 +521,14 @@ interface MovieDao {
 
     @Query("UPDATE movies SET scrapeTaskStatus = :toStatus, updatedAt = :updatedAt WHERE scrapeTaskStatus IN (:fromStatuses)")
     suspend fun updateScrapeTaskStatuses(fromStatuses: List<String>, toStatus: String, updatedAt: Long): Int
+
+    @Query("UPDATE movies SET scrapeTaskStatus = :toStatus, updatedAt = :updatedAt WHERE scrapeTaskStatus IN (:fromStatuses) AND id NOT IN (:excludedMovieIds)")
+    suspend fun updateScrapeTaskStatusesExcluding(
+        fromStatuses: List<String>,
+        excludedMovieIds: List<Long>,
+        toStatus: String,
+        updatedAt: Long
+    ): Int
 
     @Query("UPDATE movies SET scrapeTaskStatus = :toStatus, scrapeFailureReason = NULL, updatedAt = :updatedAt WHERE scrapeTaskStatus IN (:fromStatuses)")
     suspend fun updateScrapeTaskStatusesAndClearFailureReason(fromStatuses: List<String>, toStatus: String, updatedAt: Long): Int

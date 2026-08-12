@@ -4,10 +4,14 @@ import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.example.localmovielibrary.data.local.MovieEntity
+import com.example.localmovielibrary.data.repository.StoredDocumentLocator
 import com.example.localmovielibrary.util.movieKeyFromText
 import java.util.Locale
 
-class LibraryScanner(private val context: Context) {
+class LibraryScanner(
+    private val context: Context,
+    private val storedDocumentLocator: StoredDocumentLocator = StoredDocumentLocator(context)
+) {
     private val videoExtensions = setOf("mp4", "mkv", "avi", "mov", "wmv", "m4v", "webm", "mpg", "mpeg", "strm")
     private val excludedDirectoryNames = setOf(
         "extrafanart",
@@ -22,14 +26,12 @@ class LibraryScanner(private val context: Context) {
     }
 
     suspend fun scanFile(rootUri: Uri, videoUri: Uri): MovieEntity? {
-        val root = DocumentFile.fromTreeUri(context, rootUri) ?: return null
-        val target = findFileWithSiblingsFast(root, rootUri, videoUri)
-            ?: findFileWithSiblings(root, videoUri.toString())
-            ?: return null
+        val target = storedDocumentLocator.find(rootUri.toString(), videoUri.toString()) ?: return null
+        val siblings = target.directory.listFiles().toList()
         return buildMovie(
             rootUri = rootUri.toString(),
             video = target.file,
-            filesByLowerName = target.siblings
+            filesByLowerName = siblings
                 .filter { it.isFile && it.name != null }
                 .associateBy { it.name.orEmpty().lowercase(Locale.ROOT) }
         )
@@ -156,41 +158,6 @@ class LibraryScanner(private val context: Context) {
         filesByLowerName[candidate.lowercase(Locale.ROOT)]
     }
 
-    private fun findFileWithSiblings(directory: DocumentFile, videoUri: String): FileWithSiblings? {
-        val children = directory.listFiles().toList()
-        children.forEach { child ->
-            if (child.isFile && child.uri.toString() == videoUri) {
-                return FileWithSiblings(child, children)
-            }
-            if (child.isDirectory && !child.isExcludedMediaAssetDirectory()) {
-                findFileWithSiblings(child, videoUri)?.let { return it }
-            }
-        }
-        return null
-    }
-
-    private fun findFileWithSiblingsFast(root: DocumentFile, rootUri: Uri, videoUri: Uri): FileWithSiblings? {
-        val rootDocId = rootUri.treeDocumentId() ?: return null
-        val videoDocId = videoUri.documentId() ?: return null
-        if (!videoDocId.startsWith(rootDocId)) return null
-        val relativePath = videoDocId
-            .removePrefix(rootDocId)
-            .removePrefix("/")
-            .takeIf { it.isNotBlank() }
-            ?: return null
-        val segments = relativePath.split('/').filter { it.isNotBlank() }
-        if (segments.isEmpty()) return null
-        val fileName = segments.last()
-        val parent = segments.dropLast(1).fold(root as DocumentFile?) { directory, segment ->
-            directory?.findFile(segment)?.takeIf { it.isDirectory }
-        } ?: return null
-        val siblings = parent.listFiles().toList()
-        val file = siblings.firstOrNull { it.isFile && it.name == fileName && it.uri.toString() == videoUri.toString() }
-            ?: siblings.firstOrNull { it.isFile && it.uri.toString() == videoUri.toString() }
-            ?: return null
-        return FileWithSiblings(file, siblings)
-    }
-
     private fun List<MovieEntity>.deduplicateByMovieNumber(): List<MovieEntity> {
         return groupBy { movie -> movie.movieNumberKey() ?: "uri:${movie.videoUri}" }
             .values
@@ -211,23 +178,6 @@ class LibraryScanner(private val context: Context) {
         return movieKeyFromText(source)
     }
 }
-
-private fun Uri.treeDocumentId(): String? {
-    val index = pathSegments.indexOf("tree")
-    return index.takeIf { it >= 0 && it + 1 < pathSegments.size }
-        ?.let { Uri.decode(pathSegments[it + 1]) }
-}
-
-private fun Uri.documentId(): String? {
-    val index = pathSegments.indexOf("document")
-    return index.takeIf { it >= 0 && it + 1 < pathSegments.size }
-        ?.let { Uri.decode(pathSegments[it + 1]) }
-}
-
-private data class FileWithSiblings(
-    val file: DocumentFile,
-    val siblings: List<DocumentFile>
-)
 
 private enum class ImageKind {
     Poster,

@@ -14,12 +14,18 @@ import com.example.localmovielibrary.data.local.AppDatabase
 import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRepository
 import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRunner
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
+import com.example.localmovielibrary.data.repository.CloudVideoAddProcessor
+import com.example.localmovielibrary.data.repository.CloudVideoTaskRepository
+import com.example.localmovielibrary.data.repository.CloudVideoTaskRunner
 import com.example.localmovielibrary.data.repository.DirectLinkRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
+import com.example.localmovielibrary.data.repository.MovieScrapeTaskRunner
 import com.example.localmovielibrary.data.repository.PlaybackProgressRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
+import com.example.localmovielibrary.data.repository.UsageStatsRepository
 import com.example.localmovielibrary.scanner.LibraryScanner
+import com.example.localmovielibrary.scraper.ScrapeLogStore
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
@@ -41,11 +47,14 @@ class AppContainer(context: Context) {
         MIGRATION_10_11,
         MIGRATION_11_12,
         MIGRATION_12_13,
-        MIGRATION_13_14
+        MIGRATION_13_14,
+        MIGRATION_14_15
     ).build()
 
     val scanner = LibraryScanner(appContext)
+    val scrapeLogStore = ScrapeLogStore(appContext)
     val settingsRepository = AppSettingsRepository(appContext)
+    val usageStatsRepository = UsageStatsRepository(appContext)
     val appUpdateRepository = AppUpdateRepository(appContext, settingsRepository)
     val cloud115Client = Cloud115ApiClient(Cloud115CookieProvider(appContext))
     val cloud115QrLoginClient = Cloud115QrLoginClient(appContext, settingsRepository)
@@ -63,7 +72,8 @@ class AppContainer(context: Context) {
     )
     val strmScrapeRepository = StrmScrapeRepository(
         context = appContext,
-        settingsRepository = settingsRepository
+        settingsRepository = settingsRepository,
+        logStore = scrapeLogStore
     )
     val directLinkRepository = DirectLinkRepository(
         directLinkDao = database.directLinkDao(),
@@ -71,6 +81,7 @@ class AppContainer(context: Context) {
     )
     val playbackProgressRepository = PlaybackProgressRepository(database.playbackProgressDao())
     val cloudFolderBatchTaskRepository = CloudFolderBatchTaskRepository(database.cloudFolderBatchTaskDao())
+    val cloudVideoTaskRepository = CloudVideoTaskRepository(database.cloudVideoTaskDao())
     val domesticMovieRepository = DomesticMovieRepository(
         context = appContext,
         dao = database.domesticMovieDao(),
@@ -83,7 +94,20 @@ class AppContainer(context: Context) {
         movieDao = database.movieDao(),
         cloudStrmRecordDao = database.cloudStrmRecordDao(),
         scanner = scanner,
-        contentResolver = appContext.contentResolver
+        contentResolver = appContext.contentResolver,
+        logStore = scrapeLogStore
+    )
+    private val cloudVideoAddProcessor = CloudVideoAddProcessor(
+        strmRepository = cloud115StrmRepository,
+        recordRepository = cloudStrmRecordRepository,
+        settingsRepository = settingsRepository,
+        movieRepository = movieRepository,
+        scrapeRepository = strmScrapeRepository
+    )
+    val cloudVideoTaskRunner = CloudVideoTaskRunner(
+        taskRepository = cloudVideoTaskRepository,
+        processor = cloudVideoAddProcessor,
+        settingsRepository = settingsRepository
     )
     val cloudFolderBatchTaskRunner = CloudFolderBatchTaskRunner(
         taskRepository = cloudFolderBatchTaskRepository,
@@ -91,7 +115,15 @@ class AppContainer(context: Context) {
         recordRepository = cloudStrmRecordRepository,
         settingsRepository = settingsRepository,
         movieRepository = movieRepository,
-        scrapeRepository = strmScrapeRepository
+        scrapeRepository = strmScrapeRepository,
+        videoAddProcessor = cloudVideoAddProcessor,
+        cloudVideoTaskRunner = cloudVideoTaskRunner
+    )
+    val movieScrapeTaskRunner = MovieScrapeTaskRunner(
+        settingsRepository = settingsRepository,
+        movieRepository = movieRepository,
+        scrapeRepository = strmScrapeRepository,
+        cloudVideoTaskRepository = cloudVideoTaskRepository
     )
 
     private companion object {
@@ -284,6 +316,33 @@ class AppContainer(context: Context) {
         val MIGRATION_13_14 = object : Migration(13, 14) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE cloud_strm_records ADD COLUMN videoSizeBytes INTEGER")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `cloud_video_tasks` (
+                        `pickcode` TEXT NOT NULL,
+                        `fileName` TEXT NOT NULL,
+                        `cid` INTEGER,
+                        `fid` INTEGER,
+                        `size` INTEGER,
+                        `addedAt` INTEGER,
+                        `modifiedAt` INTEGER,
+                        `forceDistinct` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `failureReason` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`pickcode`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_video_tasks_status` ON `cloud_video_tasks` (`status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_video_tasks_createdAt` ON `cloud_video_tasks` (`createdAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloud_video_tasks_updatedAt` ON `cloud_video_tasks` (`updatedAt`)")
             }
         }
     }

@@ -54,7 +54,6 @@ class LocalSubtitleStore(
             val documentParents = candidates
                 .mapNotNull { resolveDocumentParent(it) }
                 .distinctBy { it.uri.toString() }
-                .ifEmpty { fallbackDocumentParents(videoUri, fileName) }
             val documentFiles = documentParents
                 .flatMap { parent ->
                     parent.listFiles()
@@ -100,13 +99,7 @@ class LocalSubtitleStore(
         val directDocumentParents = candidates
             .mapNotNull { resolveDocumentParent(it) }
             .distinctBy { it.uri.toString() }
-        val fallbackParents = if (directDocumentParents.any { isWritableDocumentParent(it) }) {
-            emptyList()
-        } else {
-            fallbackDocumentParents(videoUri, fileName)
-        }
-        val documentParents = (directDocumentParents + fallbackParents)
-            .distinctBy { it.uri.toString() }
+        val documentParents = directDocumentParents
         val writableDocumentParents = documentParents.filter { isWritableDocumentParent(it) }
         val localParent = candidates.firstNotNullOfOrNull { resolveLocalParent(it) }
         errorLog.append(
@@ -420,39 +413,6 @@ class LocalSubtitleStore(
         }
     }
 
-    private fun fallbackDocumentParents(videoUri: Uri, fileName: String): List<DocumentFile> {
-        val numbers = subtitleNumberCandidates(videoUri, fileName)
-        if (numbers.isEmpty()) return emptyList()
-        val roots = (settingsRepository.getKnownLibraryRootUris() + settingsRepository.getKnownStrmTreeUris())
-            .filter { it.isNotBlank() }
-            .distinct()
-        return roots.mapNotNull { root ->
-            val rootUri = runCatching { Uri.parse(root) }.getOrNull() ?: return@mapNotNull null
-            val rootFile = DocumentFile.fromTreeUri(appContext, rootUri) ?: return@mapNotNull null
-            findDirectoryContainingMovieNumber(rootFile, numbers)
-        }.distinctBy { it.uri.toString() }
-    }
-
-    private fun subtitleNumberCandidates(videoUri: Uri, fileName: String): Set<String> =
-        buildSet {
-            normalizeMovieNumber(fileName)?.let { add(it) }
-            normalizeMovieNumber(videoUri.toString())?.let { add(it) }
-            DocumentFile.fromSingleUri(appContext, videoUri)?.name
-                ?.let { normalizeMovieNumber(it) }
-                ?.let { add(it) }
-        }
-
-    private fun findDirectoryContainingMovieNumber(directory: DocumentFile, numbers: Set<String>): DocumentFile? {
-        directory.listFiles().forEach { child ->
-            if (child.isDirectory) {
-                findDirectoryContainingMovieNumber(child, numbers)?.let { return it }
-            } else if (child.isFile && child.name.orEmpty().isMovieSourceFor(numbers)) {
-                return directory
-            }
-        }
-        return null
-    }
-
     private fun resolveLocalParent(videoUri: Uri): File? {
         val path = when (videoUri.scheme) {
             "file" -> videoUri.path
@@ -472,13 +432,6 @@ class LocalSubtitleStore(
         }
     }
 
-    private fun String.isMovieSourceFor(numbers: Set<String>): Boolean {
-        val ext = substringAfterLast('.', "").lowercase(Locale.ROOT)
-        if (ext !in VIDEO_OR_STRM_EXTENSIONS) return false
-        val number = normalizeMovieNumber(this) ?: return false
-        return number in numbers
-    }
-
     private fun String.sanitizeFileName(): String =
         replace(Regex("""[\\/:*?"<>|]"""), "_").trim().ifBlank { "subtitle" }
 
@@ -491,7 +444,6 @@ class LocalSubtitleStore(
 
     companion object {
         private val SUBTITLE_EXTENSIONS = setOf("srt", "vtt", "ass", "ssa")
-        private val VIDEO_OR_STRM_EXTENSIONS = setOf("strm", "mp4", "mkv", "avi", "mov", "wmv", "m4v", "webm", "mpg", "mpeg")
     }
 }
 

@@ -14,6 +14,8 @@ import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.data.repository.DomesticMovieWithSources
 import com.example.localmovielibrary.data.repository.MovieLibrarySummaries
 import com.example.localmovielibrary.data.repository.MovieRepository
+import com.example.localmovielibrary.data.repository.MovieScrapeTaskRunner
+import com.example.localmovielibrary.data.repository.MovieScrapeTaskRunnerState
 import com.example.localmovielibrary.data.repository.PlaybackProgressRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +35,8 @@ class HomeViewModel(
     private val domesticMovieRepository: DomesticMovieRepository,
     private val settingsRepository: AppSettingsRepository,
     private val scrapeRepository: StrmScrapeRepository,
-    private val playbackProgressRepository: PlaybackProgressRepository
+    private val playbackProgressRepository: PlaybackProgressRepository,
+    private val movieScrapeTaskRunner: MovieScrapeTaskRunner
 ) : ViewModel() {
     private val scanState = MutableStateFlow<ScanState>(ScanState.Idle)
     private val sortState = MutableStateFlow(loadSavedSortState(settingsRepository))
@@ -42,6 +45,7 @@ class HomeViewModel(
     private val displayedMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     private val pendingMovies = MutableStateFlow<List<MovieEntity>>(emptyList())
     private val pendingNewCount = MutableStateFlow(0)
+    private var hasLoadedMovieList = false
     private val librarySummaries = MutableStateFlow(MovieLibrarySummaries())
     private val avatarUpdateState = scrapeRepository.actorAvatarUpdateState
     private val libraryUpdateState = combine(avatarUpdateState, pendingNewCount) { avatarUpdate, newCount ->
@@ -83,9 +87,15 @@ class HomeViewModel(
     private val moviesWithProgressAndDomestic = combine(moviesWithProgress, domesticMovies) { movieData, domestic ->
         movieData to domestic
     }
-    private val homeMovieData = combine(moviesWithProgressAndDomestic, librarySummaries) { movieData, summaries ->
-        movieData to summaries
-    }
+    private val scrapeIssueData = combine(
+        repository.observeScrapeIssueMovies(),
+        movieScrapeTaskRunner.state
+    ) { movies, runnerState -> movies to runnerState }
+    private val homeMovieData = combine(
+        moviesWithProgressAndDomestic,
+        librarySummaries,
+        scrapeIssueData
+    ) { movieData, summaries, scrapeIssues -> Triple(movieData, summaries, scrapeIssues) }
 
     init {
         viewModelScope.launch {
@@ -98,9 +108,10 @@ class HomeViewModel(
     }
 
     val uiState: StateFlow<HomeUiState> = combine(homeMovieData, scanState, imageModeState, libraryUpdateState, domesticPageEnabledState) { combinedHomeData, scan, imageMode, libraryUpdate, domesticPageEnabled ->
-        val (combinedMovieData, summaries) = combinedHomeData
+        val (combinedMovieData, summaries, scrapeIssues) = combinedHomeData
         val (movieData, domestic) = combinedMovieData
         val (buckets, recentlyPlayed) = movieData
+        val (scrapeIssueMovies, scrapeRunnerState) = scrapeIssues
         val (avatarUpdate, newCount) = libraryUpdate
         HomeUiState(
             movies = buckets.movies,
@@ -116,19 +127,12 @@ class HomeViewModel(
             actorAvatarUpdateMessage = avatarUpdate.message,
             actorAvatarRefreshVersion = avatarUpdate.refreshVersion,
             pendingNewCount = newCount,
+            scrapeIssueMovies = scrapeIssueMovies,
+            scrapeRunnerState = scrapeRunnerState,
             librarySummaries = summaries,
             stats = buckets.stats
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
-
-    fun scanLibrary(rootUri: Uri) {
-        viewModelScope.launch {
-            scanState.value = ScanState.Scanning
-            runCatching { repository.scanLibrary(rootUri) }
-                .onSuccess { count -> scanState.value = ScanState.Done(count) }
-                .onFailure { error -> scanState.value = ScanState.Error(error.message ?: "Scan failed") }
-        }
-    }
 
     fun applyPendingMovieUpdates() {
         val pending = pendingMovies.value
@@ -140,8 +144,15 @@ class HomeViewModel(
     }
 
     private fun handleDatabaseMovies(latestMovies: List<MovieEntity>) {
-        // 首页的影片区（含“最近添加”）始终反映影视库的最新状态。
-        displayedMovies.value = latestMovies
+        val update = reduceHomeMovieListUpdate(
+            displayed = displayedMovies.value,
+            latest = latestMovies,
+            isInitialLoad = !hasLoadedMovieList
+        )
+        hasLoadedMovieList = true
+        // 数据库流已经经过 450ms 防抖；将同一时间段内的新增合并为一次自动刷新，
+        // 不再要求用户点击横幅才能看到新影片。
+        displayedMovies.value = update.pending.ifEmpty { update.displayed }
         pendingMovies.value = emptyList()
         pendingNewCount.value = 0
     }
@@ -203,6 +214,10 @@ class HomeViewModel(
         }
     }
 
+    fun startBatchScrape() = movieScrapeTaskRunner.startIssues()
+
+    fun pauseBatchScrape() = movieScrapeTaskRunner.pause()
+
     companion object {
         private const val HOME_RECENT_PROGRESS_LIMIT = 100
 
@@ -211,15 +226,101 @@ class HomeViewModel(
             domesticMovieRepository: DomesticMovieRepository,
             settingsRepository: AppSettingsRepository,
             scrapeRepository: StrmScrapeRepository,
-            playbackProgressRepository: PlaybackProgressRepository
+            playbackProgressRepository: PlaybackProgressRepository,
+            movieScrapeTaskRunner: MovieScrapeTaskRunner
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    HomeViewModel(repository, domesticMovieRepository, settingsRepository, scrapeRepository, playbackProgressRepository) as T
+                    HomeViewModel(
+                        repository,
+                        domesticMovieRepository,
+                        settingsRepository,
+                        scrapeRepository,
+                        playbackProgressRepository,
+                        movieScrapeTaskRunner
+                    ) as T
             }
     }
 }
+
+internal data class HomeMovieListUpdate(
+    val displayed: List<MovieEntity>,
+    val pending: List<MovieEntity>,
+    val pendingCount: Int
+)
+
+internal fun excludeScrapeIssueMovies(
+    movies: List<MovieEntity>,
+    scrapeIssueMovies: List<MovieEntity>
+): List<MovieEntity> {
+    if (scrapeIssueMovies.isEmpty()) return movies
+    val issueIds = scrapeIssueMovies.mapTo(HashSet(scrapeIssueMovies.size), MovieEntity::id)
+    return movies.filterNot { it.id in issueIds }
+}
+
+internal fun reduceHomeMovieListUpdate(
+    displayed: List<MovieEntity>,
+    latest: List<MovieEntity>,
+    isInitialLoad: Boolean = false
+): HomeMovieListUpdate {
+    if (isInitialLoad) {
+        return HomeMovieListUpdate(latest, emptyList(), 0)
+    }
+
+    // 删除不应等待用户手动刷新；保留已删除项会在网格中留下空白卡位。
+    val latestIds = latest.mapTo(hashSetOf(), MovieEntity::id)
+    if (displayed.any { it.id !in latestIds }) {
+        return HomeMovieListUpdate(latest, emptyList(), 0)
+    }
+
+    val changedCount = countPresentationChanges(displayed, latest)
+    if (changedCount == 0) {
+        val latestById = latest.associateBy(MovieEntity::id)
+        val hasInteractionChanges = displayed.any { current ->
+            val next = latestById[current.id] ?: return@any false
+            current.isFavorite != next.isFavorite || current.isWatched != next.isWatched
+        }
+        val nextDisplayed = if (hasInteractionChanges) latest else displayed
+        return HomeMovieListUpdate(nextDisplayed, emptyList(), 0)
+    }
+
+    val latestById = latest.associateBy(MovieEntity::id)
+    val stableDisplayed = displayed.map { current ->
+        val next = latestById[current.id] ?: return@map current
+        if (current.isFavorite == next.isFavorite && current.isWatched == next.isWatched) {
+            current
+        } else {
+            current.copy(
+                isFavorite = next.isFavorite,
+                isWatched = next.isWatched,
+                updatedAt = next.updatedAt
+            )
+        }
+    }
+    return HomeMovieListUpdate(stableDisplayed, latest, changedCount)
+}
+
+private fun countPresentationChanges(
+    displayed: List<MovieEntity>,
+    latest: List<MovieEntity>
+): Int {
+    val displayedById = displayed.associateBy(MovieEntity::id)
+    val latestById = latest.associateBy(MovieEntity::id)
+    return (displayedById.keys + latestById.keys).count { id ->
+        val current = displayedById[id]
+        val next = latestById[id]
+        current == null || next == null || current.presentationSnapshot() != next.presentationSnapshot()
+    }
+}
+
+private fun MovieEntity.presentationSnapshot(): MovieEntity = copy(
+    isFavorite = false,
+    isWatched = false,
+    updatedAt = 0L,
+    scrapeFailureReason = null,
+    scrapeTaskStatus = com.example.localmovielibrary.data.local.ScrapeTaskStatus.None.name
+)
 
 private fun loadSavedSortState(settingsRepository: AppSettingsRepository): HomeSortState {
     val option = settingsRepository.getHomeSortOptionName()
@@ -318,6 +419,8 @@ data class HomeUiState(
     val actorAvatarUpdateMessage: String? = null,
     val actorAvatarRefreshVersion: Int = 0,
     val pendingNewCount: Int = 0,
+    val scrapeIssueMovies: List<MovieEntity> = emptyList(),
+    val scrapeRunnerState: MovieScrapeTaskRunnerState = MovieScrapeTaskRunnerState(),
     val librarySummaries: MovieLibrarySummaries = MovieLibrarySummaries(),
     val stats: LibraryStats = LibraryStats()
 ) {

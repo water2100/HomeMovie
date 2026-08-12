@@ -10,13 +10,17 @@ import com.example.localmovielibrary.data.repository.Cloud115StrmRepository
 import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRepository
 import com.example.localmovielibrary.data.repository.CloudFolderBatchTaskRunner
 import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
+import com.example.localmovielibrary.data.repository.CloudVideoTaskRepository
+import com.example.localmovielibrary.data.repository.CloudVideoTaskRunner
 import com.example.localmovielibrary.data.repository.DomesticMovieRepository
 import com.example.localmovielibrary.data.repository.MovieRepository
 import com.example.localmovielibrary.data.repository.StrmScrapeRepository
+import com.example.localmovielibrary.data.repository.finalizeOrganizedScrape
 import com.example.localmovielibrary.scraper.MovieNumberExtractor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -37,7 +41,9 @@ class CloudBrowserViewModel(
     private val scrapeRepository: StrmScrapeRepository,
     private val domesticMovieRepository: DomesticMovieRepository,
     private val folderBatchTaskRepository: CloudFolderBatchTaskRepository,
-    private val folderBatchTaskRunner: CloudFolderBatchTaskRunner
+    private val folderBatchTaskRunner: CloudFolderBatchTaskRunner,
+    private val videoTaskRepository: CloudVideoTaskRepository,
+    private val videoTaskRunner: CloudVideoTaskRunner
 ) : ViewModel() {
     private val backStack = mutableListOf(CloudPathItem(ROOT_CID, ROOT_NAME))
     private val _uiState = MutableStateFlow(
@@ -59,7 +65,29 @@ class CloudBrowserViewModel(
     private var isFolderBatchRunning = false
 
     init {
+        observeVideoTasks()
         loadCurrent()
+    }
+
+    private fun observeVideoTasks() {
+        viewModelScope.launch {
+            videoTaskRepository.observeTasks().collect { tasks ->
+                val activePickcodes = tasks.asSequence()
+                    .filter { it.status == "Pending" || it.status == "Running" || it.status == "Paused" }
+                    .map { it.pickcode }
+                    .toSet()
+                val completedPickcodes = tasks.asSequence()
+                    .filter { it.status == "Completed" }
+                    .map { it.pickcode }
+                    .toSet()
+                _uiState.update {
+                    it.copy(
+                        addingPickcodes = activePickcodes,
+                        addedPickcodes = it.addedPickcodes + completedPickcodes
+                    )
+                }
+            }
+        }
     }
 
     fun domesticRootCid(): Long? = settingsRepository.getDomesticRootCid()
@@ -381,65 +409,8 @@ class CloudBrowserViewModel(
             )
         }
         viewModelScope.launch {
-            try {
-                if (recordRepository.get(pickcode) != null) {
-                    _uiState.update {
-                        it.copy(
-                            addingPickcodes = it.addingPickcodes - pickcode,
-                            addedPickcodes = it.addedPickcodes + pickcode,
-                            message = "影片已经添加"
-                        )
-                    }
-                    return@launch
-                }
-                val number = withContext(Dispatchers.IO) {
-                    CloudAddNumberChecker().extract(item.name)
-                }
-                if (number == null) {
-                    scrapeRepository.appendLog("网盘添加跳过：${item.name}，原因：无法提取番号")
-                    _uiState.update {
-                        it.copy(
-                            addingPickcodes = it.addingPickcodes - pickcode,
-                            message = "无法提取番号，已跳过：${item.name}"
-                        )
-                    }
-                    return@launch
-                }
-                if (pickcode in _uiState.value.addedPickcodes) {
-                    _uiState.update {
-                        it.copy(
-                            addingPickcodes = it.addingPickcodes - pickcode,
-                            message = "这个视频已经添加或正在添加"
-                        )
-                    }
-                    return@launch
-                }
-                val conflict = recordRepository.findStandardSameNumberCandidate(item.name, pickcode)
-                if (conflict != null) {
-                    _uiState.update {
-                        it.copy(
-                            addingPickcodes = it.addingPickcodes - pickcode,
-                            pendingReplaceConflict = PendingReplaceConflict(
-                                item = item,
-                                oldPickcode = conflict.pickcode,
-                                oldFileName = conflict.fileName,
-                                movieNumber = conflict.movieNumber.orEmpty()
-                            )
-                        )
-                    }
-                    return@launch
-                }
-                enqueueAddVideo(item, forceDistinct = false, alreadyMarkedAdding = true)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - pickcode,
-                        message = error.message ?: "添加前检查失败"
-                    )
-                }
-            }
+            if (!passesQueuedConflictCheck(item, pickcode)) return@launch
+            persistAndStartVideoTask(item, forceDistinct = false)
         }
     }
 
@@ -489,44 +460,79 @@ class CloudBrowserViewModel(
             _uiState.update { it.copy(message = "这个视频已经在添加队列中") }
             return
         }
+        _uiState.update {
+            val nextAddingPickcodes = if (alreadyMarkedAdding) {
+                it.addingPickcodes
+            } else {
+                it.addingPickcodes + pickcode
+            }
+            it.copy(
+                addingPickcodes = nextAddingPickcodes,
+                message = progressMessage("已加入队列：${item.name}")
+            )
+        }
         viewModelScope.launch {
+            persistAndStartVideoTask(item, forceDistinct)
+        }
+    }
+
+    private suspend fun persistAndStartVideoTask(item: Cloud115FileItem, forceDistinct: Boolean) {
+        val pickcode = item.pickcode ?: return
+        runCatching {
+            videoTaskRunner.enqueueAndStart(item, forceDistinct)
+            scrapeRepository.appendLog("网盘添加已持久化加入队列：${item.name} / $pickcode")
+        }.onSuccess {
             _uiState.update {
-                val nextAddingPickcodes = if (alreadyMarkedAdding) {
-                    it.addingPickcodes
-                } else {
-                    it.addingPickcodes + pickcode
-                }
+                it.copy(message = progressMessage("已加入持久化队列：${item.name}"))
+            }
+        }.onFailure { error ->
+            val message = error.message ?: "持久化添加任务失败"
+            _uiState.update {
                 it.copy(
-                    addingPickcodes = nextAddingPickcodes,
-                    message = progressMessage("正在添加 ${item.name}")
+                    addingPickcodes = it.addingPickcodes - pickcode,
+                    message = message
                 )
             }
-            scrapeRepository.appendLog("网盘添加已加入队列：${item.name} / $pickcode")
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    withAddLock(item.name) {
-                        processCloudVideoAdd(item, pickcode, forceDistinct)
-                    }
-                }
-            }.onSuccess { result ->
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - result.pickcode,
-                        addedPickcodes = it.addedPickcodes + result.pickcode,
-                        message = progressMessage(result.message)
-                    )
-                }
-            }.onFailure { error ->
-                val message = error.message ?: error::class.java.simpleName
-                scrapeRepository.appendLog("网盘添加失败：${item.name} / $pickcode，原因：$message")
-                _uiState.update {
-                    it.copy(
-                        addingPickcodes = it.addingPickcodes - pickcode,
-                        message = message
-                    )
-                }
-            }
         }
+    }
+
+    private suspend fun passesQueuedConflictCheck(item: Cloud115FileItem, pickcode: String): Boolean {
+        if (recordRepository.get(pickcode) != null) {
+            _uiState.update {
+                it.copy(
+                    addingPickcodes = it.addingPickcodes - pickcode,
+                    addedPickcodes = it.addedPickcodes + pickcode,
+                    message = "影片已经添加"
+                )
+            }
+            return false
+        }
+        val number = withContext(Dispatchers.IO) { CloudAddNumberChecker().extract(item.name) }
+        if (number == null) {
+            scrapeRepository.appendLog("网盘添加跳过：${item.name}，原因：无法提取番号")
+            _uiState.update {
+                it.copy(
+                    addingPickcodes = it.addingPickcodes - pickcode,
+                    message = "无法提取番号，已跳过：${item.name}"
+                )
+            }
+            return false
+        }
+        val conflict = recordRepository.findStandardSameNumberCandidate(item.name, pickcode)
+        if (conflict == null) return true
+        while (_uiState.value.pendingReplaceConflict != null) delay(250)
+        _uiState.update {
+            it.copy(
+                addingPickcodes = it.addingPickcodes - pickcode,
+                pendingReplaceConflict = PendingReplaceConflict(
+                    item = item,
+                    oldPickcode = conflict.pickcode,
+                    oldFileName = conflict.fileName,
+                    movieNumber = conflict.movieNumber.orEmpty()
+                )
+            )
+        }
+        return false
     }
 
     private suspend fun collectFolderVideoCandidates(
@@ -616,40 +622,59 @@ class CloudBrowserViewModel(
         val addedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(generated.strmUri), mergeByMovieNumber = !generated.forceDistinct)
 
         val number = extractMovieNumberWithRules(generated.fileName, item.name)
-            ?: error("STRM 已添加，但无法从文件名提取番号，无法自动刮削")
+        if (number == null) {
+            val reason = "STRM 已添加，但无法从文件名提取番号，无法自动刮削"
+            addedMovie?.let { movieRepository.markScrapeTaskFailed(it.id, reason) }
+            error(reason)
+        }
         val movieForScrape = addedMovie
             ?: movieRepository.findMovieByNumberAndVariant(libraryRoot, number, generated.fileName)
             ?: error("STRM 已添加，但扫描后没有在影片库中找到 $number")
         recordRepository.attachMovie(pickcode, movieForScrape.id)
+        movieRepository.markScrapeTaskPending(movieForScrape.id)
 
         val source = settingsRepository.getDefaultScrapeSource()
         scrapeRepository.appendLog("开始刮削队列影片：$number，来源：$source")
-        val scrapeResult = scrapeRepository.scrapeStrmUriWithOutput(
-            libraryRootUri = libraryRoot,
-            strmUri = generated.strmUri,
-            source = source,
-            forceDistinct = generated.forceDistinct
-        )
-        scrapeRepository.appendLog("刮削完成，开始刷新单个影片：$number")
-        val refreshedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(scrapeResult.strmUri), mergeByMovieNumber = !generated.forceDistinct)
-        if (refreshedMovie != null) {
-            if (
-                addedMovie != null &&
-                addedMovie.id != refreshedMovie.id &&
-                addedMovie.videoUri != refreshedMovie.videoUri
-            ) {
-                movieRepository.deleteMovie(addedMovie.id)
-                scrapeRepository.appendLog("已删除刮削前临时入库记录，避免重复显示：${addedMovie.videoName}")
-            }
-            recordRepository.updateStrmLocation(
-                pickcode = pickcode,
-                strmUri = scrapeResult.strmUri,
-                libraryRootUri = refreshedMovie.libraryRootUri,
-                movieId = refreshedMovie.id
+        movieRepository.markScrapeTaskRunning(movieForScrape.id)
+        val scrapeResult = try {
+            scrapeRepository.scrapeStrmUriWithOutput(
+                libraryRootUri = libraryRoot,
+                strmUri = generated.strmUri,
+                source = source,
+                forceDistinct = generated.forceDistinct
             )
-        } else {
-            scrapeRepository.appendLog("未定位到整理后的 STRM，跳过单片刷新：$number")
+        } catch (error: CancellationException) {
+            withContext(NonCancellable) {
+                movieRepository.markScrapeTaskPending(movieForScrape.id)
+            }
+            throw error
+        } catch (error: Throwable) {
+            val reason = "刮削来源 ${source.name} 失败：${error.message ?: error::class.java.simpleName}"
+            movieRepository.markScrapeTaskFailed(movieForScrape.id, reason)
+            throw error
         }
+        scrapeRepository.appendLog("文件整理完成，开始同步影片数据库：$number")
+        val refreshedMovie = finalizeOrganizedScrape(
+            refreshMovie = {
+                movieRepository.refreshMovieAfterScrape(
+                    original = movieForScrape,
+                    scrapedStrmUri = scrapeResult.strmUri,
+                    mergeByMovieNumber = !generated.forceDistinct
+                )
+            },
+            markCompleted = { movieRepository.markScrapeTaskCompleted(it.id) },
+            markFailed = { reason -> movieRepository.markScrapeTaskFailed(movieForScrape.id, reason) },
+            missingMovieMessage = "整理后的 STRM 已写入，但影片路径或元数据未同步到数据库：$number"
+        )
+        recordRepository.updateStrmLocation(
+            pickcode = pickcode,
+            strmUri = refreshedMovie.videoUri,
+            libraryRootUri = refreshedMovie.libraryRootUri,
+            movieId = refreshedMovie.id
+        )
+        scrapeRepository.appendLog(
+            "[媒体路径] 状态=成功，操作=网盘单片刮削整理并更新数据库，movieId=${refreshedMovie.id}，文件=${refreshedMovie.videoName}，详情=影片表和 STRM 索引表已同步"
+        )
         return CloudAddResult(
             pickcode = pickcode,
             message = if (generated.created) {
@@ -722,28 +747,39 @@ class CloudBrowserViewModel(
             )
         }
 
-        scrapeRepository.appendLog("批量刮削完成，开始刷新单个影片：$number")
-        val refreshedMovie = movieRepository.scanSingleMovie(rootUri, Uri.parse(scrapeResult.strmUri), mergeByMovieNumber = !generated.forceDistinct)
-        if (refreshedMovie != null) {
-            if (
-                addedMovie != null &&
-                addedMovie.id != refreshedMovie.id &&
-                addedMovie.videoUri != refreshedMovie.videoUri
-            ) {
-                movieRepository.deleteMovie(addedMovie.id)
-                scrapeRepository.appendLog("已删除批量刮削前临时入库记录，避免重复显示：${addedMovie.videoName}")
-            }
-            movieRepository.markScrapeTaskCompleted(refreshedMovie.id)
-            recordRepository.updateStrmLocation(
-                pickcode = pickcode,
-                strmUri = scrapeResult.strmUri,
-                libraryRootUri = refreshedMovie.libraryRootUri,
-                movieId = refreshedMovie.id
+        scrapeRepository.appendLog("批量文件整理完成，开始同步影片数据库：$number")
+        val refreshedMovie = runCatching {
+            finalizeOrganizedScrape(
+                refreshMovie = {
+                    movieRepository.refreshMovieAfterScrape(
+                        original = movieForScrape,
+                        scrapedStrmUri = scrapeResult.strmUri,
+                        mergeByMovieNumber = !generated.forceDistinct
+                    )
+                },
+                markCompleted = { movieRepository.markScrapeTaskCompleted(it.id) },
+                markFailed = { reason -> movieRepository.markScrapeTaskFailed(movieForScrape.id, reason) },
+                missingMovieMessage = "整理后的 STRM 已写入，但影片路径或元数据未同步到数据库：$number"
             )
-        } else {
-            movieRepository.markScrapeTaskCompleted(movieForScrape.id)
-            scrapeRepository.appendLog("批量刮削后未定位到整理后的 STRM，已清空原影片失败标记：$number")
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            val reason = error.message ?: "整理后的 STRM 未同步到数据库：$number"
+            scrapeRepository.appendLog("批量刮削失败：$reason")
+            return CloudAddResult(
+                pickcode = pickcode,
+                message = reason,
+                scrapeFailed = true
+            )
         }
+        recordRepository.updateStrmLocation(
+            pickcode = pickcode,
+            strmUri = refreshedMovie.videoUri,
+            libraryRootUri = refreshedMovie.libraryRootUri,
+            movieId = refreshedMovie.id
+        )
+        scrapeRepository.appendLog(
+            "[媒体路径] 状态=成功，操作=网盘批量刮削整理并更新数据库，movieId=${refreshedMovie.id}，文件=${refreshedMovie.videoName}，详情=影片表和 STRM 索引表已同步"
+        )
         return CloudAddResult(
             pickcode = pickcode,
             message = if (generated.created) {
@@ -769,28 +805,18 @@ class CloudBrowserViewModel(
 
     private inner class CloudAddNumberChecker {
         private var loadedCachedRules = false
-        private var forcedRefreshTried = false
 
         suspend fun extract(fileName: String): String? {
             if (!loadedCachedRules) {
-                scrapeRepository.refreshNumberRecognitionRules(forceRefresh = false)
+                scrapeRepository.loadCachedNumberRecognitionRules()
                 loadedCachedRules = true
-            }
-            MovieNumberExtractor.extract(fileName)?.let { return it }
-            if (!forcedRefreshTried) {
-                scrapeRepository.refreshNumberRecognitionRules(forceRefresh = true)
-                forcedRefreshTried = true
             }
             return MovieNumberExtractor.extract(fileName)
         }
     }
 
     private suspend fun extractMovieNumberWithRules(vararg values: String?): String? {
-        scrapeRepository.refreshNumberRecognitionRules(forceRefresh = false)
-        values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
-            MovieNumberExtractor.extract(value)?.let { return it }
-        }
-        scrapeRepository.refreshNumberRecognitionRules(forceRefresh = true)
+        scrapeRepository.loadCachedNumberRecognitionRules()
         values.mapNotNull { it?.takeIf(String::isNotBlank) }.forEach { value ->
             MovieNumberExtractor.extract(value)?.let { return it }
         }
@@ -861,7 +887,9 @@ class CloudBrowserViewModel(
             scrapeRepository: StrmScrapeRepository,
             domesticMovieRepository: DomesticMovieRepository,
             folderBatchTaskRepository: CloudFolderBatchTaskRepository,
-            folderBatchTaskRunner: CloudFolderBatchTaskRunner
+            folderBatchTaskRunner: CloudFolderBatchTaskRunner,
+            videoTaskRepository: CloudVideoTaskRepository,
+            videoTaskRunner: CloudVideoTaskRunner
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -874,7 +902,9 @@ class CloudBrowserViewModel(
                         scrapeRepository,
                         domesticMovieRepository,
                         folderBatchTaskRepository,
-                        folderBatchTaskRunner
+                        folderBatchTaskRunner,
+                        videoTaskRepository,
+                        videoTaskRunner
                     ) as T
             }
     }

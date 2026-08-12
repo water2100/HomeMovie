@@ -25,6 +25,8 @@ import com.example.localmovielibrary.data.repository.CloudStrmRecordRepository
 import com.example.localmovielibrary.data.repository.DirectLinkRepository
 import com.example.localmovielibrary.data.repository.AppSettingsRepository
 import com.example.localmovielibrary.data.repository.PlaybackProgressRepository
+import com.example.localmovielibrary.data.repository.MovieRepository
+import com.example.localmovielibrary.data.repository.UsageStatsRepository
 import com.example.localmovielibrary.diagnostics.RuntimeErrorLog
 import com.example.localmovielibrary.playback.DEFAULT_USER_AGENT
 import com.example.localmovielibrary.playback.PickcodeExtractor
@@ -73,7 +75,10 @@ class PlayerViewModel(
     cloud115Client: Cloud115Client,
     private val cloudStrmRecordRepository: CloudStrmRecordRepository,
     private val settingsRepository: AppSettingsRepository,
-    private val playbackProgressRepository: PlaybackProgressRepository
+    private val playbackProgressRepository: PlaybackProgressRepository,
+    private val movieRepository: MovieRepository,
+    private val movieId: Long,
+    private val usageStatsRepository: UsageStatsRepository
 ) : AndroidViewModel(application) {
     private val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f)
     private var speedIndex = 1
@@ -97,6 +102,8 @@ class PlayerViewModel(
     private var lastPersistedDurationMs = 0L
     private var lastPersistedAtMs = 0L
     private var retriedAfterForbidden = false
+    private var hasMarkedWatched = false
+    private var playbackStartedAt = 0L
     private val vrModeSettings = VrModeSettings(application)
 
     val title: String = title.ifBlank { "Movie" }
@@ -106,6 +113,7 @@ class PlayerViewModel(
             isLoading = true,
             loadingMessage = initialPlaybackLoadingMessage(),
             externalSubtitleStyle = externalSubtitleStyleSettings(),
+            progressBarStyle = progressBarStyleSettings(),
             vrMode = vrModeSettings.getMode(mediaKey),
             vrControlMode = vrModeSettings.getControlMode(mediaKey)
         )
@@ -138,6 +146,7 @@ class PlayerViewModel(
                         isLoading = false,
                         subtitleFeaturesEnabled = subtitleFeaturesEnabled,
                         externalSubtitleStyle = externalSubtitleStyleSettings(),
+                        progressBarStyle = progressBarStyleSettings(),
                         vrMode = vrModeSettings.getMode(mediaKey),
                         vrControlMode = vrModeSettings.getControlMode(mediaKey)
                     )
@@ -154,6 +163,7 @@ class PlayerViewModel(
                     _uiState.value = PlayerUiState(
                         isLoading = false,
                         externalSubtitleStyle = externalSubtitleStyleSettings(),
+                        progressBarStyle = progressBarStyleSettings(),
                         errorMessage = playbackResolveErrorMessage(error)
                     )
                 }
@@ -194,7 +204,13 @@ class PlayerViewModel(
                 addListener(
                     object : Player.Listener {
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
-                            if (!isPlaying) saveProgress(this@apply)
+                            if (isPlaying) {
+                                playbackStartedAt = SystemClock.elapsedRealtime()
+                                markMovieWatched()
+                            } else {
+                                recordPlaybackTime()
+                                saveProgress(this@apply)
+                            }
                         }
 
                         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -220,6 +236,8 @@ class PlayerViewModel(
                     }
                 )
                 startProgressSaver(this)
+                // 播放可能在监听器注册前就已开始；补一次即时检查，保证首次播放也会标记。
+                if (isPlaying) markMovieWatched()
             }
     }
 
@@ -239,11 +257,30 @@ class PlayerViewModel(
         return builder.build()
     }
 
+    private fun markMovieWatched() {
+        if (hasMarkedWatched || movieId <= 0L) return
+        hasMarkedWatched = true
+        progressPersistenceScope.launch { movieRepository.setWatched(movieId, true) }
+    }
+
+    private fun recordPlaybackTime() {
+        if (playbackStartedAt <= 0L) return
+        usageStatsRepository.addPlaybackMillis(SystemClock.elapsedRealtime() - playbackStartedAt)
+        playbackStartedAt = 0L
+    }
+
     private fun externalSubtitleStyleSettings(): ExternalSubtitleStyleSettings =
         ExternalSubtitleStyleSettings(
             fontSizeSp = settingsRepository.getExternalSubtitleFontSizeSp(),
             bottomPaddingPercent = settingsRepository.getExternalSubtitleBottomPaddingPercent(),
             backgroundAlphaPercent = settingsRepository.getExternalSubtitleBackgroundAlphaPercent()
+        )
+
+    private fun progressBarStyleSettings(): PlayerProgressBarStyleSettings =
+        PlayerProgressBarStyleSettings(
+            widthDp = settingsRepository.getPlayerProgressBarWidthDp(),
+            colorArgb = settingsRepository.getPlayerProgressBarColor(),
+            alphaPercent = settingsRepository.getPlayerProgressBarAlphaPercent()
         )
 
     private suspend fun resolvePlayback(forceRefresh: Boolean = false): Result<PlaybackRequest> =
@@ -1043,6 +1080,7 @@ class PlayerViewModel(
     override fun onCleared() {
         val player = uiState.value.player
         progressJob?.cancel()
+        recordPlaybackTime()
         initialSubtitleJob?.cancel()
         subtitleOffsetApplyJob?.cancel()
         if (player != null) {
@@ -1068,7 +1106,10 @@ class PlayerViewModel(
             cloud115Client: Cloud115Client,
             cloudStrmRecordRepository: CloudStrmRecordRepository,
             settingsRepository: AppSettingsRepository,
-            playbackProgressRepository: PlaybackProgressRepository
+            playbackProgressRepository: PlaybackProgressRepository,
+            movieRepository: MovieRepository,
+            movieId: Long,
+            usageStatsRepository: UsageStatsRepository
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -1082,7 +1123,10 @@ class PlayerViewModel(
                         cloud115Client = cloud115Client,
                         cloudStrmRecordRepository = cloudStrmRecordRepository,
                         settingsRepository = settingsRepository,
-                        playbackProgressRepository = playbackProgressRepository
+                        playbackProgressRepository = playbackProgressRepository,
+                        movieRepository = movieRepository,
+                        movieId = movieId,
+                        usageStatsRepository = usageStatsRepository
                     ) as T
             }
     }
@@ -1092,6 +1136,7 @@ data class PlayerUiState(
     val playbackRequest: PlaybackRequest? = null,
     val player: ExoPlayer? = null,
     val externalSubtitleStyle: ExternalSubtitleStyleSettings = ExternalSubtitleStyleSettings(),
+    val progressBarStyle: PlayerProgressBarStyleSettings = PlayerProgressBarStyleSettings(),
     val vrMode: VrMode = VrMode.Normal2D,
     val vrControlMode: VrControlMode = VrControlMode.TouchAndSensor,
     val externalSubtitlePanelVisible: Boolean = false,
@@ -1130,6 +1175,12 @@ data class ExternalSubtitleStyleSettings(
     val backgroundAlphaPercent: Int = AppSettingsRepository.DEFAULT_EXTERNAL_SUBTITLE_BACKGROUND_ALPHA_PERCENT
 )
 
+data class PlayerProgressBarStyleSettings(
+    val widthDp: Int = AppSettingsRepository.DEFAULT_PLAYER_PROGRESS_BAR_WIDTH_DP,
+    val colorArgb: Int = AppSettingsRepository.DEFAULT_PLAYER_PROGRESS_BAR_COLOR,
+    val alphaPercent: Int = AppSettingsRepository.DEFAULT_PLAYER_PROGRESS_BAR_ALPHA_PERCENT
+)
+
 private fun normalizeSubtitleSearchNumber(number: String, provider: SubtitleSearchProvider): String =
     when (provider) {
         SubtitleSearchProvider.Xunlei -> normalizeXunleiSubtitleNumber(number)
@@ -1156,7 +1207,7 @@ private fun subtitleSearchKey(
     number: String,
     videoDurationMs: Long
 ): String {
-    val durationKey = if (provider == SubtitleSearchProvider.Cloud115) 0L else videoDurationMs / 1_000L
+    val durationKey = if (provider == SubtitleSearchProvider.Avsubtitles) videoDurationMs / 1_000L else 0L
     return provider.id + "|" + number.uppercase() + "|" + durationKey
 }
 
@@ -1165,10 +1216,10 @@ private fun subtitleSearchEmptyMessage(
     results: List<SubtitleSearchResult>
 ): String? {
     if (results.isNotEmpty()) return null
-    return if (provider == SubtitleSearchProvider.Cloud115) {
-        "网盘中没有找到包含番号的字幕文件"
-    } else {
-        "没有找到时长匹配的字幕"
+    return when (provider) {
+        SubtitleSearchProvider.Cloud115 -> "网盘中没有找到包含番号的字幕文件"
+        SubtitleSearchProvider.Xunlei -> "没有找到可用字幕"
+        SubtitleSearchProvider.Avsubtitles -> "没有找到时长匹配的字幕"
     }
 }
 

@@ -47,7 +47,6 @@ fun MovieEntity.selectArtworkUri(preferThumb: Boolean): String? =
 fun MovieEntity.artworkCacheRevision(): String =
     listOf(
         id.toString(),
-        maxOf(updatedAt, scannedAtMillis).toString(),
         posterUri.orEmpty(),
         fanartUri.orEmpty(),
         thumbUri.orEmpty()
@@ -58,12 +57,12 @@ fun MovieArtworkPlaceholder(title: String, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF202A35), Color(0xFF10151B)))),
+            .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surface))),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = title.take(2).uppercase(),
-            color = Color.White.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.ExtraBold
         )

@@ -469,6 +469,7 @@ fun PlayerScreen(
         ) {
             PlayerOverlay(
                 title = viewModel.title,
+                progressBarStyle = uiState.progressBarStyle,
                 isPlaying = isPlaying,
                 isLandscape = isLandscape,
                 positionMs = positionMs,
@@ -1449,6 +1450,7 @@ private fun PlayerView.applyExternalSubtitleStyle(style: ExternalSubtitleStyleSe
 @Composable
 private fun PlayerOverlay(
     title: String,
+    progressBarStyle: PlayerProgressBarStyleSettings,
     isPlaying: Boolean,
     isLandscape: Boolean,
     positionMs: Long,
@@ -1510,6 +1512,7 @@ private fun PlayerOverlay(
         BottomGradientControls(
             positionMs = positionMs,
             durationMs = durationMs,
+            progressBarStyle = progressBarStyle,
             speed = speed,
             aspectLabel = aspectLabel,
             errorMessage = errorMessage,
@@ -1889,6 +1892,7 @@ private fun CenterControls(
 private fun BottomGradientControls(
     positionMs: Long,
     durationMs: Long,
+    progressBarStyle: PlayerProgressBarStyleSettings,
     speed: Float,
     aspectLabel: String,
     errorMessage: String?,
@@ -1925,19 +1929,30 @@ private fun BottomGradientControls(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             TimeText(formatTime(positionMs))
-            Slider(
-                value = if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f,
-                onValueChange = onSeek,
-                enabled = durationMs > 0,
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color.White,
-                    inactiveTrackColor = Color.White.copy(alpha = 0.25f)
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 12.dp)
-            )
+            val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+            val barColor = Color(progressBarStyle.colorArgb).copy(alpha = progressBarStyle.alphaPercent / 100f)
+            Box(
+                modifier = Modifier.weight(1f).height(progressBarStyle.widthDp.coerceIn(2, 12).dp + 28.dp).padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(progressBarStyle.widthDp.coerceIn(2, 12).dp)
+                        .clip(RoundedCornerShape(99.dp)).background(Color.White.copy(alpha = 0.25f))
+                ) {
+                    Box(modifier = Modifier.fillMaxHeight().fillMaxWidth(progress).background(barColor))
+                }
+                Slider(
+                    value = progress,
+                    onValueChange = onSeek,
+                    enabled = durationMs > 0,
+                    colors = SliderDefaults.colors(
+                        thumbColor = barColor,
+                        activeTrackColor = Color.Transparent,
+                        inactiveTrackColor = Color.Transparent
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             TimeText(formatTime(durationMs))
         }
         if (isLandscape) {

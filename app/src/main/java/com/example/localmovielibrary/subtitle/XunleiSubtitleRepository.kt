@@ -13,7 +13,6 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 class XunleiSubtitleRepository(
     context: Context,
@@ -55,7 +54,7 @@ class XunleiSubtitleRepository(
                     for (index in 0 until data.length()) {
                         val item = data.optJSONObject(index) ?: continue
                         val result = item.toSubtitleResult() ?: continue
-                        if (result.isCloseTo(videoDurationMs)) add(result)
+                        add(result)
                     }
                 }.distinctBy { "${it.cid}:${it.ext}:${it.durationMs}" }
             }
@@ -130,12 +129,6 @@ class XunleiSubtitleRepository(
         )
     }
 
-    private fun SubtitleSearchResult.isCloseTo(videoDurationMs: Long): Boolean {
-        val subtitleDuration = durationMs ?: return true
-        if (videoDurationMs <= 0L) return true
-        return abs(subtitleDuration - videoDurationMs) <= MAX_DURATION_DIFF_MS
-    }
-
     private fun validateDownloadedSubtitle(bytes: ByteArray, result: SubtitleSearchResult) {
         val preview = bytes.toString(Charsets.UTF_8)
             .trimStart('\uFEFF')
@@ -163,8 +156,9 @@ class XunleiSubtitleRepository(
 }
 
 fun normalizeXunleiSubtitleNumber(number: String): String {
-    val value = number.trim().uppercase(Locale.ROOT).replace("_", "-")
-    val match = Regex("""^([A-Z]+)-?(\d+)$""").matchEntire(value) ?: return value
+    // 迅雷接口的 name 参数区分大小写；网页搜索使用小写片号。
+    val value = number.trim().lowercase(Locale.ROOT).replace("_", "-")
+    val match = Regex("""^([a-z]+)-?(\d+)$""").matchEntire(value) ?: return value
     val prefix = match.groupValues[1]
     val digits = match.groupValues[2]
     return "$prefix-${digits.padStart(3, '0')}"

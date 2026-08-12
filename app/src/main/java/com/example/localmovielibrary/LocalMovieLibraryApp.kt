@@ -4,6 +4,10 @@ import android.app.Application
 import android.database.CursorWindow
 import android.util.Log
 import com.example.localmovielibrary.data.AppContainer
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import android.os.SystemClock
 
 class LocalMovieLibraryApp : Application() {
     lateinit var container: AppContainer
@@ -14,6 +18,14 @@ class LocalMovieLibraryApp : Application() {
         Log.i(TAG, BUILD_MARKER)
         configureCursorWindow()
         container = AppContainer(this)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            private var startedAt = 0L
+            override fun onStart(owner: LifecycleOwner) { startedAt = SystemClock.elapsedRealtime() }
+            override fun onStop(owner: LifecycleOwner) {
+                if (startedAt > 0L) container.usageStatsRepository.addAppMillis(SystemClock.elapsedRealtime() - startedAt)
+                startedAt = 0L
+            }
+        })
     }
 
     private fun configureCursorWindow() {
